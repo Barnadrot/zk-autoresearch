@@ -1,0 +1,710 @@
+#!/usr/bin/env python3
+"""
+ZK Autoresearch Loop — Plonky3 DFT optimizer.
+Inspired by Karpathy's autoresearch pattern.
+
+Each iteration:
+  1. Build a prompt with current score + last N experiment results
+  2. Call Claude (fresh context every time — no history bleed)
+  3. Agent reads source files and writes ONE targeted change
+  4. Run tests (fast correctness check)
+  5. Run benchmark
+  6. Keep if improvement, revert if regression
+  7. Log everything to experiments.jsonl
+
+Usage:
+  export ANTHROPIC_API_KEY=sk-...
+  python3 loop.py
+  python3 loop.py --max-iter 50
+  python3 loop.py --start-fresh        # wipe log + reset git
+  touch STOP                           # graceful shutdown after current iter
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import anthropic
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+ROOT_DIR    = Path(__file__).parent
+REPO_DIR    = ROOT_DIR / "Plonky3"
+LOG_FILE    = ROOT_DIR / "experiments.jsonl"
+STOP_FILE   = ROOT_DIR / "STOP"
+CLAUDE_MD   = ROOT_DIR / "CLAUDE.md"
+
+MODEL          = "claude-sonnet-4-6"
+MAX_TOKENS     = 20000
+MAX_ITERATIONS = 100
+HISTORY_WINDOW = 5   # last N experiments shown in each prompt
+
+# Cargo bench filter — targets exactly one benchmark (subprocess passes <> literally, no shell)
+# BabyBear's pretty_name is MontyField31<BabyBearParameters> — confirmed from bench output
+BENCH_FILTER = "coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols=256/1048576"
+# Parser safety check — must appear in the matched benchmark name line
+# Note: criterion truncates long names so "1048576" is not visible; coset_lde+Radix2DitParallel is unique enough
+BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
+
+# Files agent may WRITE (prefix match, relative to REPO_DIR)
+WRITABLE = ["dft/src/", "baby-bear/src/"]
+
+# Files agent may READ (prefix match, relative to REPO_DIR)
+READABLE = WRITABLE + ["CLAUDE.md", "dft/Cargo.toml", "dft/benches/",
+                        "baby-bear/Cargo.toml", "field/src/"]
+
+
+# ── Tool definitions ──────────────────────────────────────────────────────────
+
+TOOLS = [
+    {
+        "name": "read_file",
+        "description": (
+            "Read a source file from the Plonky3 repository. "
+            "Optionally specify start_line and end_line (1-indexed, inclusive) to read only a section."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to Plonky3 repo root, e.g. 'dft/src/butterflies.rs'"
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to return (1-indexed, inclusive). Omit to start from line 1."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Last line to return (1-indexed, inclusive). Omit to read to end of file."
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "Overwrite a source file in the Plonky3 repository. "
+            "Only allowed under dft/src/ or baby-bear/src/. "
+            "Write the COMPLETE new file content — not a diff."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to Plonky3 repo root"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete new content of the file"
+                }
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
+        "name": "list_dir",
+        "description": "List files in a directory within the Plonky3 repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path relative to repo root, e.g. 'dft/src'"
+                }
+            },
+            "required": ["path"]
+        }
+    },
+]
+
+
+# ── Tool handlers ─────────────────────────────────────────────────────────────
+
+def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
+    if any(path.startswith(p) for p in READABLE) or path == "CLAUDE.md":
+        full = REPO_DIR / path
+        if not full.exists() or not full.is_file():
+            return f"ERROR: File not found: {path}"
+        lines = full.read_text(encoding="utf-8").splitlines(keepends=True)
+        total = len(lines)
+        if start_line is not None or end_line is not None:
+            s = max(1, int(start_line) if start_line is not None else 1)
+            e = min(total, int(end_line) if end_line is not None else total)
+            lines = lines[s - 1:e]
+            header = f"// {path} lines {s}-{e} of {total}\n"
+        else:
+            header = f"// {path} ({total} lines)\n"
+        return header + "".join(lines)
+    return f"ERROR: '{path}' is not in the readable paths list."
+
+
+def tool_write_file(path: str, content: str) -> str:
+    if any(path.startswith(p) for p in WRITABLE):
+        full = REPO_DIR / path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content, encoding="utf-8")
+        return f"OK: wrote {len(content):,} bytes to {path}"
+    return f"ERROR: Writing not allowed to '{path}'. Allowed prefixes: {WRITABLE}"
+
+
+def tool_list_dir(path: str) -> str:
+    full = REPO_DIR / path
+    if not full.exists():
+        return f"ERROR: Directory not found: {path}"
+    entries = sorted(str(p.relative_to(REPO_DIR)) for p in full.iterdir())
+    return "\n".join(entries)
+
+
+def execute_tool(name: str, inputs: dict) -> str:
+    if name == "read_file":
+        path = inputs.get("path")
+        if not path:
+            return "ERROR: read_file requires a 'path' argument."
+        return tool_read_file(path, inputs.get("start_line"), inputs.get("end_line"))
+    elif name == "write_file":
+        path = inputs.get("path")
+        content = inputs.get("content")
+        if not path:
+            return "ERROR: write_file requires a 'path' argument."
+        if content is None:
+            return "ERROR: write_file requires a 'content' argument."
+        return tool_write_file(path, content)
+    elif name == "list_dir":
+        path = inputs.get("path")
+        if not path:
+            return "ERROR: list_dir requires a 'path' argument."
+        return tool_list_dir(path)
+    return f"ERROR: Unknown tool '{name}'"
+
+
+# ── Subprocess helpers ────────────────────────────────────────────────────────
+
+def run_cmd(cmd, cwd=None, timeout=600, extra_env=None):
+    """Run a subprocess. Returns (returncode, stdout+stderr)."""
+    env = {**os.environ, **(extra_env or {})}
+    result = subprocess.run(
+        cmd, cwd=cwd or REPO_DIR,
+        capture_output=True, text=True,
+        timeout=timeout, env=env
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
+def run_bench():
+    """
+    Run cargo bench for BENCH_TARGET with parallel feature enabled.
+    Returns (median_ns: float | None, raw_output: str).
+    """
+    print("  [bench] Running...", flush=True)
+    t0 = time.time()
+
+    rc, out = run_cmd(
+        ["cargo", "bench", "-p", "p3-dft", "--bench", "fft",
+         "--features", "p3-dft/parallel",
+         "--", BENCH_FILTER, "--noplot"],
+        timeout=600,
+        extra_env={"RAYON_NUM_THREADS": "8", "NO_COLOR": "1"},
+    )
+
+    elapsed = time.time() - t0
+    print(f"  [bench] Finished in {elapsed:.0f}s", flush=True)
+
+    if rc != 0:
+        snippet = out[-1500:] if len(out) > 1500 else out
+        print(f"  [bench] FAILED:\n{snippet}", flush=True)
+        return None, out
+
+    # Parse criterion output: "time:   [lower  MEDIAN  upper]"
+    # Units may be: ns, µs/us, ms, s
+    median_ns, matched_name = _parse_criterion_median(out)
+    if median_ns is None:
+        debug_file = ROOT_DIR / "bench_debug.txt"
+        debug_file.write_text(out, encoding="utf-8")
+        print(f"  [bench] WARNING: could not parse time. Full output saved to {debug_file}", flush=True)
+        print("  [bench] Lines containing 'Radix2DitParallel' or 'time:':", flush=True)
+        for line in _strip_ansi(out).splitlines():
+            if "Radix2DitParallel" in line or ("time:" in line and "[" in line):
+                print(f"    {repr(line)}", flush=True)
+    else:
+        print(f"  [bench] {matched_name}: {median_ns/1e6:.2f}ms", flush=True)
+
+    return median_ns, out
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*[mK]", "", text)
+
+
+def _parse_criterion_median(output: str) -> tuple[float | None, str]:
+    """
+    Find the benchmark line matching BENCH_MUST_CONTAIN, return (median_ns, name).
+    Searches for a name line followed by a time: line.
+    """
+    unit_map = {"ns": 1.0, "µs": 1e3, "us": 1e3, "ms": 1e6, "s": 1e9}
+    output = _strip_ansi(output)
+
+    current_name = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        # Criterion prints the benchmark name on its own line before the time: line
+        if all(kw in stripped for kw in BENCH_MUST_CONTAIN) and "time:" not in stripped:
+            current_name = stripped
+        if current_name:
+            m = re.search(
+                r"time:\s+\[[\d.]+\s+\S+\s+([\d.]+)\s+(\S+)\s+[\d.]+\s+\S+\]",
+                line
+            )
+            if m:
+                val, unit = float(m.group(1)), m.group(2)
+                return val * unit_map.get(unit, 1.0), current_name
+    return None, ""
+
+
+def run_tests():
+    """
+    Two-stage correctness check:
+      1. cargo test -p p3-dft  — fast property-based tests (dft/tests/testing.rs),
+         directly tests Radix2DitParallel and butterfly functions (~30s)
+      2. cargo test -p p3-examples — end-to-end ZK prove+verify (~2-4 min)
+    Returns (passed: bool, combined_output: str).
+    """
+    # Stage 1: fast DFT property tests
+    print("  [test] Stage 1/2: p3-dft property tests...", flush=True)
+    rc1, out1 = run_cmd(
+        ["cargo", "test", "-p", "p3-dft", "--features", "p3-dft/parallel",
+         "--", "--quiet"],
+        timeout=120,
+    )
+    if rc1 != 0:
+        print(f"  [test] FAILED (p3-dft):\n{out1[-800:]}", flush=True)
+        return False, out1
+
+    # Stage 2: end-to-end prove+verify
+    print("  [test] Stage 2/2: p3-examples end-to-end tests...", flush=True)
+    rc2, out2 = run_cmd(
+        ["cargo", "test", "-p", "p3-examples", "--", "--quiet"],
+        timeout=600,
+    )
+    passed = (rc2 == 0)
+    if passed:
+        print("  [test] All tests passed.", flush=True)
+    else:
+        print(f"  [test] FAILED (p3-examples):\n{out2[-800:]}", flush=True)
+    return passed, out1 + out2
+
+
+# ── Git helpers ───────────────────────────────────────────────────────────────
+
+def git_diff():
+    _, diff = run_cmd(["git", "diff", "HEAD"])
+    return diff
+
+
+def git_commit(message: str):
+    run_cmd(["git", "add", "-A"])
+    run_cmd(["git", "commit", "-m", message, "--allow-empty"])
+
+
+def git_revert():
+    run_cmd(["git", "checkout", "--", "."])
+    for prefix in WRITABLE:
+        run_cmd(["git", "clean", "-fd", prefix])
+
+
+# ── Experiment log ────────────────────────────────────────────────────────────
+
+def load_experiments() -> list:
+    if not LOG_FILE.exists():
+        return []
+    experiments = []
+    for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                experiments.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return experiments
+
+
+def log_experiment(exp: dict):
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(exp, ensure_ascii=False) + "\n")
+
+
+def format_history(experiments: list) -> str:
+    if not experiments:
+        return "No experiments yet — you are starting fresh on a clean codebase."
+
+    lines = []
+
+    # 1. Always show ALL kept improvements — never truncated
+    kept = [e for e in experiments if e.get("kept")]
+    if kept:
+        lines.append("=== ALL KEPT IMPROVEMENTS (cumulative) ===")
+        for e in kept:
+            delta = f"{e.get('improvement_pct', 0):+.2f}%"
+            lines.append(f"  #{e['iteration']:03d} {delta:>8} — {e.get('agent_idea','?')}")
+
+    # 2. Recent attempts for immediate context (non-kept only, last N)
+    recent_non_kept = [e for e in experiments[-HISTORY_WINDOW:] if not e.get("kept")]
+    if recent_non_kept:
+        lines.append(f"\n=== RECENT ATTEMPTS (last {HISTORY_WINDOW}) ===")
+        for e in recent_non_kept:
+            delta  = f"{e.get('improvement_pct', 0):+.2f}%" if e.get("score_ns") else "N/A"
+            reason = e.get("reason", "?")
+            lines.append(f"  #{e['iteration']:03d} [{reason:12}] {delta:>8} — {e.get('agent_idea','?')}")
+
+    # 3. Deduplicated list of all failed approaches — prevents repeating
+    failed = [e for e in experiments if not e.get("kept") and e.get("reason") in ("regression", "tests_failed")]
+    if failed:
+        seen = set()
+        unique_failed = []
+        for e in failed:
+            key = (e.get("agent_idea") or "")[:80].lower()
+            if key and key not in seen:
+                seen.add(key)
+                unique_failed.append(e)
+        lines.append(f"\n=== PREVIOUSLY TRIED — DO NOT REPEAT ({len(unique_failed)} unique) ===")
+        for e in unique_failed:
+            tag = "COMPILE" if e.get("reason") == "tests_failed" else f"{e.get('improvement_pct',0):+.2f}%"
+            lines.append(f"  #{e['iteration']:03d} [{tag:>8}] {e.get('agent_idea','?')}")
+
+    # 4. Near-misses as combination candidates
+    near_misses = [
+        e for e in experiments
+        if not e.get("kept") and e.get("score_ns") and e.get("reason") == "regression"
+        and abs(e.get("improvement_pct", 0)) < 1.5
+    ][-3:]
+    if near_misses:
+        lines.append("\n=== NEAR-MISSES (close — consider combining or revisiting) ===")
+        for e in near_misses:
+            lines.append(f"  #{e['iteration']:03d} {e.get('improvement_pct',0):+.2f}% — {e.get('agent_idea','?')}")
+
+    return "\n".join(lines)
+
+
+# ── Prompt builder ────────────────────────────────────────────────────────────
+
+def build_prompt(current_best_ns: float, experiments: list) -> str:
+    constraints = CLAUDE_MD.read_text(encoding="utf-8") if CLAUDE_MD.exists() else ""
+    history = format_history(experiments)
+
+    kept = [e for e in experiments if e.get("kept")]
+    total_gain = 0.0
+    if kept:
+        first_base = kept[0].get("baseline_ns", current_best_ns)
+        if first_base:
+            total_gain = (first_base - current_best_ns) / first_base * 100
+
+    return f"""You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.
+
+## Hard Constraints
+{constraints}
+
+## Current State
+Benchmark: coset_lde / Radix2DitParallel / BabyBear / 2^20 rows / 256 cols
+Current best time: **{current_best_ns / 1e6:.2f}ms** (lower is better)
+Total improvement so far: {total_gain:+.2f}%
+Benchmark command: `cargo bench -p p3-dft --features p3-dft/parallel --bench fft -- "coset_lde"`
+
+## Experiment History
+{history}
+
+## Your Task
+Make ONE focused, targeted optimization to the DFT implementation.
+
+Process:
+1. Read at most 2-3 files before writing — be targeted, not exhaustive
+2. Think about what is slow and why
+3. Make exactly one logical change using `write_file`
+4. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
+
+**Simplicity criterion**: A tiny improvement that adds ugly complexity is not worth it. Removing code and getting equal or better results is a great outcome. Weigh complexity cost against improvement magnitude.
+
+**You must always make a change.** If your first idea seems risky, try a simpler variant. If you feel stuck, consider different angles: memory layout, twiddle factor access patterns, parallelism granularity, SIMD hints, loop restructuring, precomputation, special-casing boundary conditions. Try combining near-misses from the history. There is always something to try — do not give up.
+"""
+
+
+# ── Agent runner ──────────────────────────────────────────────────────────────
+
+def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool, str, str]:
+    """
+    Run one multi-turn agent conversation until end_turn.
+    Returns (made_file_changes: bool, extracted_idea: str, thinking_summary: str).
+    """
+    messages = [{"role": "user", "content": prompt}]
+    files_written: list[str] = []
+    idea = "(no IDEA: line found)"
+    all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
+    read_call_count = 0  # counts read_file + list_dir calls only
+
+    while True:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            tools=TOOLS,
+            messages=messages,
+        )
+
+        # Scan text blocks for the IDEA: line and accumulate reasoning
+        for block in response.content:
+            if hasattr(block, "text") and block.text.strip():
+                all_text_blocks.append(block.text.strip())
+                if "IDEA:" in block.text:
+                    for line in block.text.splitlines():
+                        if line.strip().startswith("IDEA:"):
+                            idea = line.strip()[len("IDEA:"):].strip()
+                            break
+
+        if response.stop_reason == "end_turn":
+            break
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    result = execute_tool(block.name, block.input)
+                    if block.name == "read_file":
+                        path = block.input.get("path", "?")
+                        sl = block.input.get("start_line")
+                        el = block.input.get("end_line")
+                        line_count = result.count("\n")
+                        range_str = f" lines {sl}-{el}" if sl or el else ""
+                        print(f"  [tool] read_file → {path}{range_str} ({line_count} lines)", flush=True)
+                    elif block.name == "list_dir":
+                        print(f"  [tool] list_dir  → {block.input.get('path', '?')}", flush=True)
+                    elif block.name == "write_file":
+                        path = block.input.get("path", "?")
+                        if result.startswith("OK:"):
+                            files_written.append(path)
+                            print(f"  [tool] write_file → {path} ({len(block.input.get('content',''))} chars)", flush=True)
+                        else:
+                            print(f"  [tool] write_file → {path} FAILED: {result}", flush=True)
+                    else:
+                        print(f"  [tool] {block.name}({list(block.input.keys())})", flush=True)
+                    if block.name in ("read_file", "list_dir"):
+                        read_call_count += 1
+                    # After 4 read/list calls without a write, nudge the agent to stop exploring
+                    if read_call_count >= 4 and block.name in ("read_file", "list_dir") and not files_written:
+                        result += "\n\n[SYSTEM] You have read enough files. Stop exploring and write your change NOW using write_file."
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+        elif response.stop_reason == "max_tokens" and not files_written:
+            # Ran out of tokens before writing — give one recovery chance.
+            # Must provide tool_result for any tool_use blocks in the truncated response.
+            print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt.", flush=True)
+            messages.append({"role": "assistant", "content": response.content})
+            tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
+            if tool_use_blocks:
+                # Satisfy the API requirement: every tool_use needs a tool_result
+                recovery_content = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": "Response was cut off. Please write your change now using write_file. End your final message with: IDEA: <one sentence describing what you changed>",
+                    }
+                    for b in tool_use_blocks
+                ]
+            else:
+                recovery_content = [{
+                    "type": "text",
+                    "text": (
+                        "Your response was cut off before you wrote any file. "
+                        "You have already read enough context. "
+                        "Now write your change immediately using write_file — "
+                        "be concise, no lengthy preamble. "
+                        "End with: IDEA: <one sentence>"
+                    )
+                }]
+            messages.append({"role": "user", "content": recovery_content})
+        else:
+            print(f"  [agent] Stopped: {response.stop_reason}", flush=True)
+            break
+
+    # Summarize all agent reasoning (first 800 chars) for the log
+    thinking_summary = " | ".join(all_text_blocks)[:800] if all_text_blocks else ""
+    return bool(files_written), idea, thinking_summary
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="ZK Autoresearch Loop — Plonky3 DFT")
+    parser.add_argument("--max-iter", type=int, default=MAX_ITERATIONS,
+                        help=f"Max iterations (default {MAX_ITERATIONS})")
+    parser.add_argument("--start-fresh", action="store_true",
+                        help="Reset git state + rename old log before starting")
+    args = parser.parse_args()
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("ERROR: ANTHROPIC_API_KEY environment variable not set.", file=sys.stderr)
+        sys.exit(1)
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    if args.start_fresh:
+        print("[init] --start-fresh: reverting git state...")
+        git_revert()
+        if LOG_FILE.exists():
+            backup = LOG_FILE.with_suffix(f".{int(time.time())}.bak.jsonl")
+            LOG_FILE.rename(backup)
+            print(f"[init] Old log saved to {backup.name}")
+
+    # ── Establish baseline ────────────────────────────────────────────────────
+    print("\n[init] Building baseline benchmark (this compiles from scratch)...")
+    baseline_ns, _ = run_bench()
+    if baseline_ns is None:
+        print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"[init] Baseline: {baseline_ns / 1e6:.2f}ms\n")
+
+    best_ns = baseline_ns
+    experiments = load_experiments()
+    # On resume, use the best historical score if it's better than the fresh measurement
+    kept = [e for e in experiments if e.get("kept") and e.get("score_ns")]
+    if kept:
+        historical_best = min(e["score_ns"] for e in kept)
+        if historical_best < best_ns:
+            best_ns = historical_best
+            print(f"[init] Resuming with historical best: {best_ns/1e6:.2f}ms")
+    start_iteration = len(experiments)
+
+    print(f"[init] Starting at iteration {start_iteration + 1}, max {args.max_iter}")
+    print(f"[init] Log file: {LOG_FILE}")
+    print(f"[init] Touch '{STOP_FILE.name}' in this directory to stop gracefully.\n")
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    for i in range(args.max_iter - start_iteration):
+        iteration = start_iteration + i + 1
+
+        if STOP_FILE.exists():
+            print(f"\n[loop] STOP file detected. Exiting after {iteration - 1} iterations.")
+            STOP_FILE.unlink()
+            break
+
+        ts = datetime.now(timezone.utc).isoformat()
+        print(f"\n{'=' * 65}", flush=True)
+        print(f"[loop] Iteration {iteration}/{args.max_iter} — {ts}", flush=True)
+        print(f"[loop] Best: {best_ns / 1e6:.2f}ms | "
+              f"Baseline: {baseline_ns / 1e6:.2f}ms | "
+              f"Speedup: -{(baseline_ns - best_ns) / baseline_ns * 100:.2f}%", flush=True)
+
+        # 1. Build prompt
+        prompt = build_prompt(best_ns, experiments)
+
+        # 2. Call agent
+        print("[agent] Calling Claude...", flush=True)
+        t_agent = time.time()
+        made_changes, idea, thinking_summary = run_agent_iteration(client, prompt)
+        agent_secs = round(time.time() - t_agent, 1)
+        print(f"[agent] Done in {agent_secs}s | idea: {idea}", flush=True)
+
+        # Base experiment record
+        exp = {
+            "iteration": iteration,
+            "timestamp": ts,
+            "kept": False,
+            "reason": "no_changes",
+            "score_ns": None,
+            "baseline_ns": round(best_ns),
+            "improvement_pct": 0.0,
+            "agent_idea": idea,
+            "agent_thinking": thinking_summary,
+            "diff": "",
+            "diff_summary": "",
+            "agent_time_s": agent_secs,
+        }
+
+        if not made_changes:
+            print("[loop] No files changed — skipping benchmark.", flush=True)
+            log_experiment(exp)
+            experiments.append(exp)
+            continue
+
+        # Capture diff before testing
+        diff = git_diff()
+        exp["diff"] = diff
+        exp["diff_summary"] = diff[:600] if diff else "(empty diff)"
+
+        # 3. Correctness check
+        tests_passed, test_out = run_tests()
+        if not tests_passed:
+            exp["reason"] = "tests_failed"
+            print("[loop] Tests failed — reverting.", flush=True)
+            git_revert()
+            log_experiment(exp)
+            experiments.append(exp)
+            continue
+
+        # 4. Benchmark
+        score_ns, bench_out = run_bench()
+        if score_ns is None:
+            exp["reason"] = "bench_failed"
+            print("[loop] Benchmark failed — reverting.", flush=True)
+            git_revert()
+            log_experiment(exp)
+            experiments.append(exp)
+            continue
+
+        improvement_pct = (best_ns - score_ns) / best_ns * 100
+        exp["score_ns"] = round(score_ns)
+        exp["improvement_pct"] = round(improvement_pct, 4)
+
+        # 5. Keep or revert
+        if improvement_pct > 0:
+            exp["kept"] = True
+            exp["reason"] = "improvement"
+            prev_best = best_ns
+            best_ns = score_ns
+            git_commit(
+                f"exp-{iteration:03d}: {improvement_pct:+.2f}% "
+                f"({score_ns / 1e6:.2f}ms <- {prev_best / 1e6:.2f}ms)\n\n"
+                f"{idea}"
+            )
+            print(f"[loop] KEPT -{improvement_pct:.2f}% faster — committed.", flush=True)
+        else:
+            exp["reason"] = "regression"
+            git_revert()
+            print(f"[loop] REVERTED +{abs(improvement_pct):.2f}% slower.", flush=True)
+
+        log_experiment(exp)
+        experiments.append(exp)
+
+        print(
+            f"[loop] score={score_ns / 1e6:.2f}ms  "
+            f"delta={-improvement_pct:+.2f}%  "
+            f"best={best_ns / 1e6:.2f}ms",
+            flush=True
+        )
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    kept = [e for e in experiments if e.get("kept")]
+    total_gain_pct = (baseline_ns - best_ns) / baseline_ns * 100
+    print(f"\n{'=' * 65}")
+    print(f"[done] Iterations run  : {len(experiments) - start_iteration}")
+    print(f"[done] Improvements    : {len(kept)}")
+    print(f"[done] Baseline        : {baseline_ns / 1e6:.2f}ms")
+    print(f"[done] Best score      : {best_ns / 1e6:.2f}ms")
+    print(f"[done] Total gain      : {total_gain_pct:+.2f}%")
+    print(f"[done] Log             : {LOG_FILE}")
+
+
+if __name__ == "__main__":
+    main()

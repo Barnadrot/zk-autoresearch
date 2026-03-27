@@ -1,0 +1,16 @@
+# Target repo — clone separately, add to gitignore before pushing
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Added post round 2
+changelog.md
+
+# Runtime files
+experiments.jsonl
+*.bak.jsonl
+bench_debug.txt
+STOP
+
