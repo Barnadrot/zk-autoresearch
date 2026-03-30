@@ -46,6 +46,10 @@ MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 
+# Pricing per million tokens — update if Anthropic changes rates
+COST_PER_M_INPUT  = 3.00   # USD, claude-sonnet-4-6
+COST_PER_M_OUTPUT = 15.00  # USD, claude-sonnet-4-6
+
 # Cargo bench filter — targets exactly one benchmark (subprocess passes <> literally, no shell)
 # BabyBear's pretty_name is MontyField31<BabyBearParameters> — confirmed from bench output
 BENCH_FILTER = "coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols=256/1048576"
@@ -565,7 +569,8 @@ Process:
 def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool, str, str]:
     """
     Run one multi-turn agent conversation until end_turn.
-    Returns (made_file_changes: bool, extracted_idea: str, thinking_summary: str).
+    Returns (made_file_changes: bool, extracted_idea: str, thinking_summary: str,
+             input_tokens: int, output_tokens: int, cost_usd: float).
     """
     messages = [{"role": "user", "content": prompt}]
     files_written: list[str] = []
@@ -573,14 +578,30 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
     all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
     read_call_count = 0  # counts read_file + list_dir calls only
     recovery_count = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     while True:
-        response = client.messages.create(
+        with client.messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             tools=TOOLS,
             messages=messages,
-        )
+        ) as stream:
+            had_text = False
+            for event in stream:
+                if event.type == "content_block_delta":
+                    delta = event.delta
+                    if hasattr(delta, "type") and delta.type == "text_delta" and delta.text:
+                        if not had_text:
+                            print("  [agent thinking]", flush=True)
+                            had_text = True
+                        print(delta.text, end="", flush=True)
+            if had_text:
+                print(flush=True)  # newline after streamed text
+            response = stream.get_final_message()
+            total_input_tokens  += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
 
         # Scan text blocks for the IDEA: line and accumulate reasoning
         for block in response.content:
@@ -672,9 +693,10 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             print(f"  [agent] Stopped: {response.stop_reason}", flush=True)
             break
 
-    # Summarize all agent reasoning (first 800 chars) for the log
-    thinking_summary = " | ".join(all_text_blocks)[:800] if all_text_blocks else ""
-    return bool(files_written), idea, thinking_summary
+    thinking_summary = "\n\n".join(all_text_blocks) if all_text_blocks else ""
+    cost_usd = (total_input_tokens * COST_PER_M_INPUT
+                + total_output_tokens * COST_PER_M_OUTPUT) / 1_000_000
+    return bool(files_written), idea, thinking_summary, total_input_tokens, total_output_tokens, cost_usd
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -801,9 +823,9 @@ def main():
         # 2. Call agent
         print("[agent] Calling Claude...", flush=True)
         t_agent = time.time()
-        made_changes, idea, thinking_summary = run_agent_iteration(client, prompt)
+        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, prompt)
         agent_secs = round(time.time() - t_agent, 1)
-        print(f"[agent] Done in {agent_secs}s | idea: {idea}", flush=True)
+        print(f"[agent] Done in {agent_secs}s | tokens={input_tokens}in/{output_tokens}out | cost=${cost_usd:.4f} | idea: {idea}", flush=True)
 
         # Base experiment record
         exp = {
@@ -816,6 +838,9 @@ def main():
             "improvement_pct": 0.0,
             "agent_idea": idea,
             "agent_thinking": thinking_summary,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": round(cost_usd, 6),
             "diff": "",
             "diff_summary": "",
             "diff_unsafe_count": 0,
