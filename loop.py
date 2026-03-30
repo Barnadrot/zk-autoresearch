@@ -56,6 +56,14 @@ BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 WRITABLE = ["dft/src/", "baby-bear/src/"]
 
+# Diff patterns that are never legitimate in a DFT arithmetic optimization.
+# A diff containing these is hard-rejected before testing.
+FORBIDDEN_DIFF_PATTERNS = [
+    r"^\+[^+].*#\[cfg\(test\)\]",        # cfg(test) guard on new lines
+    r"^\+[^+].*#\[cfg\(not\(test\)\)\]", # cfg(not(test)) fast-path bypass
+    r"^\+[^+].*\bdebug_assert\b",        # debug_assert hiding release-only bugs
+]
+
 # Recovery and dry-spell limits
 MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
 DRY_SPELL_MIN_ITERS = 20  # don't auto-stop before this many iterations
@@ -339,35 +347,50 @@ def _parse_criterion_output(output: str) -> tuple[float | None, float | None, fl
 
 def run_tests():
     """
-    Two-stage correctness check:
-      1. cargo test -p p3-dft  — fast property-based tests (dft/tests/testing.rs),
-         directly tests Radix2DitParallel and butterfly functions (~30s)
-      2. cargo test -p p3-examples — end-to-end ZK prove+verify (~2-4 min)
+    Three-stage correctness check:
+      1. cargo test -p p3-dft (debug)   — fast property-based tests (~30s)
+      2. cargo test -p p3-dft --release — same tests under release profile,
+         catches debug_assertion divergence and release-mode UB (~60s)
+      3. cargo test -p p3-examples      — end-to-end ZK prove+verify (~2-4 min)
     Returns (passed: bool, combined_output: str).
     """
-    # Stage 1: fast DFT property tests
-    print("  [test] Stage 1/2: p3-dft property tests...", flush=True)
+    # Stage 1: fast DFT property tests (debug profile)
+    print("  [test] Stage 1/3: p3-dft property tests (debug)...", flush=True)
     rc1, out1 = run_cmd(
         ["cargo", "test", "-p", "p3-dft", "--features", "p3-dft/parallel",
          "--", "--quiet"],
         timeout=120,
     )
     if rc1 != 0:
-        print(f"  [test] FAILED (p3-dft):\n{out1[-800:]}", flush=True)
+        print(f"  [test] FAILED (p3-dft debug):\n{out1[-800:]}", flush=True)
         return False, out1
 
-    # Stage 2: end-to-end prove+verify
-    print("  [test] Stage 2/2: p3-examples end-to-end tests...", flush=True)
+    # Stage 2: same DFT tests under release profile
+    # Catches debug_assertions divergence and optimisation-induced UB.
+    # Note: cfg(test) is still set here; cfg(not(test)) split-brain is
+    # caught by the static diff inspection in inspect_diff(), not here.
+    print("  [test] Stage 2/3: p3-dft property tests (release)...", flush=True)
     rc2, out2 = run_cmd(
+        ["cargo", "test", "-p", "p3-dft", "--features", "p3-dft/parallel",
+         "--release", "--", "--quiet"],
+        timeout=300,
+    )
+    if rc2 != 0:
+        print(f"  [test] FAILED (p3-dft release):\n{out2[-800:]}", flush=True)
+        return False, out1 + out2
+
+    # Stage 3: end-to-end prove+verify
+    print("  [test] Stage 3/3: p3-examples end-to-end tests...", flush=True)
+    rc3, out3 = run_cmd(
         ["cargo", "test", "-p", "p3-examples", "--", "--quiet"],
         timeout=600,
     )
-    passed = (rc2 == 0)
+    passed = (rc3 == 0)
     if passed:
         print("  [test] All tests passed.", flush=True)
     else:
-        print(f"  [test] FAILED (p3-examples):\n{out2[-800:]}", flush=True)
-    return passed, out1 + out2
+        print(f"  [test] FAILED (p3-examples):\n{out3[-800:]}", flush=True)
+    return passed, out1 + out2 + out3
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -375,6 +398,30 @@ def run_tests():
 def git_diff():
     _, diff = run_cmd(["git", "diff", "HEAD"])
     return diff
+
+
+def inspect_diff(diff: str) -> dict:
+    """
+    Static analysis of a candidate diff before testing.
+
+    Returns:
+      forbidden  — list of added lines matching FORBIDDEN_DIFF_PATTERNS.
+                   Non-empty → hard reject (no tests run).
+      unsafe_count — number of added lines introducing 'unsafe'.
+                   Logged as a soft audit trail; does not block acceptance.
+    """
+    forbidden = []
+    unsafe_count = 0
+    for line in diff.splitlines():
+        # Only inspect added lines; skip diff headers (+++).
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        for pattern in FORBIDDEN_DIFF_PATTERNS:
+            if re.search(pattern, line):
+                forbidden.append(line.strip())
+        if re.search(r"\bunsafe\b", line):
+            unsafe_count += 1
+    return {"forbidden": forbidden, "unsafe_count": unsafe_count}
 
 
 def git_commit(message: str) -> bool:
@@ -630,6 +677,27 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
     return bool(files_written), idea, thinking_summary
 
 
+# ── Provenance ────────────────────────────────────────────────────────────────
+
+def collect_provenance() -> dict:
+    """Collect environment versions for auditability. Logged once at startup."""
+    _, rustc_ver  = run_cmd(["rustc", "--version"])
+    _, p3_commit  = run_cmd(["git", "rev-parse", "HEAD"], cwd=REPO_DIR)
+    _, p3_branch  = run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=REPO_DIR)
+    _, uname      = run_cmd(["uname", "-r"])
+    _, cpu_model  = run_cmd(["bash", "-c",
+        "grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 || sysctl -n machdep.cpu.brand_string 2>/dev/null"])
+    return {
+        "anthropic_version": anthropic.__version__,
+        "rustc_version":     rustc_ver.strip(),
+        "plonky3_commit":    p3_commit.strip(),
+        "plonky3_branch":    p3_branch.strip(),
+        "kernel":            uname.strip(),
+        "cpu_model":         cpu_model.strip(),
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -648,6 +716,14 @@ def main():
         sys.exit(1)
 
     client = anthropic.Anthropic(api_key=api_key)
+
+    # Log provenance once at startup
+    prov = collect_provenance()
+    prov_file = ROOT_DIR / "run_provenance.json"
+    prov_file.write_text(json.dumps(prov, indent=2))
+    print(f"[init] Provenance: rustc={prov['rustc_version']} | "
+          f"p3={prov['plonky3_commit'][:12]} ({prov['plonky3_branch']}) | "
+          f"anthropic={prov['anthropic_version']}")
 
     if args.start_fresh:
         print("[init] --start-fresh: reverting git state...")
@@ -742,6 +818,7 @@ def main():
             "agent_thinking": thinking_summary,
             "diff": "",
             "diff_summary": "",
+            "diff_unsafe_count": 0,
             "agent_time_s": agent_secs,
         }
 
@@ -755,6 +832,19 @@ def main():
         diff = git_diff()
         exp["diff"] = diff
         exp["diff_summary"] = diff[:600] if diff else "(empty diff)"
+
+        # Static diff inspection — hard reject on forbidden patterns, log unsafe
+        diff_flags = inspect_diff(diff)
+        exp["diff_unsafe_count"] = diff_flags["unsafe_count"]
+        if diff_flags["unsafe_count"] > 0:
+            print(f"  [diff] WARNING: {diff_flags['unsafe_count']} new unsafe line(s) in diff — logged.", flush=True)
+        if diff_flags["forbidden"]:
+            exp["reason"] = "forbidden_pattern"
+            print(f"[loop] REJECTED — diff contains forbidden pattern(s): {diff_flags['forbidden']}", flush=True)
+            git_revert()
+            log_experiment(exp)
+            experiments.append(exp)
+            continue
 
         # 3. Correctness check
         tests_passed, test_out = run_tests()
