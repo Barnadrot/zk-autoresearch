@@ -1,4 +1,5 @@
 # Target repo — clone separately, add to gitignore before pushing
+Plonky3/
 
 # Python
 .venv/
@@ -7,7 +8,15 @@ __pycache__/
 
 # Added post round 2
 changelog.md
+changelog_target.md
 improvement_ideas.md
+agent_context.md
+tests_guidance.md
+
+# Experiment logs (gitignored — table.md and *_kept/full.jsonl are tracked)
+experiment_logs/**/experiment_report.md
+experiment_logs/**/terminal.log
+experiment_logs/**/*with_bug*.jsonl
 
 # Runtime files
 experiments.jsonl

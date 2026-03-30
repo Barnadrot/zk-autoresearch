@@ -55,9 +55,14 @@ BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 WRITABLE = ["dft/src/", "baby-bear/src/"]
 
+# Recovery and dry-spell limits
+MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
+DRY_SPELL_MIN_ITERS = 20  # don't auto-stop before this many iterations
+
 # Files agent may READ (prefix match, relative to REPO_DIR)
 READABLE = WRITABLE + ["CLAUDE.md", "dft/Cargo.toml", "dft/benches/",
-                        "baby-bear/Cargo.toml", "field/src/"]
+                        "baby-bear/Cargo.toml", "field/src/",
+                        "monty-31/src/x86_64_avx512/"]
 
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
@@ -124,6 +129,23 @@ TOOLS = [
             "required": ["path"]
         }
     },
+    {
+        "name": "read_experiment_diff",
+        "description": (
+            "Read the full code diff from a previous experiment iteration. "
+            "Use this to inspect exactly what a kept or near-miss change did before extending or building on it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "iteration": {
+                    "type": "integer",
+                    "description": "Iteration number to retrieve the diff for (e.g. 1, 8)"
+                }
+            },
+            "required": ["iteration"]
+        }
+    },
 ]
 
 
@@ -145,6 +167,26 @@ def tool_read_file(path: str, start_line: int | None = None, end_line: int | Non
             header = f"// {path} ({total} lines)\n"
         return header + "".join(lines)
     return f"ERROR: '{path}' is not in the readable paths list."
+
+
+def tool_read_experiment_diff(iteration: int) -> str:
+    if not LOG_FILE.exists():
+        return "ERROR: No experiments log found."
+    with open(LOG_FILE, encoding="utf-8") as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+                if e.get("iteration") == iteration:
+                    diff = e.get("diff", "")
+                    idea = e.get("agent_idea", "?")
+                    kept = "KEPT" if e.get("kept") else "REVERTED"
+                    pct = e.get("improvement_pct", 0)
+                    if not diff:
+                        return f"Iteration {iteration} [{kept} {pct:+.2f}%]: {idea}\n\n(no diff recorded)"
+                    return f"Iteration {iteration} [{kept} {pct:+.2f}%]: {idea}\n\n{diff}"
+            except json.JSONDecodeError:
+                continue
+    return f"ERROR: Iteration {iteration} not found in experiment log."
 
 
 def tool_write_file(path: str, content: str) -> str:
@@ -183,6 +225,11 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not path:
             return "ERROR: list_dir requires a 'path' argument."
         return tool_list_dir(path)
+    elif name == "read_experiment_diff":
+        iteration = inputs.get("iteration")
+        if iteration is None:
+            return "ERROR: read_experiment_diff requires an 'iteration' argument."
+        return tool_read_experiment_diff(int(iteration))
     return f"ERROR: Unknown tool '{name}'"
 
 
@@ -351,6 +398,7 @@ def format_history(experiments: list) -> str:
     kept = [e for e in experiments if e.get("kept")]
     if kept:
         lines.append("=== ALL KEPT IMPROVEMENTS (cumulative) ===")
+        lines.append("  (use read_experiment_diff(N) to see the exact code change for any iteration)")
         for e in kept:
             delta = f"{e.get('improvement_pct', 0):+.2f}%"
             lines.append(f"  #{e['iteration']:03d} {delta:>8} — {e.get('agent_idea','?')}")
@@ -429,9 +477,13 @@ Process:
 3. Make exactly one logical change using `write_file`
 4. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
 
-**Simplicity criterion**: A tiny improvement that adds ugly complexity is not worth it. Removing code and getting equal or better results is a great outcome. Weigh complexity cost against improvement magnitude.
+**Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%. There is no reward for cleaner code, reduced complexity, or architectural elegance unless it moves the benchmark number.
 
-**You must always make a change.** If your first idea seems risky, try a simpler variant. If you feel stuck, consider different angles: memory layout, twiddle factor access patterns, parallelism granularity, SIMD hints, loop restructuring, precomputation, special-casing boundary conditions. Try combining near-misses from the history. There is always something to try — do not give up.
+**Slice large ideas**: If your idea requires changing more than ~50 lines, find the minimal targeted version first. A small near-miss on the right function is more valuable than a large rewrite — it gives the next iteration a precise target to build on. If a large idea is the only option, note it as IDEA: and write the smallest correct slice of it.
+
+**Extend kept changes**: Look at the kept improvements in the history. Ask: is there a symmetric path, related function, or adjacent layer where the same technique applies? The most reliable improvements come from extending patterns that already work.
+
+**You must always make a change.** If your first idea seems risky, try a simpler targeted variant. If you feel stuck, consider: memory layout, twiddle factor access patterns, parallelism granularity, SIMD hints, loop restructuring, precomputation, special-casing boundary conditions. There is always something to try — do not give up.
 """
 
 
@@ -447,6 +499,7 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
     idea = "(no IDEA: line found)"
     all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
     read_call_count = 0  # counts read_file + list_dir calls only
+    recovery_count = 0
 
     while True:
         response = client.messages.create(
@@ -473,7 +526,10 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    result = execute_tool(block.name, block.input)
+                    try:
+                        result = execute_tool(block.name, block.input)
+                    except Exception as exc:
+                        result = f"ERROR: Tool call raised an exception: {exc}. Fix your arguments and retry."
                     if block.name == "read_file":
                         path = block.input.get("path", "?")
                         sl = block.input.get("start_line")
@@ -483,6 +539,8 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                         print(f"  [tool] read_file → {path}{range_str} ({line_count} lines)", flush=True)
                     elif block.name == "list_dir":
                         print(f"  [tool] list_dir  → {block.input.get('path', '?')}", flush=True)
+                    elif block.name == "read_experiment_diff":
+                        print(f"  [tool] read_experiment_diff → iter {block.input.get('iteration', '?')}", flush=True)
                     elif block.name == "write_file":
                         path = block.input.get("path", "?")
                         if result.startswith("OK:"):
@@ -505,18 +563,23 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
         elif response.stop_reason == "max_tokens" and not files_written:
-            # Ran out of tokens before writing — give one recovery chance.
+            # Ran out of tokens before writing — give up to MAX_RECOVERY chances.
             # Must provide tool_result for any tool_use blocks in the truncated response.
-            print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt.", flush=True)
+            recovery_count += 1
+            if recovery_count > MAX_RECOVERY:
+                print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts without writing. Stopping.", flush=True)
+                break
+            print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt ({recovery_count}/{MAX_RECOVERY}).", flush=True)
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
+            budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
             if tool_use_blocks:
                 # Satisfy the API requirement: every tool_use needs a tool_result
                 recovery_content = [
                     {
                         "type": "tool_result",
                         "tool_use_id": b.id,
-                        "content": "Response was cut off. Please write your change now using write_file. End your final message with: IDEA: <one sentence describing what you changed>",
+                        "content": f"Response was cut off. {budget_note} Write your change now using write_file. End with: IDEA: <one sentence>",
                     }
                     for b in tool_use_blocks
                 ]
@@ -524,7 +587,7 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                 recovery_content = [{
                     "type": "text",
                     "text": (
-                        "Your response was cut off before you wrote any file. "
+                        f"Your response was cut off before you wrote any file. {budget_note} "
                         "You have already read enough context. "
                         "Now write your change immediately using write_file — "
                         "be concise, no lengthy preamble. "
@@ -549,6 +612,8 @@ def main():
                         help=f"Max iterations (default {MAX_ITERATIONS})")
     parser.add_argument("--start-fresh", action="store_true",
                         help="Reset git state + rename old log before starting")
+    parser.add_argument("--dry-spell", type=int, default=15,
+                        help="Auto-stop after N consecutive non-improvements (default 15)")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -561,6 +626,9 @@ def main():
     if args.start_fresh:
         print("[init] --start-fresh: reverting git state...")
         git_revert()
+        if STOP_FILE.exists():
+            STOP_FILE.unlink()
+            print("[init] Removed stale STOP file.")
         if LOG_FILE.exists():
             backup = LOG_FILE.with_suffix(f".{int(time.time())}.bak.jsonl")
             LOG_FILE.rename(backup)
@@ -575,6 +643,15 @@ def main():
         sys.exit(1)
     print(f"[init] Baseline: {baseline_ns / 1e6:.2f}ms\n")
 
+    # Pre-flight correctness check — catch infra issues before spending any tokens
+    print("[init] Running pre-flight tests...")
+    tests_ok, test_out = run_tests()
+    if not tests_ok:
+        print("ERROR: Tests failed at startup. Fix the repo before running the loop.", file=sys.stderr)
+        print(test_out[-1500:], file=sys.stderr)
+        sys.exit(1)
+    print("[init] Pre-flight tests passed.\n")
+
     best_ns = baseline_ns
     experiments = load_experiments()
     # On resume, use the best historical score if it's better than the fresh measurement
@@ -586,8 +663,11 @@ def main():
             print(f"[init] Resuming with historical best: {best_ns/1e6:.2f}ms")
     start_iteration = len(experiments)
 
+    dry_spell = args.dry_spell
+
     print(f"[init] Starting at iteration {start_iteration + 1}, max {args.max_iter}")
     print(f"[init] Log file: {LOG_FILE}")
+    print(f"[init] Auto-stop after {dry_spell} consecutive non-improvements (after iter {DRY_SPELL_MIN_ITERS}).")
     print(f"[init] Touch '{STOP_FILE.name}' in this directory to stop gracefully.\n")
 
     # ── Main loop ─────────────────────────────────────────────────────────────
@@ -598,6 +678,13 @@ def main():
             print(f"\n[loop] STOP file detected. Exiting after {iteration - 1} iterations.")
             STOP_FILE.unlink()
             break
+
+        # Auto-stop on dry spell
+        if iteration > DRY_SPELL_MIN_ITERS and len(experiments) >= dry_spell:
+            recent = experiments[-dry_spell:]
+            if all(not e.get("kept") for e in recent):
+                print(f"\n[loop] No improvement in last {dry_spell} iterations. Auto-stopping.")
+                break
 
         ts = datetime.now(timezone.utc).isoformat()
         print(f"\n{'=' * 65}", flush=True)
