@@ -20,6 +20,7 @@ experiment_logs/**/*with_bug*.jsonl
 
 # Runtime files
 experiments.jsonl
+run_provenance.json
 *.bak.jsonl
 bench_debug.txt
 STOP

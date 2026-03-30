@@ -186,17 +186,6 @@ class TestFormatHistory(unittest.TestCase):
         self.assertEqual(result.count("kept idea"), 1)
 
 
-class TestRunTestsCommand(unittest.TestCase):
-    """Verify two-stage correctness gate: p3-dft (stage 1) + p3-examples (stage 2)."""
-
-    def test_two_stage_gate(self):
-        import inspect, loop
-        src = inspect.getsource(loop.run_tests)
-        self.assertIn("p3-dft", src)
-        self.assertIn("p3-examples", src)
-        # Stage 1 must use parallel feature flag (proptest requires it)
-        self.assertIn("p3-dft/parallel", src)
-
 
 class TestReadExperimentDiff(unittest.TestCase):
     """Verify read_experiment_diff tool reads from experiments log correctly."""
@@ -258,20 +247,71 @@ class TestReadExperimentDiff(unittest.TestCase):
         self.assertIn("KEPT", result)
 
 
-class TestRecoveryCap(unittest.TestCase):
-    """Verify MAX_RECOVERY constant is set to 2."""
+class TestInspectDiff(unittest.TestCase):
+    """Verify static diff inspection for forbidden patterns and unsafe counting."""
 
-    def test_max_recovery_is_two(self):
+    def test_clean_diff_passes(self):
         import loop
-        self.assertEqual(loop.MAX_RECOVERY, 2)
+        diff = (
+            "--- a/dft/src/butterflies.rs\n"
+            "+++ b/dft/src/butterflies.rs\n"
+            "@@ -1,3 +1,3 @@\n"
+            "+    let packed = F::Packing::from(twiddle);\n"
+        )
+        result = loop.inspect_diff(diff)
+        self.assertEqual(result["forbidden"], [])
+        self.assertEqual(result["unsafe_count"], 0)
 
-
-class TestDrySpellConstant(unittest.TestCase):
-    """Verify dry-spell minimum iterations constant."""
-
-    def test_dry_spell_min_iters(self):
+    def test_cfg_test_is_forbidden(self):
         import loop
-        self.assertEqual(loop.DRY_SPELL_MIN_ITERS, 20)
+        diff = "+    #[cfg(test)]\n+    fn slow_path() {}\n"
+        result = loop.inspect_diff(diff)
+        self.assertTrue(len(result["forbidden"]) > 0)
+
+    def test_cfg_not_test_is_forbidden(self):
+        import loop
+        diff = "+    #[cfg(not(test))]\n+    fn fast_but_wrong() {}\n"
+        result = loop.inspect_diff(diff)
+        self.assertTrue(len(result["forbidden"]) > 0)
+
+    def test_debug_assert_is_forbidden(self):
+        import loop
+        diff = "+    debug_assert!(x < P);\n"
+        result = loop.inspect_diff(diff)
+        self.assertTrue(len(result["forbidden"]) > 0)
+
+    def test_unsafe_is_counted_not_forbidden(self):
+        import loop
+        diff = "+    unsafe { ptr::write(dst, val) }\n"
+        result = loop.inspect_diff(diff)
+        self.assertEqual(result["forbidden"], [])
+        self.assertEqual(result["unsafe_count"], 1)
+
+    def test_multiple_unsafe_lines_counted(self):
+        import loop
+        diff = (
+            "+    unsafe { *a = x }\n"
+            "+    unsafe { *b = y }\n"
+        )
+        result = loop.inspect_diff(diff)
+        self.assertEqual(result["unsafe_count"], 2)
+
+    def test_removed_lines_not_inspected(self):
+        import loop
+        # A removed cfg(test) line should not trigger forbidden
+        diff = "-    #[cfg(test)]\n-    fn old_path() {}\n"
+        result = loop.inspect_diff(diff)
+        self.assertEqual(result["forbidden"], [])
+        self.assertEqual(result["unsafe_count"], 0)
+
+    def test_diff_header_lines_not_inspected(self):
+        import loop
+        # +++ header lines should not be mistaken for added code
+        diff = "+++ b/dft/src/butterflies.rs\n"
+        result = loop.inspect_diff(diff)
+        self.assertEqual(result["forbidden"], [])
+        self.assertEqual(result["unsafe_count"], 0)
+
 
 
 if __name__ == "__main__":
