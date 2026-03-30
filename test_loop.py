@@ -74,6 +74,11 @@ class TestReadFile(unittest.TestCase):
         result = loop.tool_read_file("fri/src/secret.rs")
         self.assertTrue(result.startswith("ERROR:"))
 
+    def test_path_traversal_blocked(self):
+        import loop
+        result = loop.tool_read_file("dft/src/../../outside.rs")
+        self.assertTrue(result.startswith("ERROR:"))
+
 
 class TestExecuteToolCrashFix(unittest.TestCase):
     """Verify missing args return errors instead of raising KeyError."""
