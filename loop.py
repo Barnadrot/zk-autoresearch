@@ -44,6 +44,7 @@ MODEL          = "claude-sonnet-4-6"
 MAX_TOKENS     = 20000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
+MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 
 # Cargo bench filter — targets exactly one benchmark (subprocess passes <> literally, no shell)
 # BabyBear's pretty_name is MontyField31<BabyBearParameters> — confirmed from bench output
@@ -153,7 +154,9 @@ TOOLS = [
 
 def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
     if any(path.startswith(p) for p in READABLE) or path == "CLAUDE.md":
-        full = REPO_DIR / path
+        full = (REPO_DIR / path).resolve()
+        if not str(full).startswith(str(REPO_DIR.resolve())):
+            return f"ERROR: Path traversal detected: {path}"
         if not full.exists() or not full.is_file():
             return f"ERROR: File not found: {path}"
         lines = full.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -191,7 +194,9 @@ def tool_read_experiment_diff(iteration: int) -> str:
 
 def tool_write_file(path: str, content: str) -> str:
     if any(path.startswith(p) for p in WRITABLE):
-        full = REPO_DIR / path
+        full = (REPO_DIR / path).resolve()
+        if not str(full).startswith(str(REPO_DIR.resolve())):
+            return f"ERROR: Path traversal detected: {path}"
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content, encoding="utf-8")
         return f"OK: wrote {len(content):,} bytes to {path}"
@@ -236,14 +241,17 @@ def execute_tool(name: str, inputs: dict) -> str:
 # ── Subprocess helpers ────────────────────────────────────────────────────────
 
 def run_cmd(cmd, cwd=None, timeout=600, extra_env=None):
-    """Run a subprocess. Returns (returncode, stdout+stderr)."""
+    """Run a subprocess. Returns (returncode, stdout+stderr). Never raises."""
     env = {**os.environ, **(extra_env or {})}
-    result = subprocess.run(
-        cmd, cwd=cwd or REPO_DIR,
-        capture_output=True, text=True,
-        timeout=timeout, env=env
-    )
-    return result.returncode, result.stdout + result.stderr
+    try:
+        result = subprocess.run(
+            cmd, cwd=cwd or REPO_DIR,
+            capture_output=True, text=True,
+            timeout=timeout, env=env
+        )
+        return result.returncode, result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return 1, f"ERROR: Command timed out after {timeout}s: {' '.join(str(c) for c in cmd)}"
 
 
 def run_bench():
@@ -257,7 +265,7 @@ def run_bench():
     rc, out = run_cmd(
         ["cargo", "bench", "-p", "p3-dft", "--bench", "fft",
          "--features", "p3-dft/parallel",
-         "--", BENCH_FILTER, "--noplot"],
+         "--", BENCH_FILTER, "--noplot", "--measurement-time", "35"],
         timeout=600,
         extra_env={"RAYON_NUM_THREADS": "8", "NO_COLOR": "1"},
     )
@@ -270,9 +278,8 @@ def run_bench():
         print(f"  [bench] FAILED:\n{snippet}", flush=True)
         return None, out
 
-    # Parse criterion output: "time:   [lower  MEDIAN  upper]"
-    # Units may be: ns, µs/us, ms, s
-    median_ns, matched_name = _parse_criterion_median(out)
+    # Parse criterion output: "time:   [lower  MEDIAN  upper]" + p-value from change: line
+    lower_ns, median_ns, upper_ns, p_value, matched_name = _parse_criterion_output(out)
     if median_ns is None:
         debug_file = ROOT_DIR / "bench_debug.txt"
         debug_file.write_text(out, encoding="utf-8")
@@ -282,7 +289,9 @@ def run_bench():
             if "Radix2DitParallel" in line or ("time:" in line and "[" in line):
                 print(f"    {repr(line)}", flush=True)
     else:
-        print(f"  [bench] {matched_name}: {median_ns/1e6:.2f}ms", flush=True)
+        ci_str = f"  CI=[{lower_ns/1e6:.2f}ms, {upper_ns/1e6:.2f}ms]" if lower_ns else ""
+        p_str  = f"  p={p_value:.2f}" if p_value is not None else ""
+        print(f"  [bench] {matched_name}: {median_ns/1e6:.2f}ms{ci_str}{p_str}", flush=True)
 
     return median_ns, out
 
@@ -291,29 +300,41 @@ def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*[mK]", "", text)
 
 
-def _parse_criterion_median(output: str) -> tuple[float | None, str]:
+def _parse_criterion_output(output: str) -> tuple[float | None, float | None, float | None, float | None, str]:
     """
-    Find the benchmark line matching BENCH_MUST_CONTAIN, return (median_ns, name).
-    Searches for a name line followed by a time: line.
+    Find the benchmark line matching BENCH_MUST_CONTAIN.
+    Returns (lower_ns, median_ns, upper_ns, p_value, name).
+    All values may be None if not found. p_value is None if no baseline comparison exists.
     """
     unit_map = {"ns": 1.0, "µs": 1e3, "us": 1e3, "ms": 1e6, "s": 1e9}
     output = _strip_ansi(output)
 
     current_name = ""
+    lower_ns = median_ns = upper_ns = p_value = None
+
     for line in output.splitlines():
         stripped = line.strip()
-        # Criterion prints the benchmark name on its own line before the time: line
         if all(kw in stripped for kw in BENCH_MUST_CONTAIN) and "time:" not in stripped:
             current_name = stripped
         if current_name:
+            # Parse: time:   [lower  MEDIAN  upper]
             m = re.search(
-                r"time:\s+\[[\d.]+\s+\S+\s+([\d.]+)\s+(\S+)\s+[\d.]+\s+\S+\]",
+                r"time:\s+\[([\d.]+)\s+(\S+)\s+([\d.]+)\s+(\S+)\s+([\d.]+)\s+(\S+)\]",
                 line
             )
-            if m:
-                val, unit = float(m.group(1)), m.group(2)
-                return val * unit_map.get(unit, 1.0), current_name
-    return None, ""
+            if m and median_ns is None:
+                lo, lo_u = float(m.group(1)), m.group(2)
+                med, med_u = float(m.group(3)), m.group(4)
+                hi, hi_u  = float(m.group(5)), m.group(6)
+                lower_ns  = lo  * unit_map.get(lo_u,  1.0)
+                median_ns = med * unit_map.get(med_u, 1.0)
+                upper_ns  = hi  * unit_map.get(hi_u,  1.0)
+            # Parse: change: [...] (p = 0.03 < 0.05)
+            mp = re.search(r"p\s*=\s*([\d.]+)", line)
+            if mp and p_value is None:
+                p_value = float(mp.group(1))
+
+    return lower_ns, median_ns, upper_ns, p_value, current_name
 
 
 def run_tests():
@@ -356,9 +377,14 @@ def git_diff():
     return diff
 
 
-def git_commit(message: str):
+def git_commit(message: str) -> bool:
+    """Stage and commit all changes. Returns False if nothing to commit."""
     run_cmd(["git", "add", "-A"])
-    run_cmd(["git", "commit", "-m", message, "--allow-empty"])
+    _, status = run_cmd(["git", "status", "--porcelain"])
+    if not status.strip():
+        return False
+    run_cmd(["git", "commit", "-m", message])
+    return True
 
 
 def git_revert():
@@ -755,17 +781,27 @@ def main():
         exp["improvement_pct"] = round(improvement_pct, 4)
 
         # 5. Keep or revert
-        if improvement_pct > 0:
-            exp["kept"] = True
-            exp["reason"] = "improvement"
-            prev_best = best_ns
-            best_ns = score_ns
-            git_commit(
+        if improvement_pct > 0 and improvement_pct < MIN_IMPROVEMENT_PCT:
+            exp["kept"] = False
+            exp["reason"] = "below_threshold"
+            git_revert()
+            print(f"[loop] REVERTED — improvement {improvement_pct:+.2f}% below noise threshold ({MIN_IMPROVEMENT_PCT}%).", flush=True)
+        elif improvement_pct > 0:
+            committed = git_commit(
                 f"exp-{iteration:03d}: {improvement_pct:+.2f}% "
-                f"({score_ns / 1e6:.2f}ms <- {prev_best / 1e6:.2f}ms)\n\n"
+                f"({score_ns / 1e6:.2f}ms <- {best_ns / 1e6:.2f}ms)\n\n"
                 f"{idea}"
             )
-            print(f"[loop] KEPT -{improvement_pct:.2f}% faster — committed.", flush=True)
+            if not committed:
+                exp["kept"] = False
+                exp["reason"] = "no_changes"
+                print("[loop] Agent reported changes but diff is empty — skipping.", flush=True)
+            else:
+                exp["kept"] = True
+                exp["reason"] = "improvement"
+                prev_best = best_ns
+                best_ns = score_ns
+                print(f"[loop] KEPT -{improvement_pct:.2f}% faster — committed.", flush=True)
         else:
             exp["reason"] = "regression"
             git_revert()
