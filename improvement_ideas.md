@@ -1184,3 +1184,88 @@ the `read_experiment_diff` tool and CLAUDE.md dead-end groupings.
 
 **Priority:** Medium — implement after streaming. High long-term value for search space
 mapping across Opus experiments.
+
+---
+
+## Define explicit AIR correctness model (issue #3 — elevated to High)
+
+**Context:** Feedback from ZK systems engineer (post round 2):
+
+> "In Plonky3 specifically, you're not just validating outputs, you're validating that
+> constraints still define the same system. And since it's all AIR-based, a lot of failure
+> modes don't show up as test failures, they show up as unconstrained degrees of freedom."
+
+**The gap:** `cargo test` + `p3-examples` prove/verify validates that the system is
+self-consistent. It does NOT validate that the AIR constraints still define the same
+mathematical object. A change that removes a load-bearing degree of freedom can pass all
+tests and produce correct-looking outputs while being cryptographically unsound.
+
+**Current mitigation:** CLAUDE.md requires "bitwise-identical to Radix2Dit for identical
+inputs" — this is the right invariant, and the property tests in `dft/tests/testing.rs`
+enforce it. This is stronger than most optimizers would check.
+
+**Remaining gap:** The property tests cover the DFT computation itself. They do not cover:
+- That the proof system's constraint polynomial still has the same root structure
+- That optimized butterfly arithmetic preserves field element validity under all inputs
+- Edge cases in Montgomery reduction that could produce out-of-range values in release
+
+**Suggested fix:** Before expanding targets beyond DFT arithmetic, explicitly document
+the correctness surface as a contract in CLAUDE.md:
+```
+Correctness contract: for all inputs, optimized coset_lde_batch output must be
+bitwise-identical to unoptimized Radix2Dit output. This is the complete specification.
+Any change that passes p3-dft property tests satisfies this contract.
+```
+
+**The "invariants harder to violate" direction** (engineer's framing): rather than making
+the agent more careful, shrink the writable surface and deepen the correctness gate. The
+current file boundary (dft/src/, baby-bear/src/) is correct. The correctness gate is
+adequate for DFT targets. Both need revisiting before targeting proof system components.
+
+**Priority:** High before any expansion beyond DFT/butterfly targets. Current round 3
+scope (butterflies.rs, baby-bear AVX512) is safe within existing correctness gate.
+
+---
+
+## Server smoke test / replay mode (loop.py change)
+
+**Context:** Infrastructure bugs have consistently surfaced during the first few live
+iterations on the server — the proptest missing from Cargo.toml (round 2a, 23 wasted
+iterations), PATH issues, bench parsing failures. The local unit tests cover logic but
+can't catch server-specific environment problems (Rust toolchain, rayon threads, file
+paths, git config).
+
+**Problem:** Right now the first real test of the server environment IS the production
+run. Bugs cost real iterations and API spend.
+
+**Idea — `--smoke-test` mode:**
+Run the full loop pipeline on the server without the Claude API. Instead of calling the
+agent, replay a known-good diff from a previous experiment (e.g. a kept improvement from
+`experiments.jsonl`). This exercises the entire stack:
+- `git apply` of the diff
+- `run_tests()` — full two-stage correctness gate
+- `run_bench()` — full benchmark run + CI parsing
+- `git_commit()` / `git_revert()` — acceptance logic
+- `log_experiment()` — jsonl write
+
+**Implementation sketch:**
+```python
+# python loop.py --smoke-test --replay-iter 1
+# Loads diff from experiments.jsonl iter 1, applies it, runs full pipeline,
+# reverts, reports pass/fail. No API call, no real experiment recorded.
+```
+
+If the known-good diff passes tests and bench, the server environment is validated.
+If it fails, the problem is infrastructure not the agent — diagnose before running.
+
+**Alternative — `--dry-run` (simpler):**
+Skip the API call entirely, use a canned no-op write (e.g. add a comment to a file),
+run the full pipeline, then revert. Less rigorous than replay but faster to implement
+and still catches env/path/git issues.
+
+**Value:** Replaces "run 5 live iterations to find the bug" with a 10-minute pre-flight
+that costs $0 in API tokens. The pre-flight test gate we added (round 2) catches
+compilation bugs; this catches everything else.
+
+**Priority:** Medium — implement before Opus run where iteration cost is significantly
+higher. A failed Opus iteration is ~10x more expensive than a Sonnet one.
