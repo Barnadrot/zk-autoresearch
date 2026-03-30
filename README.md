@@ -46,7 +46,7 @@ All results statistically significant (p=0.00).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Each iteration takes ~2–4 min (compile + test + bench). Expected throughput: **30–50 experiments/day**.
+Each iteration takes ~10 min (compile + test + bench). Expected throughput: **144 experiments/day**.
 
 ---
 
@@ -98,8 +98,9 @@ cd Plonky3 && cargo bench -p p3-dft --features p3-dft/parallel --bench fft -- "c
 ## Running the Loop
 
 ```bash
-# On server, in a tmux session so it survives SSH disconnect
-tmux new -s autoresearch
+# On server, create a tmux session with terminal logging enabled
+tmux new-session -s autoresearch \; pipe-pane -o 'cat >> ~/zk_autoresearch/terminal.log'
+
 cd ~/zk_autoresearch
 source .venv/bin/activate
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -111,6 +112,11 @@ python3 loop.py --start-fresh      # reset git + rename old log, then run
 # Detach from tmux (loop keeps running):  Ctrl+B  then  D
 # Reattach:  tmux attach -t autoresearch
 # List sessions: tmux ls
+
+# Enable logging in an existing session (if not started with the command above):
+#   Ctrl+B then :  pipe-pane -o 'cat >> ~/zk_autoresearch/terminal.log'
+# View live log from another SSH session:
+#   tail -f ~/zk_autoresearch/terminal.log
 ```
 
 **Graceful stop** (finishes the current iteration, then exits):

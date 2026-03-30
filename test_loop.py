@@ -182,14 +182,91 @@ class TestFormatHistory(unittest.TestCase):
 
 
 class TestRunTestsCommand(unittest.TestCase):
-    """Verify correctness gate uses p3-examples not p3-dft."""
+    """Verify two-stage correctness gate: p3-dft (stage 1) + p3-examples (stage 2)."""
 
-    def test_command_uses_p3_examples(self):
+    def test_two_stage_gate(self):
         import inspect, loop
         src = inspect.getsource(loop.run_tests)
+        self.assertIn("p3-dft", src)
         self.assertIn("p3-examples", src)
-        self.assertNotIn("p3-dft", src)
-        self.assertNotIn("p3-dft/parallel", src)
+        # Stage 1 must use parallel feature flag (proptest requires it)
+        self.assertIn("p3-dft/parallel", src)
+
+
+class TestReadExperimentDiff(unittest.TestCase):
+    """Verify read_experiment_diff tool reads from experiments log correctly."""
+
+    def setUp(self):
+        import loop
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_log = loop.LOG_FILE
+        loop.LOG_FILE = Path(self.tmp.name) / "experiments.jsonl"
+
+    def tearDown(self):
+        import loop
+        loop.LOG_FILE = self._orig_log
+        self.tmp.cleanup()
+
+    def test_found(self):
+        import json, loop
+        loop.LOG_FILE.write_text(
+            json.dumps({"iteration": 5, "kept": False, "improvement_pct": -0.97,
+                        "agent_idea": "forward twiddle slice", "diff": "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new"})
+            + "\n"
+        )
+        result = loop.tool_read_experiment_diff(5)
+        self.assertIn("REVERTED", result)
+        self.assertIn("forward twiddle slice", result)
+        self.assertIn("--- a", result)
+
+    def test_not_found(self):
+        import loop
+        loop.LOG_FILE.write_text("")
+        result = loop.tool_read_experiment_diff(99)
+        self.assertTrue(result.startswith("ERROR:"))
+
+    def test_no_log_file(self):
+        import loop
+        # LOG_FILE does not exist
+        result = loop.tool_read_experiment_diff(1)
+        self.assertTrue(result.startswith("ERROR:"))
+
+    def test_no_diff_recorded(self):
+        import json, loop
+        loop.LOG_FILE.write_text(
+            json.dumps({"iteration": 3, "kept": True, "improvement_pct": 0.45,
+                        "agent_idea": "pre-broadcast", "diff": ""})
+            + "\n"
+        )
+        result = loop.tool_read_experiment_diff(3)
+        self.assertIn("KEPT", result)
+        self.assertIn("no diff recorded", result)
+
+    def test_execute_tool_dispatch(self):
+        import json, loop
+        loop.LOG_FILE.write_text(
+            json.dumps({"iteration": 2, "kept": True, "improvement_pct": 0.38,
+                        "agent_idea": "some idea", "diff": "+foo"})
+            + "\n"
+        )
+        result = loop.execute_tool("read_experiment_diff", {"iteration": 2})
+        self.assertIn("KEPT", result)
+
+
+class TestRecoveryCap(unittest.TestCase):
+    """Verify MAX_RECOVERY constant is set to 2."""
+
+    def test_max_recovery_is_two(self):
+        import loop
+        self.assertEqual(loop.MAX_RECOVERY, 2)
+
+
+class TestDrySpellConstant(unittest.TestCase):
+    """Verify dry-spell minimum iterations constant."""
+
+    def test_dry_spell_min_iters(self):
+        import loop
+        self.assertEqual(loop.DRY_SPELL_MIN_ITERS, 20)
 
 
 if __name__ == "__main__":
