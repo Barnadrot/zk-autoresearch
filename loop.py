@@ -60,6 +60,16 @@ BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 WRITABLE = ["dft/src/", "baby-bear/src/"]
 
+# Maps writable path prefixes to the crate whose tests cover them.
+# Update this when WRITABLE or run_tests() changes.
+TARGET_CRATE_MAP = {
+    "dft/src/":       "p3-dft",
+    "baby-bear/src/": "p3-baby-bear",
+}
+
+# Crates actively tested in run_tests(). Must be kept in sync manually.
+TESTED_CRATES = {"p3-dft", "p3-baby-bear", "p3-examples"}
+
 # Diff patterns that are never legitimate in a DFT arithmetic optimization.
 # A diff containing these is hard-rejected before testing.
 FORBIDDEN_DIFF_PATTERNS = [
@@ -369,6 +379,16 @@ def run_tests():
         print(f"  [test] FAILED (p3-dft debug):\n{out1[-800:]}", flush=True)
         return False, out1
 
+    # Stage 1.5: BabyBear field arithmetic tests
+    print("  [test] Stage 1.5/3: p3-baby-bear field tests (debug)...", flush=True)
+    rc_bb, out_bb = run_cmd(
+        ["cargo", "test", "-p", "p3-baby-bear", "--", "--quiet"],
+        timeout=120,
+    )
+    if rc_bb != 0:
+        print(f"  [test] FAILED (p3-baby-bear):\n{out_bb[-800:]}", flush=True)
+        return False, out1 + out_bb
+
     # Stage 2: same DFT tests under release profile
     # Catches debug_assertions divergence and optimisation-induced UB.
     # Note: cfg(test) is still set here; cfg(not(test)) split-brain is
@@ -394,7 +414,30 @@ def run_tests():
         print("  [test] All tests passed.", flush=True)
     else:
         print(f"  [test] FAILED (p3-examples):\n{out3[-800:]}", flush=True)
-    return passed, out1 + out2 + out3
+    return passed, out1 + out_bb + out2 + out3
+
+
+def audit_test_coverage():
+    """
+    Reads CLAUDE.md to find the Primary optimization targets, maps each to its
+    owning crate via TARGET_CRATE_MAP, and cross-references against TESTED_CRATES.
+
+    Returns a list of (path_prefix, missing_crate) tuples for any gaps found.
+    Returns an empty list if coverage is complete.
+    """
+    claude_md = CLAUDE_MD.read_text(encoding="utf-8")
+    # Extract the Primary: line, e.g. "Primary: dft/src/radix_2_dit_parallel.rs, ..."
+    primary_line = ""
+    for line in claude_md.splitlines():
+        if line.strip().startswith("Primary:"):
+            primary_line = line
+            break
+
+    gaps = []
+    for prefix, crate in TARGET_CRATE_MAP.items():
+        if prefix in primary_line and crate not in TESTED_CRATES:
+            gaps.append((prefix, crate))
+    return gaps
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -757,6 +800,20 @@ def main():
             backup = LOG_FILE.with_suffix(f".{int(time.time())}.bak.jsonl")
             LOG_FILE.rename(backup)
             print(f"[init] Old log saved to {backup.name}")
+
+    # ── Coverage audit ────────────────────────────────────────────────────────
+    gaps = audit_test_coverage()
+    prov["coverage_gaps"] = [f"{p} -> {c}" for p, c in gaps]
+    prov["coverage_gap_acknowledged"] = False
+    if gaps:
+        print("[WARNING] Test coverage gaps detected:")
+        for path, crate in gaps:
+            print(f"  {path} is a Primary target but {crate} is not in run_tests()")
+        answer = input("Proceed anyway? [y/N] ").strip().lower()
+        if answer != "y":
+            sys.exit(1)
+        prov["coverage_gap_acknowledged"] = True
+    prov_file.write_text(json.dumps(prov, indent=2))
 
     # ── Establish baseline ────────────────────────────────────────────────────
     print("\n[init] Building baseline benchmark (this compiles from scratch)...")

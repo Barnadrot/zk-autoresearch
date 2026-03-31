@@ -314,5 +314,55 @@ class TestInspectDiff(unittest.TestCase):
 
 
 
+class TestAuditTestCoverage(unittest.TestCase):
+    """Verify audit_test_coverage() detects missing crates from CLAUDE.md targets."""
+
+    def _run_audit(self, primary_line, tested_crates):
+        import loop
+        import unittest.mock as mock
+        claude_md = f"## Optimization Target\n\n{primary_line}\n"
+        fake_path = mock.MagicMock()
+        fake_path.read_text.return_value = claude_md
+        with mock.patch.object(loop, "CLAUDE_MD", fake_path), \
+             mock.patch.object(loop, "TESTED_CRATES", tested_crates):
+            return loop.audit_test_coverage()
+
+    def test_no_gaps_when_all_crates_tested(self):
+        gaps = self._run_audit(
+            "Primary: dft/src/radix_2_dit_parallel.rs, baby-bear/src/x86_64_avx512/",
+            {"p3-dft", "p3-baby-bear", "p3-examples"},
+        )
+        self.assertEqual(gaps, [])
+
+    def test_detects_missing_baby_bear(self):
+        gaps = self._run_audit(
+            "Primary: dft/src/radix_2_dit_parallel.rs, baby-bear/src/x86_64_avx512/",
+            {"p3-dft", "p3-examples"},
+        )
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("baby-bear/src/", gaps[0][0])
+        self.assertIn("p3-baby-bear", gaps[0][1])
+
+    def test_detects_missing_dft(self):
+        gaps = self._run_audit(
+            "Primary: dft/src/radix_2_dit_parallel.rs",
+            {"p3-baby-bear", "p3-examples"},
+        )
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("p3-dft", gaps[0][1])
+
+    def test_target_not_in_primary_line_ignored(self):
+        # baby-bear not in Primary line — no gap even if untested
+        gaps = self._run_audit(
+            "Primary: dft/src/radix_2_dit_parallel.rs",
+            {"p3-dft", "p3-examples"},
+        )
+        self.assertEqual(gaps, [])
+
+    def test_empty_primary_line_no_gaps(self):
+        gaps = self._run_audit("", {"p3-dft", "p3-examples"})
+        self.assertEqual(gaps, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
