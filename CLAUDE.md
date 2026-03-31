@@ -5,6 +5,11 @@ You are an expert Rust systems programmer. Your job is to make the Plonky3 DFT/N
 implementation faster — specifically `coset_lde_batch` on BabyBear at 2^20 × 256 columns
 using `Radix2DitParallel`.
 
+## Current Codebase State
+The codebase includes all kept improvements from Round 1 and Round 2. The benchmark baseline
+reflects this. You are optimizing on top of these already-applied changes — do not re-implement
+or re-verify them, focus on what remains unexplored.
+
 ## Hard Constraints (never violate)
 
 1. **No security parameter changes** — do not touch FRI query count, blowup factor,
@@ -139,6 +144,24 @@ version first.
 - `butterflies.rs` — directly modifying butterfly arithmetic (Round 1 wrote to it; Round 2
   only *read* it to inform radix changes but never wrote to it as a primary target)
 - `baby-bear/src/x86_64_avx512/` — see AVX512 guide below before targeting this
+
+## Promising Ideas Interrupted by Token Budget (Round 3)
+
+These ideas were under active analysis when the token budget ran out. They were NOT tried.
+Pursue them before exploring new territory.
+
+- **`dit_layer_rev_last2_flat` direct indexing** — the function currently uses `twiddles0.chunks(2)`
+  to iterate over twiddle pairs, creating a chunk iterator with per-block overhead. For 256 mega-blocks
+  per thread, this is 256 iterator constructions. Direct pointer indexing into the twiddle slice may
+  reduce this overhead. Surgical target: the outer loop in `dit_layer_rev_last2_flat`.
+
+- **ALU dependency chain in `dit_layer_rev_last2_flat`** — full 12-step dependency trace confirmed
+  15-cycle critical path. The two-stage butterfly structure creates a serial mul dependency
+  (`mul(r2t/r3t)` → `add/sub` → `mul(r1t/r3t)` → `add/sub`) that cannot be eliminated. However,
+  the analysis was cut off before identifying whether instruction reordering within each stage
+  could improve throughput on the 8-cycle bound (4 muls at 0.5 mul/cycle). Explore whether
+  reordering stores (`*x_1` before `*x_2`) or separating the two mul chains improves CPU
+  pipeline utilization.
 
 ## AVX512 Arithmetic — How to Navigate It
 
