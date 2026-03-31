@@ -767,13 +767,27 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
             budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
+
+            # Inject last reasoning block so agent continues its in-progress idea
+            # rather than pivoting to a safe fallback. Cap at 2000 chars — enough
+            # to capture the active idea without inflating the recovery message.
+            last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
+            thinking_context = (
+                f"\n\nYour last reasoning before the cut-off:\n\"\"\"\n{last_thinking}\n\"\"\"\n\n"
+                "Continue from exactly where you left off. Do not explore new directions."
+            ) if last_thinking else ""
+
             if tool_use_blocks:
                 # Satisfy the API requirement: every tool_use needs a tool_result
                 recovery_content = [
                     {
                         "type": "tool_result",
                         "tool_use_id": b.id,
-                        "content": f"Response was cut off. {budget_note} Write your change now using write_file. End with: IDEA: <one sentence>",
+                        "content": (
+                            f"Response was cut off.{thinking_context}\n\n"
+                            f"{budget_note} Write your change now using write_file. "
+                            "End with: IDEA: <one sentence>"
+                        ),
                     }
                     for b in tool_use_blocks
                 ]
@@ -781,8 +795,8 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                 recovery_content = [{
                     "type": "text",
                     "text": (
-                        f"Your response was cut off before you wrote any file. {budget_note} "
-                        "You have already read enough context. "
+                        f"Your response was cut off before you wrote any file.{thinking_context}\n\n"
+                        f"{budget_note} "
                         "Now write your change immediately using write_file — "
                         "be concise, no lengthy preamble. "
                         "End with: IDEA: <one sentence>"

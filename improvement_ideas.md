@@ -1269,3 +1269,29 @@ compilation bugs; this catches everything else.
 
 **Priority:** Medium — implement before Opus run where iteration cost is significantly
 higher. A failed Opus iteration is ~10x more expensive than a Sonnet one.
+
+## Fresh context at recovery prompt (loop.py change) — HIGH PRIORITY
+
+**Problem:** Recovery prompt currently appends to the full message history (~150-200k tokens
+accumulated from file reads, tool results, prior reasoning turns). The recovery agent has
+to process all of this to find its direction, and often still pivots to a safe fallback.
+
+**Idea:** At recovery time, discard the accumulated message history and start fresh with:
+1. The original initial prompt (CLAUDE.md + experiment history + task description)
+2. The last reasoning block from `all_text_blocks` as explicit context
+3. The write instruction
+
+**Why it's better:**
+- 10x cheaper input tokens (~15-20k vs 150-200k)
+- Agent isn't distracted by 150k of accumulated tool results
+- Last thinking block gives it exactly what it needs to continue
+- Surgical re-reads are cheap if it needs code context
+
+**Implementation:** Save initial prompt in a variable at iteration start. At recovery,
+rebuild `messages = [initial_prompt_msg, recovery_msg]` instead of appending.
+
+**Risk:** Agent loses within-iteration tool results — must re-read files it already read.
+Acceptable since recovery agent should do 1-2 targeted reads anyway.
+
+**Note:** Current injection of last thinking block into existing history is the first step.
+Fresh context reset is the next improvement once injection is validated.
