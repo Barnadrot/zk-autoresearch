@@ -683,13 +683,27 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
     while True:
         for _attempt in range(5):
             try:
-                _stream_ctx = client.messages.stream(
+                with client.messages.stream(
                     model=MODEL,
                     max_tokens=MAX_TOKENS,
                     tools=TOOLS,
                     messages=messages,
-                )
-                break
+                ) as stream:
+                    had_text = False
+                    for event in stream:
+                        if event.type == "content_block_delta":
+                            delta = event.delta
+                            if hasattr(delta, "type") and delta.type == "text_delta" and delta.text:
+                                if not had_text:
+                                    print("  [agent thinking]", flush=True)
+                                    had_text = True
+                                print(delta.text, end="", flush=True)
+                    if had_text:
+                        print(flush=True)  # newline after streamed text
+                    response = stream.get_final_message()
+                    total_input_tokens  += response.usage.input_tokens
+                    total_output_tokens += response.usage.output_tokens
+                break  # stream completed successfully
             except anthropic.APIStatusError as _e:
                 if _e.status_code == 529 and _attempt < 4:
                     wait = 30 * (2 ** _attempt)
@@ -697,21 +711,6 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                     time.sleep(wait)
                 else:
                     raise
-        with _stream_ctx as stream:
-            had_text = False
-            for event in stream:
-                if event.type == "content_block_delta":
-                    delta = event.delta
-                    if hasattr(delta, "type") and delta.type == "text_delta" and delta.text:
-                        if not had_text:
-                            print("  [agent thinking]", flush=True)
-                            had_text = True
-                        print(delta.text, end="", flush=True)
-            if had_text:
-                print(flush=True)  # newline after streamed text
-            response = stream.get_final_message()
-            total_input_tokens  += response.usage.input_tokens
-            total_output_tokens += response.usage.output_tokens
 
         # Scan text blocks for the IDEA: line and accumulate reasoning
         for block in response.content:
