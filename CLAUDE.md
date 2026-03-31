@@ -114,6 +114,11 @@ not architectural restructuring.
 | Uniform-twiddle for `first_half_general_oop` layer 0 OOP | −0.71% |
 | Fuse first two layers of `first_half_general_oop` | −1.03% |
 
+### Non-hot-path butterfly changes (Round 3)
+| Idea | Regression |
+|------|-----------|
+| Pre-broadcast `apply_to_rows` for `DifButterfly`, `ScaledTwiddleFreeButterfly`, `DifButterflyZeros` | +1.36% — none of these are in the `coset_lde_batch` hot path; changes added overhead with no benefit |
+
 ### Low-level micro-optimizations (Round 1)
 | Idea | Regression |
 |------|-----------|
