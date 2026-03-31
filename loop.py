@@ -153,6 +153,30 @@ TOOLS = [
         }
     },
     {
+        "name": "get_assembly",
+        "description": (
+            "Get the x86-64 assembly output for a specific function in the Plonky3 DFT crate. "
+            "Use this to verify what LLVM actually emits for a hot-path function — before and after "
+            "a change — to confirm whether your optimization is redundant or genuinely improves codegen. "
+            "Requires cargo-show-asm to be installed (`cargo install cargo-show-asm`). "
+            "Output is capped at 300 lines to avoid token waste."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function": {
+                    "type": "string",
+                    "description": (
+                        "Function name filter — a substring of the fully-qualified function name. "
+                        "E.g. 'dit_layer_rev_last2_flat' or 'DitButterfly::apply_to_rows'. "
+                        "Use a specific name to avoid too many matches."
+                    )
+                }
+            },
+            "required": ["function"]
+        }
+    },
+    {
         "name": "read_experiment_diff",
         "description": (
             "Read the full code diff from a previous experiment iteration. "
@@ -214,6 +238,34 @@ def tool_read_experiment_diff(iteration: int) -> str:
     return f"ERROR: Iteration {iteration} not found in experiment log."
 
 
+def tool_get_assembly(function: str) -> str:
+    """
+    Run cargo-show-asm for a function name filter and return the assembly output.
+    Caps output at 300 lines to avoid token waste.
+    """
+    ASM_LINE_LIMIT = 300
+    rc, out = run_cmd(
+        ["cargo", "asm", "-p", "p3-dft", "--features", "p3-dft/parallel",
+         "--release", function],
+        timeout=120,
+    )
+    if rc != 0:
+        # cargo-show-asm exits non-zero when multiple matches found — output is still useful
+        lines = out.splitlines()
+        if not lines:
+            return (
+                f"ERROR: cargo asm failed for '{function}'.\n"
+                "Ensure cargo-show-asm is installed: cargo install cargo-show-asm\n"
+                f"Output: {out[:500]}"
+            )
+    lines = out.splitlines()
+    if len(lines) > ASM_LINE_LIMIT:
+        truncated = len(lines) - ASM_LINE_LIMIT
+        lines = lines[:ASM_LINE_LIMIT]
+        lines.append(f"\n... ({truncated} lines truncated — use a more specific function name)")
+    return "\n".join(lines)
+
+
 def tool_write_file(path: str, content: str) -> str:
     if any(path.startswith(p) for p in WRITABLE):
         full = (REPO_DIR / path).resolve()
@@ -252,6 +304,11 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not path:
             return "ERROR: list_dir requires a 'path' argument."
         return tool_list_dir(path)
+    elif name == "get_assembly":
+        function = inputs.get("function")
+        if not function:
+            return "ERROR: get_assembly requires a 'function' argument."
+        return tool_get_assembly(function)
     elif name == "read_experiment_diff":
         iteration = inputs.get("iteration")
         if iteration is None:

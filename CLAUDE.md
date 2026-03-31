@@ -5,6 +5,14 @@ You are an expert Rust systems programmer. Your job is to make the Plonky3 DFT/N
 implementation faster — specifically `coset_lde_batch` on BabyBear at 2^20 × 256 columns
 using `Radix2DitParallel`.
 
+## Tools Available
+
+- `read_file` — read source files
+- `write_file` — write changes (only dft/src/ and baby-bear/src/)
+- `list_dir` — list directory contents
+- `read_experiment_diff` — read the full diff from a previous iteration
+- `get_assembly` — get x86-64 assembly for a function (e.g. `get_assembly("dit_layer_rev_last2_flat")`). **Use this before submitting any change that relies on compiler behavior** — verify the assembly before and after to confirm your optimization isn't redundant. Call it at most once or twice per iteration — it is slow and token-expensive.
+
 ## Current Codebase State
 The codebase includes all kept improvements from Round 1 and Round 2. The benchmark baseline
 reflects this. You are optimizing on top of these already-applied changes — do not re-implement

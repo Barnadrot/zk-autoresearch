@@ -78,9 +78,15 @@ else
     echo "  AVX512: not detected (AVX2 path will be used)"
 fi
 
-# ── 6. First compile (populates cargo cache) ──────────────────────────────────
+# ── 6. Install cargo-show-asm (needed for get_assembly tool) ──────────────────
 echo ""
-echo "[6/6] Pre-compiling Plonky3 (first compile is slow — ~5min)..."
+echo "[6/7] Installing cargo-show-asm..."
+cargo install cargo-show-asm --quiet
+echo "  cargo-show-asm: $(cargo asm --version 2>/dev/null || echo 'installed')"
+
+# ── 7. First compile (populates cargo cache) ──────────────────────────────────
+echo ""
+echo "[7/7] Pre-compiling Plonky3 (first compile is slow — ~5min)..."
 cd "$SCRIPT_DIR/Plonky3"
 cargo build -p p3-dft --features p3-dft/parallel --release 2>&1 | tail -5
 
