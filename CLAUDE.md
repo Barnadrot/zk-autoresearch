@@ -57,36 +57,12 @@ monty-31/src/x86_64_avx512/   ← readable, NOT writable
 
 Primary: `dft/src/radix_2_dit_parallel.rs`, `dft/src/butterflies.rs`, `baby-bear/src/x86_64_avx512/`
 
-Exploration preference: `butterflies.rs` and `baby-bear/src/` have fewer attempted
-optimizations across both rounds. When two ideas are equally promising, prefer the one
-targeting these files over radix.
+## Proven Techniques
 
-## Optimization Search Space
-
-- Twiddle factor precomputation, storage layout, or broadcast hoisting
-- Eliminating redundant work per element (multiplications by 1, repeated broadcasts)
-- Cache-blocking the butterfly loops (twiddle factors accessed non-sequentially)
-- Exploiting BabyBear field structure in butterfly arithmetic
-- Parallelism granularity adjustments in `Radix2DitParallel`
-- Special-casing boundary layers (e.g. layer 0 twiddle = 1, last layer block size = 2)
-- Out-of-place vs in-place trade-offs for memory bandwidth
-
-## Proven Techniques (extend these first)
-
-These approaches produced measurable improvements. Before exploring new territory, check
-whether a symmetric path, adjacent layer, or related function is untried:
-
-- **Pre-broadcast twiddle into `F::Packing` before inner loop** (butterflies.rs) — eliminates
-  16 redundant scalar→vector broadcasts per row-pair at 256 cols/AVX512 width 16. Applied to
-  `DitButterfly`, `ScaledDitButterfly`. Check: are all butterfly types covered?
-- **TwiddleFreeButterfly for twiddle==1 layers** — layer 0 of `first_half` has `twiddles[0]=1`,
-  eliminates one Montgomery mul per element. Applied to `first_half` layer 0. Check: are there
-  other layers where twiddle is structurally 1?
-- **Merge 1/N scaling into first butterfly layer** (`ScaledDitButterfly`) — eliminates a
-  separate O(N) memory pass. Applied to `second_half`. Fully exploited.
-- **Last-layer fusion** (`dit_layer_rev_last`, `dit_layer_rev_last2`) — fusing the final 1-2
-  layers of `second_half_general` into a single pass worked (rounds 1+2). The 3-layer version
-  (-0.96%) did not. The OOP path was extended in iter 8.
+- **Pre-broadcast twiddle into `F::Packing` before inner loop** (butterflies.rs) — eliminates 16 redundant scalar→vector broadcasts per row-pair at 256 cols/AVX512 width 16. Applied to `DitButterfly`, `ScaledDitButterfly`.
+- **TwiddleFreeButterfly for twiddle==1 layers** — layer 0 of `first_half` has `twiddles[0]=1`, eliminates one Montgomery mul per element. Applied to `first_half` layer 0.
+- **Merge 1/N scaling into first butterfly layer** (`ScaledDitButterfly`) — eliminates a separate O(N) memory pass. Applied to `second_half`. Fully exploited.
+- **Last-layer fusion** (`dit_layer_rev_last`, `dit_layer_rev_last2`) — fusing the final 1-2 layers of `second_half_general` into a single pass worked (rounds 1+2). The 3-layer version (−0.96%) did not. The OOP path was extended in iter 8.
 
 ## Known Dead Ends
 
@@ -136,8 +112,6 @@ not architectural restructuring.
 | Idea | Regression |
 |------|-----------|
 | Manual loop unroll | −49.4% — LLVM handles ILP; manual unrolling broke the vectorizer |
-| Forced inlining via `#[inline(always)]` | Regressed — LLVM already making good inlining decisions |
-| Remove `backwards` bool from `dit_layer_rev` | Flag was doing real work, removal broke correctness paths |
 
 ## Surgical Precision Principle
 
@@ -146,12 +120,6 @@ regresses 0.4–2.0%. The compiler cannot optimize manually-restructured iterato
 well as the original. **A change is surgical if it touches fewer than ~50 lines and targets a
 specific hot path.** If your idea requires a full-file rewrite, find the minimal targeted
 version first.
-
-## Primary Targets Still Unexplored
-
-- `butterflies.rs` — directly modifying butterfly arithmetic (Round 1 wrote to it; Round 2
-  only *read* it to inform radix changes but never wrote to it as a primary target)
-- `baby-bear/src/x86_64_avx512/` — see AVX512 guide below before targeting this
 
 ## Promising Ideas Interrupted by Token Budget (Round 3)
 
@@ -171,27 +139,11 @@ Pursue them before exploring new territory.
   reordering stores (`*x_1` before `*x_2`) or separating the two mul chains improves CPU
   pipeline utilization.
 
-## AVX512 Arithmetic — How to Navigate It
+## AVX512 Arithmetic
 
-`baby-bear/src/x86_64_avx512/packing.rs` is the correct entry point (37 lines) — it
-defines the type alias and BabyBear-specific constants used throughout the DFT crate.
-Read it first to understand the type, then follow into monty-31 for the arithmetic.
+Entry point: `baby-bear/src/x86_64_avx512/packing.rs` (37 lines) — type alias + BabyBear constants. AVX512 arithmetic lives in `monty-31/src/x86_64_avx512/` (readable, **not writable**):
 
-The actual AVX512 arithmetic is in **`monty-31/src/x86_64_avx512/`** (readable,
-not writable). Read these when you need to understand the field arithmetic chain:
+- `packing.rs` — `mul` at line 524: 6.5 cyc/vec, 21 cyc latency, already expert-optimized. Uses `confuse_compiler` to avoid `vpmullq`, underflow check to relieve port 0 pressure.
+- `utils.rs` — `halve_avx512` (2 cyc/vec), `mul_neg_2exp_neg_n_avx512` (3 cyc/vec, 9 cyc latency), `mul_neg_2exp_neg_two_adicity_avx512` (3 cyc/vec, 5 cyc latency).
 
-- **`monty-31/src/x86_64_avx512/packing.rs`** (1672 lines) — `PackedMontyField31AVX512`
-  arithmetic. Key function: `mul` at line 524 — already expert-optimized at 6.5 cyc/vec,
-  21 cyc latency, 13 instructions. Uses `vmovshdup`+`vpmuludq` even/odd split,
-  `confuse_compiler` to avoid `vpmullq`, underflow check instead of `vpminud` to relieve
-  port 0 pressure. **You cannot write this file.**
-- **`monty-31/src/x86_64_avx512/utils.rs`** — `halve_avx512` (2 cyc/vec),
-  `mul_neg_2exp_neg_n_avx512` (3 cyc/vec, 9 cyc latency),
-  `mul_neg_2exp_neg_two_adicity_avx512` (3 cyc/vec, 5 cyc latency).
-  **You cannot write this file.**
-
-**The actionable target is `butterflies.rs`** (readable and writable). The
-`DitButterfly::apply_to_rows` hot loop invokes packed field `mul` once per element pair.
-Reducing the number of `mul` calls per butterfly, fusing operations, or restructuring
-how twiddles are passed in are all achievable within the writable set without touching
-the AVX512 internals.
+Use `get_assembly` to verify actual codegen before assuming what the compiler emits.
