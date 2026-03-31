@@ -608,7 +608,7 @@ def format_history(experiments: list) -> str:
     near_misses = [
         e for e in experiments
         if not e.get("kept") and e.get("score_ns") and e.get("reason") == "regression"
-        and abs(e.get("improvement_pct", 0)) < 1.5
+        and abs(e.get("improvement_pct", 0)) < 0.5
     ][-3:]
     if near_misses:
         lines.append("\n=== NEAR-MISSES (close — consider combining or revisiting) ===")
@@ -633,7 +633,6 @@ def build_prompt(current_best_ns: float, experiments: list) -> str:
 
     return f"""You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.
 
-## Hard Constraints
 {constraints}
 
 ## Current State
@@ -649,18 +648,18 @@ Benchmark command: `cargo bench -p p3-dft --features p3-dft/parallel --bench fft
 Make ONE focused, targeted optimization to the DFT implementation.
 
 Process:
-1. Read at most 2-3 files before writing — be targeted, not exhaustive
-2. Think about what is slow and why
+1. Identify a specific hot-path target
+2. Use `get_assembly` to verify what LLVM actually emits before assuming compiler behavior
 3. Make exactly one logical change using `write_file`
 4. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
 
-**Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%. There is no reward for cleaner code, reduced complexity, or architectural elegance unless it moves the benchmark number.
+**Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%.
 
-**Slice large ideas**: If your idea requires changing more than ~50 lines, find the minimal targeted version first. A small near-miss on the right function is more valuable than a large rewrite — it gives the next iteration a precise target to build on. If a large idea is the only option, note it as IDEA: and write the smallest correct slice of it.
+**Slice large ideas**: If your idea requires changing more than ~50 lines, find the minimal targeted version first. A small near-miss on the right function is more valuable than a large rewrite.
 
-**Extend kept changes**: Look at the kept improvements in the history. Ask: is there a symmetric path, related function, or adjacent layer where the same technique applies? The most reliable improvements come from extending patterns that already work.
+**Extend kept changes**: Look at the kept improvements in the history. Ask: is there a symmetric path, related function, or adjacent layer where the same technique applies?
 
-**You must always make a change.** If your first idea seems risky, try a simpler targeted variant. If you feel stuck, consider: memory layout, twiddle factor access patterns, parallelism granularity, SIMD hints, loop restructuring, precomputation, special-casing boundary conditions. There is always something to try — do not give up.
+**You must always make a change.**
 """
 
 

@@ -172,7 +172,7 @@ class TestFormatHistory(unittest.TestCase):
 
     def test_near_misses_shown(self):
         import loop
-        exps = [self._make_exp(10, False, "regression", -0.8, "almost worked")]
+        exps = [self._make_exp(10, False, "regression", -0.3, "almost worked")]
         result = loop.format_history(exps)
         self.assertIn("NEAR-MISSES", result)
         self.assertIn("almost worked", result)
