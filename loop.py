@@ -681,12 +681,23 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
     total_output_tokens = 0
 
     while True:
-        with client.messages.stream(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            tools=TOOLS,
-            messages=messages,
-        ) as stream:
+        for _attempt in range(5):
+            try:
+                _stream_ctx = client.messages.stream(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    tools=TOOLS,
+                    messages=messages,
+                )
+                break
+            except anthropic.APIStatusError as _e:
+                if _e.status_code == 529 and _attempt < 4:
+                    wait = 30 * (2 ** _attempt)
+                    print(f"[loop] Overloaded (529) — retrying in {wait}s (attempt {_attempt+1}/5)...", flush=True)
+                    time.sleep(wait)
+                else:
+                    raise
+        with _stream_ctx as stream:
             had_text = False
             for event in stream:
                 if event.type == "content_block_delta":
