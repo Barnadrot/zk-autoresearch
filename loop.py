@@ -705,9 +705,13 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                     total_output_tokens += response.usage.output_tokens
                 break  # stream completed successfully
             except anthropic.APIStatusError as _e:
-                if _e.status_code == 529 and _attempt < 4:
+                is_overloaded = (
+                    _e.status_code == 529
+                    or "overloaded" in str(_e).lower()
+                )
+                if is_overloaded and _attempt < 4:
                     wait = 30 * (2 ** _attempt)
-                    print(f"[loop] Overloaded (529) — retrying in {wait}s (attempt {_attempt+1}/5)...", flush=True)
+                    print(f"[loop] Overloaded (status={_e.status_code}) — retrying in {wait}s (attempt {_attempt+1}/5)...", flush=True)
                     time.sleep(wait)
                 else:
                     raise
