@@ -899,13 +899,29 @@ def main():
     prov_file.write_text(json.dumps(prov, indent=2))
 
     # ── Establish baseline ────────────────────────────────────────────────────
-    print("\n[init] Building baseline benchmark (this compiles from scratch)...")
-    baseline_ns, _ = run_bench()
+    baseline_ns = None
+    if not args.start_fresh and LOG_FILE.exists():
+        existing = load_experiments()
+        if existing:
+            stored = existing[0].get("baseline_ns")
+            stored_commit = existing[0].get("plonky3_commit", "")
+            current_commit = prov.get("plonky3_commit", "")
+            if stored and stored_commit and stored_commit == current_commit:
+                baseline_ns = stored
+                print(f"\n[init] Resuming — reusing baseline: {baseline_ns / 1e6:.2f}ms "
+                      f"(p3={stored_commit[:12]})\n")
+            elif stored and stored_commit != current_commit:
+                print(f"\n[init] Plonky3 commit changed ({stored_commit[:12]} → "
+                      f"{current_commit[:12]}), re-benchmarking baseline...")
+
     if baseline_ns is None:
-        print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
-              file=sys.stderr)
-        sys.exit(1)
-    print(f"[init] Baseline: {baseline_ns / 1e6:.2f}ms\n")
+        print("\n[init] Building baseline benchmark (this compiles from scratch)...")
+        baseline_ns, _ = run_bench()
+        if baseline_ns is None:
+            print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"[init] Baseline: {baseline_ns / 1e6:.2f}ms\n")
 
     # Pre-flight correctness check — catch infra issues before spending any tokens
     print("[init] Running pre-flight tests...")
@@ -975,6 +991,7 @@ def main():
             "reason": "no_changes",
             "score_ns": None,
             "baseline_ns": round(best_ns),
+            "plonky3_commit": prov.get("plonky3_commit", ""),
             "improvement_pct": 0.0,
             "agent_idea": idea,
             "agent_thinking": "",  # omitted — full reasoning in terminal log
