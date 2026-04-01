@@ -978,7 +978,7 @@ def main():
             "baseline_ns": round(best_ns),
             "improvement_pct": 0.0,
             "agent_idea": idea,
-            "agent_thinking": thinking_summary,
+            "agent_thinking": "",  # omitted — full reasoning in terminal log
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cost_usd": round(cost_usd, 6),
