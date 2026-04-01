@@ -1295,3 +1295,27 @@ Acceptable since recovery agent should do 1-2 targeted reads anyway.
 
 **Note:** Current injection of last thinking block into existing history is the first step.
 Fresh context reset is the next improvement once injection is validated.
+
+## Dead end and promising idea classification methodology
+
+**Context:** Current dead end table prunes ideas after a single failed attempt. This is too
+aggressive — one regression or one forbidden pattern rejection is insufficient signal.
+Conversely, promising ideas are added manually and informally, with no entry criteria.
+
+**Dead end classification — proposed methodology:**
+- Require 3+ attempts with meaningfully different implementations before declaring dead end
+- Each entry must note WHY it failed: regression / forbidden pattern / compile error
+- A single forbidden pattern rejection is NOT a dead end — it means the idea needs a clean retry
+- A single marginal regression (<1%) is NOT a dead end — LLVM behavior varies by scale and implementation approach
+- Clear dead end signals: 2+ regressions with different implementations, or 1 large regression (>2%) with assembly-confirmed explanation
+
+**Promising idea classification — proposed methodology:**
+- Must have a structural argument (not just "might be faster")
+- Must not duplicate a confirmed dead end (structurally identical = same dead end)
+- Must note what was interrupted / why it wasn't completed
+- Include explicit warnings for known failure modes (e.g. "avoid debug_assert")
+
+**Future automation:**
+- Agent could self-classify after each iter: "this is a dead end because X" or "this needs retry because Y"
+- Loop could maintain a structured JSON of ideas with attempt counts and failure reasons
+- Human review gate before promoting to dead end (similar to the y/N coverage audit)
