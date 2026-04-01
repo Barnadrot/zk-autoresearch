@@ -1,0 +1,4 @@
+# Must match the project root rust-toolchain.toml — ensures the checker
+# is compiled with the exact same compiler version as the benchmark.
+[toolchain]
+channel = "1.94.0"

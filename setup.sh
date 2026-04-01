@@ -86,9 +86,16 @@ echo "  cargo-show-asm: $(cargo asm --version 2>/dev/null || echo 'installed')"
 
 # ── 7. First compile (populates cargo cache) ──────────────────────────────────
 echo ""
-echo "[7/7] Pre-compiling Plonky3 (first compile is slow — ~5min)..."
+echo "[7/8] Pre-compiling Plonky3 (first compile is slow — ~5min)..."
 cd "$SCRIPT_DIR/Plonky3"
 cargo build -p p3-dft --features p3-dft/parallel --release 2>&1 | tail -5
+
+# ── 8. Build correctness checker ──────────────────────────────────────────────
+echo ""
+echo "[8/8] Building correctness checker (bench profile)..."
+cd "$SCRIPT_DIR/correctness-checker"
+cargo build --profile bench 2>&1 | tail -5
+echo "  Correctness checker built: $(ls -la target/release/correctness-checker 2>/dev/null || ls -la target/bench/correctness-checker 2>/dev/null || echo 'FAILED')"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""

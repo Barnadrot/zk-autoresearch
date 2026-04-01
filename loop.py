@@ -39,12 +39,26 @@ REPO_DIR    = ROOT_DIR / "Plonky3"
 LOG_FILE    = ROOT_DIR / "experiments.jsonl"
 STOP_FILE   = ROOT_DIR / "STOP"
 CLAUDE_MD   = ROOT_DIR / "CLAUDE.md"
+CHECKER_DIR = ROOT_DIR / "correctness-checker"
 
 MODEL          = "claude-sonnet-4-6"
 MAX_TOKENS     = 20000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
+
+# Correctness checker configuration
+# "partial" = fast spot-check (2^14 × 16, ~1s) — every iteration
+# "full"    = exact benchmark workload (2^20 × 256, ~30-60s) — every N iterations
+CORRECTNESS_PARTIAL_EVERY = 1   # run partial check every iteration
+CORRECTNESS_FULL_EVERY    = 5   # run full check every N iterations
+# INVARIANT: full correctness check is ALWAYS required before accepting any
+# "kept" change. This is non-negotiable and not configurable.
+# See: Issue #4 — "Performance improvement without validated correctness is invalid."
+
+# Number of times to run the checker per invocation to detect nondeterminism.
+# If any run disagrees with any other, the check fails.
+CORRECTNESS_REPEAT_RUNS = 2
 
 # Pricing per million tokens — update if Anthropic changes rates
 COST_PER_M_INPUT  = 3.00   # USD, claude-sonnet-4-6
@@ -58,6 +72,8 @@ BENCH_FILTER = "coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<Mon
 BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
 
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
+# NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
+# be able to modify the correctness validation to make wrong code pass.
 WRITABLE = ["dft/src/", "baby-bear/src/"]
 
 # Maps writable path prefixes to the crate whose tests cover them.
@@ -73,14 +89,42 @@ TESTED_CRATES = {"p3-dft", "p3-baby-bear", "p3-examples"}
 # Diff patterns that are never legitimate in a DFT arithmetic optimization.
 # A diff containing these is hard-rejected before testing.
 FORBIDDEN_DIFF_PATTERNS = [
-    r"^\+[^+].*#\[cfg\(test\)\]",        # cfg(test) guard on new lines
-    r"^\+[^+].*#\[cfg\(not\(test\)\)\]", # cfg(not(test)) fast-path bypass
-    r"^\+[^+].*\bdebug_assert\b",        # debug_assert hiding release-only bugs
+    r"^\+[^+].*#\[cfg\(test\)\]",              # cfg(test) guard on new lines
+    r"^\+[^+].*#\[cfg\(not\(test\)\)\]",       # cfg(not(test)) fast-path bypass
+    r"^\+[^+].*\bdebug_assert\b",              # debug_assert hiding release-only bugs
+    r"^\+[^+].*#\[cfg\(not\(debug_assertions\)\)\]",  # F13: release-only code paths
+    r"^\+[^+].*#\[cfg\(debug_assertions\)\]",         # debug-only code paths
+    r'^\+[^+].*#\[cfg\(feature\s*=',                  # F4: feature-gated code paths
+    r'^\+[^+].*#\[cfg\(not\(feature\s*=',             # F4: negated feature gates
+    r'^\+[^+].*cfg!\(feature\s*=',                    # F4: cfg! macro feature gates
 ]
 
 # Recovery and dry-spell limits
 MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
 DRY_SPELL_MIN_ITERS = 20  # don't auto-stop before this many iterations
+
+# Shared environment for benchmark AND correctness checker — ensures identical
+# build profile, CPU features, and thread configuration.
+# F6: Explicitly pin RUSTFLAGS so ambient changes cannot cause divergence.
+BENCH_ENV = {
+    "RAYON_NUM_THREADS": "8",
+    "NO_COLOR": "1",
+    "RUSTFLAGS": os.environ.get("RUSTFLAGS", ""),  # pin at import time
+    "CARGO_INCREMENTAL": "0",  # deterministic builds
+}
+
+def _snapshot_build_env() -> dict:
+    """
+    F11: Capture all environment variables that affect Rust compilation.
+    Logged per-iteration for full traceability.
+    """
+    keys = [
+        "RUSTFLAGS", "CARGO_INCREMENTAL", "CARGO_TARGET_DIR",
+        "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS",
+        "RAYON_NUM_THREADS", "TARGET", "RUSTUP_TOOLCHAIN",
+    ]
+    env = {**os.environ, **BENCH_ENV}
+    return {k: env.get(k, "") for k in keys}
 
 # Files agent may READ (prefix match, relative to REPO_DIR)
 READABLE = WRITABLE + ["CLAUDE.md", "dft/Cargo.toml", "dft/benches/",
@@ -346,7 +390,7 @@ def run_bench():
          "--features", "p3-dft/parallel",
          "--", BENCH_FILTER, "--noplot", "--measurement-time", "35"],
         timeout=600,
-        extra_env={"RAYON_NUM_THREADS": "8", "NO_COLOR": "1"},
+        extra_env=BENCH_ENV,
     )
 
     elapsed = time.time() - t0
@@ -474,6 +518,124 @@ def run_tests():
     return passed, out1 + out_bb + out2 + out3
 
 
+def build_correctness_checker():
+    """
+    Build the correctness checker binary under the bench profile.
+    F5: Uses --profile bench (not --release) to match the exact profile
+    used by `cargo bench`. In Rust, bench and release are distinct profiles
+    that can diverge via [profile.bench] in Cargo.toml.
+    Returns (success: bool, output: str).
+    """
+    print("  [checker] Building correctness-checker (bench profile)...", flush=True)
+    rc, out = run_cmd(
+        ["cargo", "build", "--profile", "bench"],
+        cwd=CHECKER_DIR,
+        timeout=300,
+        extra_env=BENCH_ENV,
+    )
+    if rc != 0:
+        print(f"  [checker] Build FAILED:\n{out[-1000:]}", flush=True)
+    return rc == 0, out
+
+
+def run_correctness_check(modes: list[str], bench_params: dict | None = None) -> dict:
+    """
+    Run the correctness checker binary with the specified modes.
+
+    Args:
+        modes: list of "full" and/or "partial"
+        bench_params: dict from extract_bench_params() with added_bits, shift, etc.
+                      If None, uses defaults (for backward compat in tests).
+
+    Returns dict with:
+        passed: bool — all checks passed
+        checks: list of check result dicts
+        raw_output: str — combined stdout+stderr
+        build_ok: bool — whether the checker built successfully
+    """
+    if not modes:
+        return {"passed": True, "checks": [], "raw_output": "", "build_ok": True}
+
+    mode_str = " + ".join(modes)
+    print(f"  [checker] Running correctness check ({mode_str})...", flush=True)
+    t0 = time.time()
+
+    # Build the checker (shares cargo cache with benchmark builds)
+    build_ok, build_out = build_correctness_checker()
+    if not build_ok:
+        return {
+            "passed": False,
+            "checks": [],
+            "raw_output": build_out,
+            "build_ok": False,
+        }
+
+    # Run the checker binary
+    # F5: bench profile outputs to target/release/ (bench inherits release in Cargo)
+    checker_bin = CHECKER_DIR / "target" / "release" / "correctness-checker"
+    if not checker_bin.exists():
+        # Some cargo versions use target/bench/ for --profile bench
+        checker_bin = CHECKER_DIR / "target" / "bench" / "correctness-checker"
+
+    # F1+F2: Pass benchmark parameters extracted from the source
+    cmd = [str(checker_bin)]
+    if bench_params:
+        cmd += ["--added-bits", str(bench_params.get("added_bits", 1))]
+        cmd += ["--shift", str(bench_params.get("shift", "generator"))]
+    # F12: Repeat runs to detect nondeterminism
+    cmd += ["--repeat", str(CORRECTNESS_REPEAT_RUNS)]
+    cmd += modes
+
+    rc, out = run_cmd(
+        cmd,
+        cwd=CHECKER_DIR,
+        timeout=600,
+        extra_env=BENCH_ENV,
+    )
+
+    elapsed = time.time() - t0
+    print(f"  [checker] Finished in {elapsed:.0f}s", flush=True)
+
+    # Parse JSON from stdout (checker writes JSON to stdout, logs to stderr)
+    result = {
+        "passed": False,
+        "checks": [],
+        "raw_output": out,
+        "build_ok": True,
+    }
+
+    # stdout is the first part before stderr in combined output,
+    # but we need to find the JSON line specifically
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("{") and '"all_passed"' in line:
+            try:
+                parsed = json.loads(line)
+                result["passed"] = parsed.get("all_passed", False)
+                result["checks"] = parsed.get("checks", [])
+                break
+            except json.JSONDecodeError:
+                pass
+
+    # F9: Exit code is AUTHORITATIVE. If the binary exited non-zero, the check
+    # failed regardless of what the JSON says. A crash after printing JSON
+    # (double-free, stack overflow in drop, etc.) must not be treated as success.
+    if rc != 0:
+        result["passed"] = False
+        if not result["checks"]:
+            print(f"  [checker] FAILED (exit code {rc}, no parseable output):\n{out[-800:]}", flush=True)
+        else:
+            print(f"  [checker] FAILED (exit code {rc}, overriding JSON 'all_passed').", flush=True)
+    elif result["passed"]:
+        print(f"  [checker] All checks PASSED.", flush=True)
+    else:
+        for check in result["checks"]:
+            if not check.get("passed"):
+                print(f"  [checker] FAILED: {check.get('mode')} — {check.get('mismatch_details', 'unknown')}", flush=True)
+
+    return result
+
+
 def audit_test_coverage():
     """
     Reads CLAUDE.md to find the Primary optimization targets, maps each to its
@@ -497,11 +659,80 @@ def audit_test_coverage():
     return gaps
 
 
+def extract_bench_params() -> dict:
+    """
+    F1+F2: Extract benchmark workload parameters from the benchmark source file
+    (dft/benches/fft.rs) instead of hardcoding them. Returns a dict with:
+      log_n, cols, added_bits, shift_description
+    Falls back to documented defaults if parsing fails, but logs a warning.
+    """
+    bench_file = REPO_DIR / "dft" / "benches" / "fft.rs"
+    defaults = {
+        "log_n": 20,
+        "cols": 256,
+        "added_bits": 1,
+        "shift": "generator",
+        "source": "default (bench file not parsed)",
+    }
+
+    if not bench_file.exists():
+        print(f"  [params] WARNING: {bench_file} not found — using defaults.", flush=True)
+        return defaults
+
+    content = bench_file.read_text(encoding="utf-8")
+
+    # Parse added_bits: look for coset_lde_batch(..., <number>, ...) or
+    # the constant definition. Criterion benchmarks typically define this inline.
+    # Common patterns:
+    #   dft.coset_lde_batch(mat, 1, shift)
+    #   let added_bits = 1;
+    added_bits = None
+    for m in re.finditer(r'coset_lde_batch\s*\([^,]+,\s*(\d+)\s*,', content):
+        added_bits = int(m.group(1))
+        break
+    if added_bits is None:
+        for m in re.finditer(r'(?:let\s+)?added_bits\s*[:=]\s*(\d+)', content):
+            added_bits = int(m.group(1))
+            break
+
+    # Parse shift: look for the shift argument in coset_lde_batch
+    # Common: F::generator(), F::GENERATOR, BabyBear::generator()
+    shift = None
+    for m in re.finditer(r'coset_lde_batch\s*\([^,]+,\s*\d+\s*,\s*([^)]+)\)', content):
+        shift_expr = m.group(1).strip().rstrip(')')
+        if "generator" in shift_expr.lower() or "GENERATOR" in shift_expr:
+            shift = "generator"
+        else:
+            shift = shift_expr
+        break
+
+    result = {
+        "log_n": 20,   # from BENCH_FILTER: 1048576 = 2^20
+        "cols": 256,    # from BENCH_FILTER: ncols=256
+        "added_bits": added_bits if added_bits is not None else defaults["added_bits"],
+        "shift": shift if shift is not None else defaults["shift"],
+        "source": str(bench_file),
+    }
+
+    if added_bits is None:
+        print(f"  [params] WARNING: could not parse added_bits from {bench_file} — using default {result['added_bits']}.", flush=True)
+    if shift is None:
+        print(f"  [params] WARNING: could not parse shift from {bench_file} — using default '{result['shift']}'.", flush=True)
+
+    return result
+
+
 # ── Git helpers ───────────────────────────────────────────────────────────────
 
 def git_diff():
     _, diff = run_cmd(["git", "diff", "HEAD"])
     return diff
+
+
+def git_head_sha() -> str:
+    """Return the short SHA of the current HEAD in the Plonky3 repo."""
+    _, sha = run_cmd(["git", "rev-parse", "--short", "HEAD"])
+    return sha.strip()
 
 
 def inspect_diff(diff: str) -> dict:
@@ -842,6 +1073,8 @@ def collect_provenance() -> dict:
         "kernel":            uname.strip(),
         "cpu_model":         cpu_model.strip(),
         "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "correctness_checker": str(CHECKER_DIR),
+        "bench_env_snapshot": _snapshot_build_env(),
     }
 
 
@@ -915,6 +1148,25 @@ def main():
         sys.exit(1)
     print("[init] Pre-flight tests passed.\n")
 
+    # Pre-flight correctness checker — build and run full validation at startup
+    print("[init] Building and running correctness checker (full validation)...")
+    # F1+F2: Extract benchmark parameters from source — not hardcoded
+    bench_params = extract_bench_params()
+    print(f"[init] Benchmark params: log_n={bench_params['log_n']}, cols={bench_params['cols']}, "
+          f"added_bits={bench_params['added_bits']}, shift={bench_params['shift']} "
+          f"(source: {bench_params['source']})")
+    prov["bench_params"] = bench_params
+    prov_file.write_text(json.dumps(prov, indent=2))
+
+    checker_result = run_correctness_check(["full", "partial"], bench_params=bench_params)
+    if not checker_result["build_ok"]:
+        print("ERROR: Correctness checker failed to build. Check correctness-checker/ crate.", file=sys.stderr)
+        sys.exit(1)
+    if not checker_result["passed"]:
+        print("ERROR: Correctness checker failed at startup. The baseline is already incorrect.", file=sys.stderr)
+        sys.exit(1)
+    print("[init] Correctness checker passed (full + partial).\n")
+
     best_ns = baseline_ns
     experiments = load_experiments()
     # On resume, use the best historical score if it's better than the fresh measurement
@@ -984,10 +1236,20 @@ def main():
             "diff_summary": "",
             "diff_unsafe_count": 0,
             "agent_time_s": agent_secs,
+            "correctness_build_ok": None,
+            "correctness_checks": [],
+            # F10: commit_hash is set to pre-change HEAD here, then updated
+            # to post-commit HEAD after git_commit() for kept iterations.
+            "commit_hash_before": git_head_sha(),
+            "commit_hash": None,  # filled after commit or revert
+            "build_profile": "bench",
+            # F11: full compilation environment snapshot
+            "build_env": _snapshot_build_env(),
         }
 
         if not made_changes:
             print("[loop] No files changed — skipping benchmark.", flush=True)
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10
             log_experiment(exp)
             experiments.append(exp)
             continue
@@ -1004,17 +1266,41 @@ def main():
             print(f"  [diff] WARNING: {diff_flags['unsafe_count']} new unsafe line(s) in diff — logged.", flush=True)
         if diff_flags["forbidden"]:
             exp["reason"] = "forbidden_pattern"
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10
             print(f"[loop] REJECTED — diff contains forbidden pattern(s): {diff_flags['forbidden']}", flush=True)
             git_revert()
             log_experiment(exp)
             experiments.append(exp)
             continue
 
-        # 3. Correctness check
+        # 3. Correctness check (unit tests — fast property-based)
         tests_passed, test_out = run_tests()
         if not tests_passed:
             exp["reason"] = "tests_failed"
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10
             print("[loop] Tests failed — reverting.", flush=True)
+            git_revert()
+            log_experiment(exp)
+            experiments.append(exp)
+            continue
+
+        # 3b. Benchmark-coupled correctness check (partial — every iteration)
+        # This validates output on a workload structurally equivalent to the benchmark,
+        # under the SAME build profile (bench) and features.
+        partial_modes = ["partial"]
+        if iteration % CORRECTNESS_FULL_EVERY == 0:
+            partial_modes.append("full")
+        correctness = run_correctness_check(partial_modes, bench_params=bench_params)
+        exp["correctness_build_ok"] = correctness["build_ok"]
+        exp["correctness_checks"] = correctness["checks"]
+        # F8: Track whether this iteration has been fully validated.
+        # Changes accepted with only partial validation are "provisional"
+        # until a subsequent full validation confirms them.
+        exp["correctness_full_validated"] = "full" in partial_modes and correctness["passed"]
+        if not correctness["passed"]:
+            exp["reason"] = "correctness_failed"
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10
+            print("[loop] Correctness check failed — reverting.", flush=True)
             git_revert()
             log_experiment(exp)
             experiments.append(exp)
@@ -1024,6 +1310,7 @@ def main():
         score_ns, bench_out = run_bench()
         if score_ns is None:
             exp["reason"] = "bench_failed"
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10
             print("[loop] Benchmark failed — reverting.", flush=True)
             git_revert()
             log_experiment(exp)
@@ -1038,9 +1325,26 @@ def main():
         if improvement_pct > 0 and improvement_pct < MIN_IMPROVEMENT_PCT:
             exp["kept"] = False
             exp["reason"] = "below_threshold"
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10: no commit made
             git_revert()
             print(f"[loop] REVERTED — improvement {improvement_pct:+.2f}% below noise threshold ({MIN_IMPROVEMENT_PCT}%).", flush=True)
         elif improvement_pct > 0:
+            # F7: INVARIANT — full correctness validation is ALWAYS required
+            # before accepting. This is not configurable. No exceptions.
+            if "full" not in partial_modes:
+                print("[loop] Improvement detected — running MANDATORY full correctness validation before accepting...", flush=True)
+                full_correctness = run_correctness_check(["full"], bench_params=bench_params)
+                exp["correctness_checks"] = exp.get("correctness_checks", []) + full_correctness.get("checks", [])
+                if not full_correctness["passed"]:
+                    exp["kept"] = False
+                    exp["reason"] = "correctness_failed_full"
+                    exp["commit_hash"] = exp["commit_hash_before"]  # F10
+                    print("[loop] Full correctness check FAILED — reverting despite benchmark improvement.", flush=True)
+                    git_revert()
+                    log_experiment(exp)
+                    experiments.append(exp)
+                    continue
+
             committed = git_commit(
                 f"exp-{iteration:03d}: {improvement_pct:+.2f}% "
                 f"({score_ns / 1e6:.2f}ms <- {best_ns / 1e6:.2f}ms)\n\n"
@@ -1049,15 +1353,19 @@ def main():
             if not committed:
                 exp["kept"] = False
                 exp["reason"] = "no_changes"
+                exp["commit_hash"] = exp["commit_hash_before"]  # F10
                 print("[loop] Agent reported changes but diff is empty — skipping.", flush=True)
             else:
                 exp["kept"] = True
                 exp["reason"] = "improvement"
+                # F10: capture the ACTUAL commit hash of the accepted change
+                exp["commit_hash"] = git_head_sha()
                 prev_best = best_ns
                 best_ns = score_ns
                 print(f"[loop] KEPT -{improvement_pct:.2f}% faster — committed.", flush=True)
         else:
             exp["reason"] = "regression"
+            exp["commit_hash"] = exp["commit_hash_before"]  # F10: no commit made
             git_revert()
             print(f"[loop] REVERTED +{abs(improvement_pct):.2f}% slower.", flush=True)
 

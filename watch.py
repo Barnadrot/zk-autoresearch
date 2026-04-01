@@ -42,6 +42,10 @@ def print_row(e, best_ns):
     status = "KEPT   " if kept else f"REVERT "
     if reason in ("no_changes", "tests_failed", "bench_failed"):
         status = reason[:7].upper()
+    if reason in ("correctness_failed", "correctness_failed_full"):
+        status = "CORR_FL"
+    if reason == "forbidden_pattern":
+        status = "FORBID "
 
     best_str = fmt_ms(best_ns)
     print(f"{n:>4}  {fmt_ms(ns)}  {fmt_pct(pct):>8}  {best_str}  {status:<8}  {idea}")

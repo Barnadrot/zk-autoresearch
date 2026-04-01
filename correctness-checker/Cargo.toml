@@ -1,0 +1,18 @@
+[package]
+name = "correctness-checker"
+version = "0.1.0"
+edition = "2024"
+description = "Benchmark-coupled correctness checker for Plonky3 DFT optimization loop"
+
+[[bin]]
+name = "correctness-checker"
+path = "src/main.rs"
+
+[dependencies]
+p3-dft = { path = "../Plonky3/dft", features = ["parallel"] }
+p3-baby-bear = { path = "../Plonky3/baby-bear" }
+p3-field = { path = "../Plonky3/field" }
+p3-matrix = { path = "../Plonky3/matrix" }
+p3-monty-31 = { path = "../Plonky3/monty-31" }
+rand = "0.8"
+serde_json = "1"
