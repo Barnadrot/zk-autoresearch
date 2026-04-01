@@ -93,6 +93,7 @@ not architectural restructuring.
 |------|-----------|
 | `dit_layer_rev_forward` — pre-reverse twiddle slice for sequential prefetcher access (tried **twice**, iters 9 and 11) | −0.97% |
 | `dit_layer_rev_pair32` — fuse `layer_rev==3` and `layer_rev==2` | −1.22% |
+| Replace `twiddles0.chunks(2)` with `enumerate` + direct index `twiddles0[2*i]`/`twiddles0[2*i+1]` in `dit_layer_rev_last2`, `dit_layer_rev_last2_flat`, `dit_layer_rev_last2_flat_scaled` | +3.3% — LLVM already optimizes `chunks(2)` well; `enumerate` counter + multiply-by-2 adds overhead. Consistent regression across all sizes (p=0.00). **Note:** `unsafe` direct indexing (no bounds check) is a different experiment, not yet tried. |
 
 ### `first_half_general` layer fusion
 | Idea | Regression |
@@ -126,10 +127,7 @@ version first.
 These ideas were under active analysis when the token budget ran out. They were NOT tried.
 Pursue them before exploring new territory.
 
-- **`dit_layer_rev_last2_flat` direct indexing** — the function currently uses `twiddles0.chunks(2)`
-  to iterate over twiddle pairs, creating a chunk iterator with per-block overhead. For 256 mega-blocks
-  per thread, this is 256 iterator constructions. Direct pointer indexing into the twiddle slice may
-  reduce this overhead. Surgical target: the outer loop in `dit_layer_rev_last2_flat`.
+- **First-two-layers fusion in `second_half_general`** (`dit_layer_rev_first2_general`) — fuse `layer_rev == log_h-1-mid` and `layer_rev == log_h-2-mid` into a single pass processing all 4 quarter-groups simultaneously. Halves memory traffic for these two layers (2 MiB vs 4 MiB per thread), analogous to the existing `dit_layer_rev_last2` fusion. Cache analysis confirmed 4 streams × 256 KiB fits within L3 per thread. **Previously attempted but rejected by forbidden pattern gate — retry without any `debug_assert!`.**
 
 - **ALU dependency chain in `dit_layer_rev_last2_flat`** — full 12-step dependency trace confirmed
   15-cycle critical path. The two-stage butterfly structure creates a serial mul dependency
