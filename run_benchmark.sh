@@ -36,8 +36,7 @@ if [[ $SKIP_MAIN -eq 0 ]]; then
   cargo bench -p p3-dft $BENCH_FLAGS -- "$BENCH_FILTER" \
     --save-baseline main $MEASURE \
     2>&1 | tee "$RESULTS/bench_main_${TIMESTAMP}.txt"
-  echo "Baseline saved. Cooling 300s..." | tee -a "$SUMMARY"
-  sleep 300
+  echo "Baseline saved." | tee -a "$SUMMARY"
 else
   echo "=== [1/5] Skipping main baseline (--skip-main) ===" | tee -a "$SUMMARY"
 fi
@@ -62,8 +61,6 @@ run_branch() {
   CHANGE=$(grep -E 'Performance has (regressed|improved)' "$logfile" | head -1 || echo "(no verdict)")
 
   echo "  Median: ${MEDIAN}ms  |  p=${PVAL}  |  ${CHANGE}" | tee -a "$SUMMARY"
-  echo "Cooling 300s..." | tee -a "$SUMMARY"
-  sleep 300
 }
 
 # ── 2–5. Experiment branches ───────────────────────────────────────────────────
