@@ -15,7 +15,8 @@ tests_guidance.md
 
 # Experiment logs (gitignored — table.md and *_kept/full.jsonl are tracked)
 experiment_logs/**/experiment_report.md
-experiment_logs/**/terminal.log
+experiment_logs/**/terminal*.log
+experiment_logs/**/terminal_report.md
 experiment_logs/**/*with_bug*.jsonl
 
 # Runtime files

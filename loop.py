@@ -153,6 +153,30 @@ TOOLS = [
         }
     },
     {
+        "name": "get_assembly",
+        "description": (
+            "Get the x86-64 assembly output for a specific function in the Plonky3 DFT crate. "
+            "Use this to verify what LLVM actually emits for a hot-path function — before and after "
+            "a change — to confirm whether your optimization is redundant or genuinely improves codegen. "
+            "Requires cargo-show-asm to be installed (`cargo install cargo-show-asm`). "
+            "Output is capped at 300 lines to avoid token waste."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function": {
+                    "type": "string",
+                    "description": (
+                        "Function name filter — a substring of the fully-qualified function name. "
+                        "E.g. 'dit_layer_rev_last2_flat' or 'DitButterfly::apply_to_rows'. "
+                        "Use a specific name to avoid too many matches."
+                    )
+                }
+            },
+            "required": ["function"]
+        }
+    },
+    {
         "name": "read_experiment_diff",
         "description": (
             "Read the full code diff from a previous experiment iteration. "
@@ -214,6 +238,34 @@ def tool_read_experiment_diff(iteration: int) -> str:
     return f"ERROR: Iteration {iteration} not found in experiment log."
 
 
+def tool_get_assembly(function: str) -> str:
+    """
+    Run cargo-show-asm for a function name filter and return the assembly output.
+    Caps output at 300 lines to avoid token waste.
+    """
+    ASM_LINE_LIMIT = 300
+    rc, out = run_cmd(
+        ["cargo", "asm", "-p", "p3-dft", "--features", "p3-dft/parallel",
+         "--release", function],
+        timeout=120,
+    )
+    if rc != 0:
+        # cargo-show-asm exits non-zero when multiple matches found — output is still useful
+        lines = out.splitlines()
+        if not lines:
+            return (
+                f"ERROR: cargo asm failed for '{function}'.\n"
+                "Ensure cargo-show-asm is installed: cargo install cargo-show-asm\n"
+                f"Output: {out[:500]}"
+            )
+    lines = out.splitlines()
+    if len(lines) > ASM_LINE_LIMIT:
+        truncated = len(lines) - ASM_LINE_LIMIT
+        lines = lines[:ASM_LINE_LIMIT]
+        lines.append(f"\n... ({truncated} lines truncated — use a more specific function name)")
+    return "\n".join(lines)
+
+
 def tool_write_file(path: str, content: str) -> str:
     if any(path.startswith(p) for p in WRITABLE):
         full = (REPO_DIR / path).resolve()
@@ -252,6 +304,11 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not path:
             return "ERROR: list_dir requires a 'path' argument."
         return tool_list_dir(path)
+    elif name == "get_assembly":
+        function = inputs.get("function")
+        if not function:
+            return "ERROR: get_assembly requires a 'function' argument."
+        return tool_get_assembly(function)
     elif name == "read_experiment_diff":
         iteration = inputs.get("iteration")
         if iteration is None:
@@ -551,7 +608,7 @@ def format_history(experiments: list) -> str:
     near_misses = [
         e for e in experiments
         if not e.get("kept") and e.get("score_ns") and e.get("reason") == "regression"
-        and abs(e.get("improvement_pct", 0)) < 1.5
+        and abs(e.get("improvement_pct", 0)) < 0.5
     ][-3:]
     if near_misses:
         lines.append("\n=== NEAR-MISSES (close — consider combining or revisiting) ===")
@@ -576,7 +633,6 @@ def build_prompt(current_best_ns: float, experiments: list) -> str:
 
     return f"""You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.
 
-## Hard Constraints
 {constraints}
 
 ## Current State
@@ -592,18 +648,16 @@ Benchmark command: `cargo bench -p p3-dft --features p3-dft/parallel --bench fft
 Make ONE focused, targeted optimization to the DFT implementation.
 
 Process:
-1. Read at most 2-3 files before writing — be targeted, not exhaustive
-2. Think about what is slow and why
+1. Identify a specific hot-path target
+2. Use `get_assembly` to verify what LLVM actually emits before assuming compiler behavior
 3. Make exactly one logical change using `write_file`
 4. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
 
-**Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%. There is no reward for cleaner code, reduced complexity, or architectural elegance unless it moves the benchmark number.
+**Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%.
 
-**Slice large ideas**: If your idea requires changing more than ~50 lines, find the minimal targeted version first. A small near-miss on the right function is more valuable than a large rewrite — it gives the next iteration a precise target to build on. If a large idea is the only option, note it as IDEA: and write the smallest correct slice of it.
+**Slice large ideas**: If your idea requires changing more than ~50 lines, find the minimal targeted version first. A small near-miss on the right function is more valuable than a large rewrite.
 
-**Extend kept changes**: Look at the kept improvements in the history. Ask: is there a symmetric path, related function, or adjacent layer where the same technique applies? The most reliable improvements come from extending patterns that already work.
-
-**You must always make a change.** If your first idea seems risky, try a simpler targeted variant. If you feel stuck, consider: memory layout, twiddle factor access patterns, parallelism granularity, SIMD hints, loop restructuring, precomputation, special-casing boundary conditions. There is always something to try — do not give up.
+**You must always make a change.**
 """
 
 
@@ -625,26 +679,40 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
     total_output_tokens = 0
 
     while True:
-        with client.messages.stream(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            tools=TOOLS,
-            messages=messages,
-        ) as stream:
-            had_text = False
-            for event in stream:
-                if event.type == "content_block_delta":
-                    delta = event.delta
-                    if hasattr(delta, "type") and delta.type == "text_delta" and delta.text:
-                        if not had_text:
-                            print("  [agent thinking]", flush=True)
-                            had_text = True
-                        print(delta.text, end="", flush=True)
-            if had_text:
-                print(flush=True)  # newline after streamed text
-            response = stream.get_final_message()
-            total_input_tokens  += response.usage.input_tokens
-            total_output_tokens += response.usage.output_tokens
+        for _attempt in range(5):
+            try:
+                with client.messages.stream(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    tools=TOOLS,
+                    messages=messages,
+                ) as stream:
+                    had_text = False
+                    for event in stream:
+                        if event.type == "content_block_delta":
+                            delta = event.delta
+                            if hasattr(delta, "type") and delta.type == "text_delta" and delta.text:
+                                if not had_text:
+                                    print("  [agent thinking]", flush=True)
+                                    had_text = True
+                                print(delta.text, end="", flush=True)
+                    if had_text:
+                        print(flush=True)  # newline after streamed text
+                    response = stream.get_final_message()
+                    total_input_tokens  += response.usage.input_tokens
+                    total_output_tokens += response.usage.output_tokens
+                break  # stream completed successfully
+            except anthropic.APIStatusError as _e:
+                is_overloaded = (
+                    _e.status_code == 529
+                    or "overloaded" in str(_e).lower()
+                )
+                if is_overloaded and _attempt < 4:
+                    wait = 30 * (2 ** _attempt)
+                    print(f"[loop] Overloaded (status={_e.status_code}) — retrying in {wait}s (attempt {_attempt+1}/5)...", flush=True)
+                    time.sleep(wait)
+                else:
+                    raise
 
         # Scan text blocks for the IDEA: line and accumulate reasoning
         for block in response.content:
@@ -710,13 +778,27 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
             budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
+
+            # Inject last reasoning block so agent continues its in-progress idea
+            # rather than pivoting to a safe fallback. Cap at 2000 chars — enough
+            # to capture the active idea without inflating the recovery message.
+            last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
+            thinking_context = (
+                f"\n\nYour last reasoning before the cut-off:\n\"\"\"\n{last_thinking}\n\"\"\"\n\n"
+                "Continue from exactly where you left off. Do not explore new directions."
+            ) if last_thinking else ""
+
             if tool_use_blocks:
                 # Satisfy the API requirement: every tool_use needs a tool_result
                 recovery_content = [
                     {
                         "type": "tool_result",
                         "tool_use_id": b.id,
-                        "content": f"Response was cut off. {budget_note} Write your change now using write_file. End with: IDEA: <one sentence>",
+                        "content": (
+                            f"Response was cut off.{thinking_context}\n\n"
+                            f"{budget_note} Write your change now using write_file. "
+                            "End with: IDEA: <one sentence>"
+                        ),
                     }
                     for b in tool_use_blocks
                 ]
@@ -724,8 +806,8 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                 recovery_content = [{
                     "type": "text",
                     "text": (
-                        f"Your response was cut off before you wrote any file. {budget_note} "
-                        "You have already read enough context. "
+                        f"Your response was cut off before you wrote any file.{thinking_context}\n\n"
+                        f"{budget_note} "
                         "Now write your change immediately using write_file — "
                         "be concise, no lengthy preamble. "
                         "End with: IDEA: <one sentence>"
@@ -894,7 +976,7 @@ def main():
             "baseline_ns": round(best_ns),
             "improvement_pct": 0.0,
             "agent_idea": idea,
-            "agent_thinking": thinking_summary,
+            "agent_thinking": "",  # omitted — full reasoning in terminal log
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cost_usd": round(cost_usd, 6),
