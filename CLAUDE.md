@@ -129,6 +129,8 @@ Pursue them before exploring new territory.
 
 - **First-two-layers fusion in `second_half_general`** (`dit_layer_rev_first2_general`) — fuse `layer_rev == log_h-1-mid` and `layer_rev == log_h-2-mid` into a single pass processing all 4 quarter-groups simultaneously. Halves memory traffic for these two layers (2 MiB vs 4 MiB per thread), analogous to the existing `dit_layer_rev_last2` fusion. Cache analysis confirmed 4 streams × 256 KiB fits within L3 per thread. **Previously attempted but rejected by forbidden pattern gate — retry without any `debug_assert!`.**
 
+- **`baby-bear/src/baby_bear.rs` field arithmetic specialization** — BabyBear's prime `p = 2^31 - 2^27 + 1` has structure that may allow cheaper modular reduction than the generic Montgomery path. The writable surface is `baby-bear/src/baby_bear.rs`. Use `get_assembly` on BabyBear-specific arithmetic functions to identify whether the compiler is exploiting the prime structure or falling back to generic paths. **Entirely unexplored — no attempts yet.**
+
 - **ALU dependency chain in `dit_layer_rev_last2_flat`** — full 12-step dependency trace confirmed
   15-cycle critical path. The two-stage butterfly structure creates a serial mul dependency
   (`mul(r2t/r3t)` → `add/sub` → `mul(r1t/r3t)` → `add/sub`) that cannot be eliminated. However,
