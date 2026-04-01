@@ -24,7 +24,7 @@ or re-verify them, focus on what remains unexplored.
    proof-of-work bits, or anything in `fri/`, `uni-stark/`, or `batch-stark/`.
 2. **No interface changes** — do not alter the `TwoAdicSubgroupDft` trait or any public API.
 3. **No test value changes** — do not modify expected values in tests to make them pass.
-4. **No out-of-scope files** — only edit files under `dft/src/` or `baby-bear/src/`.
+4. **No out-of-scope files** — only edit files under `dft/src/`, `baby-bear/src/`, or `monty-31/src/x86_64_avx512/`.
 5. **Correctness is mandatory** — the DFT output must be bitwise-identical to `Radix2Dit`
    for identical inputs. The test suite enforces this.
 
@@ -48,22 +48,23 @@ baby-bear/src/
 
 dft/benches/fft.rs          — Criterion benchmark definitions (read-only)
 
-monty-31/src/x86_64_avx512/   ← readable, NOT writable
+monty-31/src/x86_64_avx512/   ← readable AND writable
   packing.rs              — 1672 lines: PackedMontyField31AVX512 full arithmetic (mul at line 524)
   utils.rs                — halve_avx512, mul_neg_2exp_neg_N helpers
 ```
 
 ## Optimization Target
 
-**Mandatory first 3 iterations: `baby-bear/src/baby_bear.rs`**
-BabyBear's prime `p = 2^31 - 2^27 + 1` has structure that may allow cheaper modular reduction
-than the generic Montgomery path. This area has never been touched across 114 iterations.
-Start by calling `get_assembly` on BabyBear-specific arithmetic functions to determine whether
-the compiler exploits the prime structure or falls back to generic paths. The writable surface
-is `baby-bear/src/baby_bear.rs` only (the monty-31 AVX512 implementation is readable but not writable).
+**Primary: `monty-31/src/x86_64_avx512/packing.rs` and `monty-31/src/x86_64_avx512/utils.rs`**
+Montgomery field arithmetic is in every butterfly operation — any gain here multiplies across
+the entire NTT. This area has never been touched. Start by calling `get_assembly` on
+`PackedMontyField31AVX512` arithmetic functions (`mul`, `add`, `sub`) to understand current
+codegen, then identify whether there is headroom in the Montgomery reduction, port pressure,
+or instruction scheduling.
 
-After baby-bear is exhausted or confirmed optimal, secondary targets:
-`dft/src/radix_2_dit_parallel.rs`, `dft/src/butterflies.rs`
+Note: `baby-bear/src/baby_bear.rs` has no arithmetic to optimize — all arithmetic is in monty-31.
+
+**Secondary: `dft/src/radix_2_dit_parallel.rs`, `dft/src/butterflies.rs`**
 
 ## Proven Techniques
 
