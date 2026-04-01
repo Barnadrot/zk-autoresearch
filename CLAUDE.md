@@ -115,7 +115,7 @@ not architectural restructuring.
 ### Non-hot-path butterfly changes (Round 3)
 | Idea | Regression |
 |------|-----------|
-| Pre-broadcast `apply_to_rows` for `DifButterfly`, `ScaledTwiddleFreeButterfly`, `DifButterflyZeros` | +1.36% — none of these are in the `coset_lde_batch` hot path; changes added overhead with no benefit |
+| Pre-broadcast `apply_to_rows` for `DifButterfly`, `DifButterflyZeros` | +1.36% — none of these are in the `coset_lde_batch` hot path; changes added overhead with no benefit |
 
 ### `second_half_general` backwards flag / first-two-layers (Round 3)
 | Idea | Regression |
