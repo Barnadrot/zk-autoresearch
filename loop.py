@@ -45,6 +45,7 @@ MAX_TOKENS     = 40000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
+P_VALUE_THRESHOLD   = 0.10  # improvements with p > this are treated as noise (weak statistical evidence)
 
 # Pricing per million tokens — update if Anthropic changes rates
 COST_PER_M_INPUT  = 3.00   # USD, claude-sonnet-4-6
@@ -118,11 +119,39 @@ TOOLS = [
         }
     },
     {
+        "name": "edit_file",
+        "description": (
+            "Make a targeted edit to a source file by replacing an exact string. "
+            "Preferred over write_file for small changes — much cheaper in tokens. "
+            "The old_string must match exactly (including whitespace and indentation). "
+            "Only allowed under monty-31/src/x86_64_avx512/."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to Plonky3 repo root"
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "Exact string to replace (must be unique in the file)"
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Replacement string"
+                }
+            },
+            "required": ["path", "old_string", "new_string"]
+        }
+    },
+    {
         "name": "write_file",
         "description": (
             "Overwrite a source file in the Plonky3 repository. "
-            "Only allowed under dft/src/ or baby-bear/src/. "
-            "Write the COMPLETE new file content — not a diff."
+            "Only allowed under monty-31/src/x86_64_avx512/. "
+            "Write the COMPLETE new file content — not a diff. "
+            "For small changes, prefer edit_file instead."
         ),
         "input_schema": {
             "type": "object",
@@ -278,6 +307,25 @@ def tool_write_file(path: str, content: str) -> str:
     return f"ERROR: Writing not allowed to '{path}'. Allowed prefixes: {WRITABLE}"
 
 
+def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
+    if any(path.startswith(p) for p in WRITABLE):
+        full = (REPO_DIR / path).resolve()
+        if not str(full).startswith(str(REPO_DIR.resolve())):
+            return f"ERROR: Path traversal detected: {path}"
+        if not full.exists():
+            return f"ERROR: File not found: {path}"
+        content = full.read_text(encoding="utf-8")
+        if old_string not in content:
+            return f"ERROR: old_string not found in {path}. Check exact whitespace and indentation."
+        count = content.count(old_string)
+        if count > 1:
+            return f"ERROR: old_string appears {count} times in {path} — must be unique."
+        new_content = content.replace(old_string, new_string, 1)
+        full.write_text(new_content, encoding="utf-8")
+        return f"OK: edited {path} ({len(old_string)} chars → {len(new_string)} chars)"
+    return f"ERROR: Editing not allowed to '{path}'. Allowed prefixes: {WRITABLE}"
+
+
 def tool_list_dir(path: str) -> str:
     full = REPO_DIR / path
     if not full.exists():
@@ -292,6 +340,17 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not path:
             return "ERROR: read_file requires a 'path' argument."
         return tool_read_file(path, inputs.get("start_line"), inputs.get("end_line"))
+    elif name == "edit_file":
+        path = inputs.get("path")
+        old_string = inputs.get("old_string")
+        new_string = inputs.get("new_string")
+        if not path:
+            return "ERROR: edit_file requires a 'path' argument."
+        if old_string is None:
+            return "ERROR: edit_file requires an 'old_string' argument."
+        if new_string is None:
+            return "ERROR: edit_file requires a 'new_string' argument."
+        return tool_edit_file(path, old_string, new_string)
     elif name == "write_file":
         path = inputs.get("path")
         content = inputs.get("content")
@@ -337,7 +396,8 @@ def run_cmd(cmd, cwd=None, timeout=600, extra_env=None):
 def run_bench():
     """
     Run cargo bench for BENCH_TARGET with parallel feature enabled.
-    Returns (median_ns: float | None, raw_output: str).
+    Returns (median_ns: float | None, p_value: float | None, raw_output: str).
+    p_value is None if no Criterion baseline exists (first run).
     """
     print("  [bench] Running...", flush=True)
     t0 = time.time()
@@ -356,7 +416,7 @@ def run_bench():
     if rc != 0:
         snippet = out[-1500:] if len(out) > 1500 else out
         print(f"  [bench] FAILED:\n{snippet}", flush=True)
-        return None, out
+        return None, None, out
 
     # Parse criterion output: "time:   [lower  MEDIAN  upper]" + p-value from change: line
     lower_ns, median_ns, upper_ns, p_value, matched_name = _parse_criterion_output(out)
@@ -373,7 +433,7 @@ def run_bench():
         p_str  = f"  p={p_value:.2f}" if p_value is not None else ""
         print(f"  [bench] {matched_name}: {median_ns/1e6:.2f}ms{ci_str}{p_str}", flush=True)
 
-    return median_ns, out
+    return median_ns, p_value, out
 
 
 def _strip_ansi(text: str) -> str:
@@ -579,7 +639,9 @@ def format_history(experiments: list) -> str:
         lines.append("  (use read_experiment_diff(N) to see the exact code change for any iteration)")
         for e in kept:
             delta = f"{e.get('improvement_pct', 0):+.2f}%"
-            lines.append(f"  #{e['iteration']:03d} {delta:>8} — {e.get('agent_idea','?')}")
+            p = e.get('bench_p_value')
+            p_str = f" p={p:.2f}" if p is not None else ""
+            lines.append(f"  #{e['iteration']:03d} {delta:>8}{p_str} — {e.get('agent_idea','?')}")
 
     # 2. Recent attempts for immediate context (non-kept only, last N)
     recent_non_kept = [e for e in experiments[-HISTORY_WINDOW:] if not e.get("kept")]
@@ -916,7 +978,7 @@ def main():
 
     if baseline_ns is None:
         print("\n[init] Building baseline benchmark (this compiles from scratch)...")
-        baseline_ns, _ = run_bench()
+        baseline_ns, _, _ = run_bench()
         if baseline_ns is None:
             print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
                   file=sys.stderr)
@@ -993,6 +1055,7 @@ def main():
             "baseline_ns": round(best_ns),
             "plonky3_commit": prov.get("plonky3_commit", ""),
             "improvement_pct": 0.0,
+            "bench_p_value": None,
             "agent_idea": idea,
             "agent_thinking": "",  # omitted — full reasoning in terminal log
             "input_tokens": input_tokens,
@@ -1039,7 +1102,7 @@ def main():
             continue
 
         # 4. Benchmark
-        score_ns, bench_out = run_bench()
+        score_ns, bench_p_value, bench_out = run_bench()
         if score_ns is None:
             exp["reason"] = "bench_failed"
             print("[loop] Benchmark failed — reverting.", flush=True)
@@ -1051,6 +1114,7 @@ def main():
         improvement_pct = (best_ns - score_ns) / best_ns * 100
         exp["score_ns"] = round(score_ns)
         exp["improvement_pct"] = round(improvement_pct, 4)
+        exp["bench_p_value"] = bench_p_value
 
         # 5. Keep or revert
         if improvement_pct > 0 and improvement_pct < MIN_IMPROVEMENT_PCT:
@@ -1058,6 +1122,11 @@ def main():
             exp["reason"] = "below_threshold"
             git_revert()
             print(f"[loop] REVERTED — improvement {improvement_pct:+.2f}% below noise threshold ({MIN_IMPROVEMENT_PCT}%).", flush=True)
+        elif improvement_pct > 0 and bench_p_value is not None and bench_p_value > P_VALUE_THRESHOLD:
+            exp["kept"] = False
+            exp["reason"] = "weak_signal"
+            git_revert()
+            print(f"[loop] REVERTED — improvement {improvement_pct:+.2f}% but p={bench_p_value:.2f} > {P_VALUE_THRESHOLD} (statistically weak).", flush=True)
         elif improvement_pct > 0:
             committed = git_commit(
                 f"exp-{iteration:03d}: {improvement_pct:+.2f}% "
