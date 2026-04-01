@@ -72,6 +72,14 @@ codegen before making changes. Key functions: `mul` (line 524), `add` (line 111)
 
 Use `get_assembly` to verify actual codegen before assuming what the compiler emits.
 
+## Known False Dead End
+
+**Iter 1 diff shows −1.68% for add/sub mask-based approach — this result is NOT valid.**
+The agent ran out of tokens before writing `packing.rs`. Only `utils.rs` was modified (adding
+`add_avx512`/`sub_avx512` as dead code never called from the hot path). The regression is pure
+session variance on unchanged code. The idea of replacing `vpminud` with `vpcmpgeud`/`vpcmpltud`
+in `Add`/`Sub` to reduce port 0 pressure **has not been tested** and remains a valid candidate.
+
 ## Surgical Precision Principle
 
 **A change is surgical if it touches fewer than ~50 lines and targets a specific hot path.**
