@@ -74,13 +74,14 @@ BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 # NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
 # be able to modify the correctness validation to make wrong code pass.
-WRITABLE = ["dft/src/", "baby-bear/src/"]
+WRITABLE = ["dft/src/", "baby-bear/src/", "monty-31/src/x86_64_avx512/"]
 
 # Maps writable path prefixes to the crate whose tests cover them.
 # Update this when WRITABLE or run_tests() changes.
 TARGET_CRATE_MAP = {
-    "dft/src/":       "p3-dft",
-    "baby-bear/src/": "p3-baby-bear",
+    "dft/src/":                    "p3-dft",
+    "baby-bear/src/":              "p3-baby-bear",
+    "monty-31/src/x86_64_avx512/": "p3-baby-bear",
 }
 
 # Crates actively tested in run_tests(). Must be kept in sync manually.
