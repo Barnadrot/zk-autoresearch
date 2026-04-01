@@ -14,7 +14,7 @@ using `Radix2DitParallel`.
 - `get_assembly` — get x86-64 assembly for a function (e.g. `get_assembly("dit_layer_rev_last2_flat")`). **Use this before submitting any change that relies on compiler behavior** — verify the assembly before and after to confirm your optimization isn't redundant. Call it at most once or twice per iteration — it is slow and token-expensive.
 
 ## Current Codebase State
-The codebase includes all kept improvements from Round 1 and Round 2. The benchmark baseline
+The codebase includes all kept improvements from Rounds 1, 2, and 3. The benchmark baseline
 reflects this. You are optimizing on top of these already-applied changes — do not re-implement
 or re-verify them, focus on what remains unexplored.
 
@@ -55,7 +55,15 @@ monty-31/src/x86_64_avx512/   ← readable, NOT writable
 
 ## Optimization Target
 
-Primary: `dft/src/radix_2_dit_parallel.rs`, `dft/src/butterflies.rs`, `baby-bear/src/x86_64_avx512/`
+**Mandatory first 3 iterations: `baby-bear/src/baby_bear.rs`**
+BabyBear's prime `p = 2^31 - 2^27 + 1` has structure that may allow cheaper modular reduction
+than the generic Montgomery path. This area has never been touched across 114 iterations.
+Start by calling `get_assembly` on BabyBear-specific arithmetic functions to determine whether
+the compiler exploits the prime structure or falls back to generic paths. The writable surface
+is `baby-bear/src/baby_bear.rs` only (the monty-31 AVX512 implementation is readable but not writable).
+
+After baby-bear is exhausted or confirmed optimal, secondary targets:
+`dft/src/radix_2_dit_parallel.rs`, `dft/src/butterflies.rs`
 
 ## Proven Techniques
 
@@ -109,6 +117,14 @@ not architectural restructuring.
 |------|-----------|
 | Pre-broadcast `apply_to_rows` for `DifButterfly`, `ScaledTwiddleFreeButterfly`, `DifButterflyZeros` | +1.36% — none of these are in the `coset_lde_batch` hot path; changes added overhead with no benefit |
 
+### `second_half_general` backwards flag / first-two-layers (Round 3)
+| Idea | Regression |
+|------|-----------|
+| Remove `backwards` flag from `second_half_general` loop (extensions to second_half + first_half_general) | −1.64% to −1.87% — four attempts across iters 17-20, all regressed |
+| Remove `backwards` flag from `first_half_general` | −0.90% — symmetry argument without assembly evidence; codegen differs |
+| First-two-layers fusion in `second_half_general` (`dit_layer_rev_first2_general`) | −0.15% — clean retry without debug_assert still regressed; cache pressure confirmed |
+| ALU instruction reordering in `dit_layer_rev_last2*` | −0.74% — LLVM already handles instruction scheduling; no headroom |
+
 ### Low-level micro-optimizations (Round 1)
 | Idea | Regression |
 |------|-----------|
@@ -121,23 +137,6 @@ regresses 0.4–2.0%. The compiler cannot optimize manually-restructured iterato
 well as the original. **A change is surgical if it touches fewer than ~50 lines and targets a
 specific hot path.** If your idea requires a full-file rewrite, find the minimal targeted
 version first.
-
-## Promising Ideas Interrupted by Token Budget (Round 3)
-
-These ideas were under active analysis when the token budget ran out. They were NOT tried.
-Pursue them before exploring new territory.
-
-- **First-two-layers fusion in `second_half_general`** (`dit_layer_rev_first2_general`) — fuse `layer_rev == log_h-1-mid` and `layer_rev == log_h-2-mid` into a single pass processing all 4 quarter-groups simultaneously. Halves memory traffic for these two layers (2 MiB vs 4 MiB per thread), analogous to the existing `dit_layer_rev_last2` fusion. Cache analysis confirmed 4 streams × 256 KiB fits within L3 per thread. **Previously attempted but rejected by forbidden pattern gate — retry without any `debug_assert!`.**
-
-- **`baby-bear/src/baby_bear.rs` field arithmetic specialization** — BabyBear's prime `p = 2^31 - 2^27 + 1` has structure that may allow cheaper modular reduction than the generic Montgomery path. The writable surface is `baby-bear/src/baby_bear.rs`. Use `get_assembly` on BabyBear-specific arithmetic functions to identify whether the compiler is exploiting the prime structure or falling back to generic paths. **Entirely unexplored — no attempts yet.**
-
-- **ALU dependency chain in `dit_layer_rev_last2_flat`** — full 12-step dependency trace confirmed
-  15-cycle critical path. The two-stage butterfly structure creates a serial mul dependency
-  (`mul(r2t/r3t)` → `add/sub` → `mul(r1t/r3t)` → `add/sub`) that cannot be eliminated. However,
-  the analysis was cut off before identifying whether instruction reordering within each stage
-  could improve throughput on the 8-cycle bound (4 muls at 0.5 mul/cycle). Explore whether
-  reordering stores (`*x_1` before `*x_2`) or separating the two mul chains improves CPU
-  pipeline utilization.
 
 ## AVX512 Arithmetic
 

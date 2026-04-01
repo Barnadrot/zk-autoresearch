@@ -657,8 +657,6 @@ Process:
 
 **Slice large ideas**: If your idea requires changing more than ~50 lines, find the minimal targeted version first. A small near-miss on the right function is more valuable than a large rewrite.
 
-**Extend kept changes**: Look at the kept improvements in the history. Ask: is there a symmetric path, related function, or adjacent layer where the same technique applies?
-
 **You must always make a change.**
 """
 
