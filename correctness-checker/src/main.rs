@@ -23,6 +23,7 @@ use p3_baby_bear::BabyBear;
 use p3_dft::{Radix2Dit, Radix2DitParallel, TwoAdicSubgroupDft};
 use p3_field::{Field, TwoAdicField};
 use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::Matrix;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::env;
@@ -35,7 +36,7 @@ fn generate_deterministic_matrix(seed: u64, rows: usize, cols: usize) -> RowMajo
         .map(|_| {
             use rand::RngCore;
             let v = rng.next_u32() % (1u32 << 31);
-            BabyBear::from_canonical_u64(v as u64)
+            BabyBear::from_canonical_u32(v)
         })
         .collect();
     RowMajorMatrix::new(values, cols)
@@ -51,8 +52,8 @@ fn resolve_shift(desc: &str) -> BabyBear {
         "two_adic_generator" => BabyBear::two_adic_generator(BabyBear::TWO_ADICITY),
         other => {
             // Try parsing as a raw field element
-            if let Ok(v) = other.parse::<u64>() {
-                BabyBear::from_canonical_u64(v)
+            if let Ok(v) = other.parse::<u32>() {
+                BabyBear::from_canonical_u32(v)
             } else {
                 eprintln!("[checker] ERROR: unknown shift '{other}'. Use 'generator' or a numeric value.");
                 std::process::exit(2);
@@ -96,9 +97,13 @@ fn run_check(log_h: usize, cols: usize, added_bits: usize, seed: u64, shift: Bab
         Radix2DitParallel::default().coset_lde_batch(input_candidate, added_bits, shift);
     let candidate_time = t1.elapsed();
 
-    // Bitwise comparison
-    let ref_values = reference_output.values;
-    let cand_values = candidate_output.values;
+    // Bitwise comparison — materialize both outputs into flat RowMajorMatrix
+    // coset_lde_batch may return a RowIndexMappedView (bit-reversal permuted),
+    // so we call to_row_major_matrix() to get a concrete flat layout for comparison.
+    let ref_mat = reference_output.to_row_major_matrix();
+    let cand_mat = candidate_output.to_row_major_matrix();
+    let ref_values = &ref_mat.values;
+    let cand_values = &cand_mat.values;
 
     let mut passed = true;
     let mut mismatch_details = None;
