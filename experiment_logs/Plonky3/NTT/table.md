@@ -26,8 +26,15 @@ Optimization target: `coset_lde_batch` on BabyBear, `Radix2DitParallel`, 2^20 ×
 
 ## Multi-Size Validation — Round 1 (cross-session, run_benchmark.sh)
 
-| Size | Baseline | Optimized | Change | p |
-|------|----------|-----------|--------|---|
-| 2^20 × 256 | 2724.4ms | 2642.8ms | −3.00% | 0.00 |
+All sizes validated in a single Criterion session (same hardware state, no cooling between branches).
+Hardware: Hetzner CCX33 · AMD EPYC · AVX512 · 8 cores. All p=0.00.
 
-> Multi-size run pending for Round 1 standalone. Round 2 multi-size results archived in `discarded/table_rounds1-2.md`.
+| Transform Size | Baseline | Optimized | Gain |
+|----------------|----------|-----------|------|
+| 2^14 (~16K)    | 58.7ms   | 51.9ms    | +10.4% |
+| 2^16 (~64K)    | 177.2ms  | 173.5ms   | +2.5%  |
+| 2^18 (~256K)   | 691.8ms  | 677.7ms   | +2.1%  |
+| 2^20 (~1M) ★  | 2756ms   | 2699ms    | +2.1%  |
+| 2^22 (~4M)     | 11925ms  | 11021ms   | +8.2%  |
+
+★ target size — agent only optimized for 2^20, gains at other sizes are free.
