@@ -38,8 +38,9 @@ ROOT_DIR    = Path(__file__).parent
 REPO_DIR    = ROOT_DIR / "Plonky3"
 LOG_FILE    = ROOT_DIR / "experiments.jsonl"
 STOP_FILE   = ROOT_DIR / "STOP"
-CLAUDE_MD   = ROOT_DIR / "CLAUDE.md"
+CLAUDE_MD   = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "CLAUDE.md"
 CHECKER_DIR = ROOT_DIR / "correctness-checker"
+EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
 MODEL          = "claude-sonnet-4-6"
 MAX_TOKENS     = 40000
@@ -857,6 +858,75 @@ def log_experiment(exp: dict):
         f.write(json.dumps(exp, ensure_ascii=False) + "\n")
 
 
+def _next_experiment_name(target_dir: Path) -> str:
+    """Return the next auto-incremented experiment folder name under target_dir."""
+    existing_nums = []
+    for p in target_dir.glob("experiment_*"):
+        try:
+            existing_nums.append(int(p.name.split("_")[1]))
+        except (IndexError, ValueError):
+            pass
+    return f"experiment_{max(existing_nums, default=0) + 1}"
+
+
+def prompt_experiment_metadata() -> tuple[Path, str]:
+    """
+    Interactively ask for experiment target and name.
+    Returns (target_dir, experiment_name).
+    """
+    base = ROOT_DIR / "experiment_logs"
+    default_target = "Plonky3/NTT"
+    print(f"\n[archive] Setting up new experiment.")
+    target_input = input(f"  Target path under experiment_logs/ [{default_target}]: ").strip()
+    target = base / (target_input or default_target)
+
+    default_name = _next_experiment_name(target)
+    name_input = input(f"  Experiment folder name [{default_name}]: ").strip()
+    name = name_input or default_name
+
+    return target, name
+
+
+def archive_experiment_log(target_dir: Path | None = None, experiment_name: str | None = None):
+    """
+    Archive the current experiments.jsonl into the structured experiment_logs folder.
+    Writes:
+      - experiments_full.jsonl  (all iterations)
+      - experiments_kept.jsonl  (kept improvements only)
+
+    If target_dir/experiment_name are None, uses EXP_LOGS and auto-increments.
+    """
+    if not LOG_FILE.exists():
+        return
+    experiments = load_experiments()
+    if not experiments:
+        return
+
+    if target_dir is None:
+        target_dir = EXP_LOGS
+    if experiment_name is None:
+        experiment_name = _next_experiment_name(target_dir)
+
+    dest = target_dir / experiment_name / "logs"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    full_path = dest / "experiments_full.jsonl"
+    full_path.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in experiments) + "\n",
+        encoding="utf-8"
+    )
+
+    kept = [e for e in experiments if e.get("kept")]
+    kept_path = dest / "experiments_kept.jsonl"
+    kept_path.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in kept) + "\n",
+        encoding="utf-8"
+    )
+
+    print(f"[archive] {len(experiments)} experiments ({len(kept)} kept) → {dest}")
+    return dest
+
+
 def format_history(experiments: list) -> str:
     if not experiments:
         return "No experiments yet — you are starting fresh on a clean codebase."
@@ -1169,15 +1239,25 @@ def main():
           f"anthropic={prov['anthropic_version']}")
 
     if args.start_fresh:
+        # Safety check: warn if there are uncommitted changes about to be destroyed
+        _, dirty = run_cmd(["git", "status", "--porcelain"], cwd=REPO_DIR)
+        if dirty.strip():
+            print("[init] WARNING: --start-fresh will permanently discard these uncommitted changes in Plonky3:")
+            print(dirty.strip())
+            answer = input("Discard these changes? [y/N] ").strip().lower()
+            if answer != "y":
+                print("[init] Aborted. Commit or stash your changes first.")
+                sys.exit(1)
         print("[init] --start-fresh: reverting git state...")
         git_revert()
         if STOP_FILE.exists():
             STOP_FILE.unlink()
             print("[init] Removed stale STOP file.")
         if LOG_FILE.exists():
-            backup = LOG_FILE.with_suffix(f".{int(time.time())}.bak.jsonl")
-            LOG_FILE.rename(backup)
-            print(f"[init] Old log saved to {backup.name}")
+            target_dir, experiment_name = prompt_experiment_metadata()
+            archive_experiment_log(target_dir, experiment_name)
+            LOG_FILE.unlink()
+            print(f"[init] Old log archived and removed.")
 
     # ── Coverage audit ────────────────────────────────────────────────────────
     gaps = audit_test_coverage()
@@ -1192,6 +1272,17 @@ def main():
             sys.exit(1)
         prov["coverage_gap_acknowledged"] = True
     prov_file.write_text(json.dumps(prov, indent=2))
+
+    # ── Dirty state check ─────────────────────────────────────────────────────
+    if not args.start_fresh:
+        _, dirty = run_cmd(["git", "status", "--porcelain"], cwd=REPO_DIR)
+        if dirty.strip():
+            print("[WARNING] Plonky3 repo has uncommitted changes at startup:")
+            print(dirty.strip())
+            print("[WARNING] These may be leftover from a previous run. Use --start-fresh to discard, or commit them first.")
+            answer = input("Continue anyway? [y/N] ").strip().lower()
+            if answer != "y":
+                sys.exit(1)
 
     # ── Establish baseline ────────────────────────────────────────────────────
     baseline_ns = None
@@ -1476,6 +1567,7 @@ def main():
     print(f"[done] Best score      : {best_ns / 1e6:.2f}ms")
     print(f"[done] Total gain      : {total_gain_pct:+.2f}%")
     print(f"[done] Log             : {LOG_FILE}")
+    archive_experiment_log()
 
 
 if __name__ == "__main__":
