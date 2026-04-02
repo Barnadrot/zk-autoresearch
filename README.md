@@ -212,6 +212,18 @@ Higher than expected due to token waste on directory exploration — fixed in ro
 
 ---
 
+## Development
+
+Enable the pre-commit hook to catch correctness-checker build errors locally:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook only runs when files under `correctness-checker/` are staged, and requires `Plonky3/` to be cloned locally. CI also builds the checker on every PR as a safety net.
+
+---
+
 ## Prior Art
 
 - Karpathy's autoresearch pattern: LLM + benchmark feedback loop for nanoGPT kernel optimization

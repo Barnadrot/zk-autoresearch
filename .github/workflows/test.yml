@@ -21,3 +21,19 @@ jobs:
 
       - name: Run tests
         run: python test_loop.py -v
+
+  build-checker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.0"
+
+      - name: Clone Plonky3
+        run: git clone --depth 1 https://github.com/Plonky3/Plonky3.git
+
+      - name: Build correctness-checker
+        run: cargo build --profile bench
+        working-directory: correctness-checker
