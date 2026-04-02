@@ -224,6 +224,70 @@ The hook only runs when files under `correctness-checker/` are staged, and requi
 
 ---
 
+## Contributing
+
+### Running Your Own Experiments
+
+The most valuable contribution is running the loop on a new target and committing your results.
+
+1. **Pick a target** — a different ZK prover, field, or codebase. Keep `CLAUDE.md` focused on one writable scope.
+2. **Follow the folder structure** — commit logs under `experiment_logs/<repo>/<target>/experiment_N/`:
+   ```
+   experiment_logs/
+     YourRepo/
+       YourTarget/
+         active/CLAUDE.md
+         experiment_1/
+           CLAUDE.md        ← snapshot of CLAUDE.md used during the run
+           logs/
+             experiments.jsonl
+             terminal.log
+             report.md
+   ```
+3. **Open a PR** with:
+   - Your `experiment_logs/` folder added
+   - A short description of target, hardware, model, and key results
+   - Benchmark numbers validated with `run_benchmark.sh` (p-values required — loop-internal measurements alone are not sufficient)
+   - Any CLAUDE.md or loop.py improvements discovered during your run
+
+See [WORKFLOW.md](WORKFLOW.md) for the full pre/post-run checklist.
+
+---
+
+### Security & Infrastructure PRs
+
+The loop relies on upstream test suites and human PR review as correctness gates. This is a solid foundation — but the setup can always be strengthened further.
+
+When considering where an improvement belongs, ask: is this strictly specific to the upstream repo being optimized, or is it general enough to help zk-autoresearch run reliably on *any* prover codebase? Generalist improvements (better benchmark methodology, correctness gating, loop tooling) belong here. Repo-specific improvements (new test cases, checker crates) belong upstream.
+
+The best correctness gates structurally belong in upstream repos — a test merged into Plonky3 protects all its consumers automatically, not just zk-autoresearch. But upstream repos typically have extensive test suites with long runtimes and active maintainers with strong opinions. If you think an improvement belongs upstream, **contact the upstream team first** for feedback before writing code, and carefully consider whether it adds significant CI runtime overhead.
+
+**Good candidates for zk-autoresearch:**
+- Improve the p-value gate or benchmark methodology
+- Add correctness model documentation (explicit invariants the agent must preserve)
+- Extend `run_benchmark.sh` for multi-size or multi-config validation
+- Improve `watch.py` or add new analysis tooling
+- Multi-config test matrix: run correctness check with AVX512 disabled to catch fallback divergence
+
+**Better placed upstream (coordinate first):**
+- Large-scale correctness tests that exercise the same regime as the benchmark
+- Trusted checker crates that run equivalence checks against a reference implementation
+
+Open an issue here first for anything touching the correctness/security model — these need discussion before a PR.
+
+---
+
+### Small Contributions
+
+Good first contributions that don't require running the full loop:
+
+- Fix or improve `CLAUDE.md` based on your reading of the experiment logs
+- Add a new benchmark target size to `run_benchmark.sh`
+- Improve error messages or logging in `loop.py`
+- Write analysis of existing `experiment_logs/` (patterns, dead ends, missed opportunities)
+
+---
+
 ## Prior Art
 
 - Karpathy's autoresearch pattern: LLM + benchmark feedback loop for nanoGPT kernel optimization

@@ -38,14 +38,16 @@ ROOT_DIR    = Path(__file__).parent
 REPO_DIR    = ROOT_DIR / "Plonky3"
 LOG_FILE    = ROOT_DIR / "experiments.jsonl"
 STOP_FILE   = ROOT_DIR / "STOP"
-CLAUDE_MD   = ROOT_DIR / "CLAUDE.md"
+CLAUDE_MD   = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "CLAUDE.md"
 CHECKER_DIR = ROOT_DIR / "correctness-checker"
+EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
 MODEL          = "claude-sonnet-4-6"
-MAX_TOKENS     = 20000
+MAX_TOKENS     = 40000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
+P_VALUE_THRESHOLD   = 0.10  # improvements with p > this are treated as noise (weak statistical evidence)
 
 # Correctness checker configuration
 # "partial" = fast spot-check (2^14 × 16, ~1s) — every iteration
@@ -74,13 +76,14 @@ BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 # NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
 # be able to modify the correctness validation to make wrong code pass.
-WRITABLE = ["dft/src/", "baby-bear/src/"]
+WRITABLE = ["dft/src/", "baby-bear/src/", "monty-31/src/x86_64_avx512/"]
 
 # Maps writable path prefixes to the crate whose tests cover them.
 # Update this when WRITABLE or run_tests() changes.
 TARGET_CRATE_MAP = {
-    "dft/src/":       "p3-dft",
-    "baby-bear/src/": "p3-baby-bear",
+    "dft/src/":                    "p3-dft",
+    "baby-bear/src/":              "p3-baby-bear",
+    "monty-31/src/x86_64_avx512/": "p3-baby-bear",
 }
 
 # Crates actively tested in run_tests(). Must be kept in sync manually.
@@ -161,11 +164,39 @@ TOOLS = [
         }
     },
     {
+        "name": "edit_file",
+        "description": (
+            "Make a targeted edit to a source file by replacing an exact string. "
+            "Preferred over write_file for small changes — much cheaper in tokens. "
+            "The old_string must match exactly (including whitespace and indentation). "
+            "Only allowed under monty-31/src/x86_64_avx512/."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to Plonky3 repo root"
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "Exact string to replace (must be unique in the file)"
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Replacement string"
+                }
+            },
+            "required": ["path", "old_string", "new_string"]
+        }
+    },
+    {
         "name": "write_file",
         "description": (
             "Overwrite a source file in the Plonky3 repository. "
-            "Only allowed under dft/src/ or baby-bear/src/. "
-            "Write the COMPLETE new file content — not a diff."
+            "Only allowed under monty-31/src/x86_64_avx512/. "
+            "Write the COMPLETE new file content — not a diff. "
+            "For small changes, prefer edit_file instead."
         ),
         "input_schema": {
             "type": "object",
@@ -321,6 +352,25 @@ def tool_write_file(path: str, content: str) -> str:
     return f"ERROR: Writing not allowed to '{path}'. Allowed prefixes: {WRITABLE}"
 
 
+def tool_edit_file(path: str, old_string: str, new_string: str) -> str:
+    if any(path.startswith(p) for p in WRITABLE):
+        full = (REPO_DIR / path).resolve()
+        if not str(full).startswith(str(REPO_DIR.resolve())):
+            return f"ERROR: Path traversal detected: {path}"
+        if not full.exists():
+            return f"ERROR: File not found: {path}"
+        content = full.read_text(encoding="utf-8")
+        if old_string not in content:
+            return f"ERROR: old_string not found in {path}. Check exact whitespace and indentation."
+        count = content.count(old_string)
+        if count > 1:
+            return f"ERROR: old_string appears {count} times in {path} — must be unique."
+        new_content = content.replace(old_string, new_string, 1)
+        full.write_text(new_content, encoding="utf-8")
+        return f"OK: edited {path} ({len(old_string)} chars → {len(new_string)} chars)"
+    return f"ERROR: Editing not allowed to '{path}'. Allowed prefixes: {WRITABLE}"
+
+
 def tool_list_dir(path: str) -> str:
     full = REPO_DIR / path
     if not full.exists():
@@ -335,6 +385,17 @@ def execute_tool(name: str, inputs: dict) -> str:
         if not path:
             return "ERROR: read_file requires a 'path' argument."
         return tool_read_file(path, inputs.get("start_line"), inputs.get("end_line"))
+    elif name == "edit_file":
+        path = inputs.get("path")
+        old_string = inputs.get("old_string")
+        new_string = inputs.get("new_string")
+        if not path:
+            return "ERROR: edit_file requires a 'path' argument."
+        if old_string is None:
+            return "ERROR: edit_file requires an 'old_string' argument."
+        if new_string is None:
+            return "ERROR: edit_file requires a 'new_string' argument."
+        return tool_edit_file(path, old_string, new_string)
     elif name == "write_file":
         path = inputs.get("path")
         content = inputs.get("content")
@@ -380,7 +441,8 @@ def run_cmd(cmd, cwd=None, timeout=600, extra_env=None):
 def run_bench():
     """
     Run cargo bench for BENCH_TARGET with parallel feature enabled.
-    Returns (median_ns: float | None, raw_output: str).
+    Returns (median_ns: float | None, p_value: float | None, raw_output: str).
+    p_value is None if no Criterion baseline exists (first run).
     """
     print("  [bench] Running...", flush=True)
     t0 = time.time()
@@ -399,7 +461,7 @@ def run_bench():
     if rc != 0:
         snippet = out[-1500:] if len(out) > 1500 else out
         print(f"  [bench] FAILED:\n{snippet}", flush=True)
-        return None, out
+        return None, None, out
 
     # Parse criterion output: "time:   [lower  MEDIAN  upper]" + p-value from change: line
     lower_ns, median_ns, upper_ns, p_value, matched_name = _parse_criterion_output(out)
@@ -416,7 +478,7 @@ def run_bench():
         p_str  = f"  p={p_value:.2f}" if p_value is not None else ""
         print(f"  [bench] {matched_name}: {median_ns/1e6:.2f}ms{ci_str}{p_str}", flush=True)
 
-    return median_ns, out
+    return median_ns, p_value, out
 
 
 def _strip_ansi(text: str) -> str:
@@ -796,6 +858,75 @@ def log_experiment(exp: dict):
         f.write(json.dumps(exp, ensure_ascii=False) + "\n")
 
 
+def _next_experiment_name(target_dir: Path) -> str:
+    """Return the next auto-incremented experiment folder name under target_dir."""
+    existing_nums = []
+    for p in target_dir.glob("experiment_*"):
+        try:
+            existing_nums.append(int(p.name.split("_")[1]))
+        except (IndexError, ValueError):
+            pass
+    return f"experiment_{max(existing_nums, default=0) + 1}"
+
+
+def prompt_experiment_metadata() -> tuple[Path, str]:
+    """
+    Interactively ask for experiment target and name.
+    Returns (target_dir, experiment_name).
+    """
+    base = ROOT_DIR / "experiment_logs"
+    default_target = "Plonky3/NTT"
+    print(f"\n[archive] Setting up new experiment.")
+    target_input = input(f"  Target path under experiment_logs/ [{default_target}]: ").strip()
+    target = base / (target_input or default_target)
+
+    default_name = _next_experiment_name(target)
+    name_input = input(f"  Experiment folder name [{default_name}]: ").strip()
+    name = name_input or default_name
+
+    return target, name
+
+
+def archive_experiment_log(target_dir: Path | None = None, experiment_name: str | None = None):
+    """
+    Archive the current experiments.jsonl into the structured experiment_logs folder.
+    Writes:
+      - experiments_full.jsonl  (all iterations)
+      - experiments_kept.jsonl  (kept improvements only)
+
+    If target_dir/experiment_name are None, uses EXP_LOGS and auto-increments.
+    """
+    if not LOG_FILE.exists():
+        return
+    experiments = load_experiments()
+    if not experiments:
+        return
+
+    if target_dir is None:
+        target_dir = EXP_LOGS
+    if experiment_name is None:
+        experiment_name = _next_experiment_name(target_dir)
+
+    dest = target_dir / experiment_name / "logs"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    full_path = dest / "experiments_full.jsonl"
+    full_path.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in experiments) + "\n",
+        encoding="utf-8"
+    )
+
+    kept = [e for e in experiments if e.get("kept")]
+    kept_path = dest / "experiments_kept.jsonl"
+    kept_path.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in kept) + "\n",
+        encoding="utf-8"
+    )
+
+    print(f"[archive] {len(experiments)} experiments ({len(kept)} kept) → {dest}")
+    return dest
+
+
 def format_history(experiments: list) -> str:
     if not experiments:
         return "No experiments yet — you are starting fresh on a clean codebase."
@@ -809,7 +940,9 @@ def format_history(experiments: list) -> str:
         lines.append("  (use read_experiment_diff(N) to see the exact code change for any iteration)")
         for e in kept:
             delta = f"{e.get('improvement_pct', 0):+.2f}%"
-            lines.append(f"  #{e['iteration']:03d} {delta:>8} — {e.get('agent_idea','?')}")
+            p = e.get('bench_p_value')
+            p_str = f" p={p:.2f}" if p is not None else ""
+            lines.append(f"  #{e['iteration']:03d} {delta:>8}{p_str} — {e.get('agent_idea','?')}")
 
     # 2. Recent attempts for immediate context (non-kept only, last N)
     recent_non_kept = [e for e in experiments[-HISTORY_WINDOW:] if not e.get("kept")]
@@ -1106,15 +1239,25 @@ def main():
           f"anthropic={prov['anthropic_version']}")
 
     if args.start_fresh:
+        # Safety check: warn if there are uncommitted changes about to be destroyed
+        _, dirty = run_cmd(["git", "status", "--porcelain"], cwd=REPO_DIR)
+        if dirty.strip():
+            print("[init] WARNING: --start-fresh will permanently discard these uncommitted changes in Plonky3:")
+            print(dirty.strip())
+            answer = input("Discard these changes? [y/N] ").strip().lower()
+            if answer != "y":
+                print("[init] Aborted. Commit or stash your changes first.")
+                sys.exit(1)
         print("[init] --start-fresh: reverting git state...")
         git_revert()
         if STOP_FILE.exists():
             STOP_FILE.unlink()
             print("[init] Removed stale STOP file.")
         if LOG_FILE.exists():
-            backup = LOG_FILE.with_suffix(f".{int(time.time())}.bak.jsonl")
-            LOG_FILE.rename(backup)
-            print(f"[init] Old log saved to {backup.name}")
+            target_dir, experiment_name = prompt_experiment_metadata()
+            archive_experiment_log(target_dir, experiment_name)
+            LOG_FILE.unlink()
+            print(f"[init] Old log archived and removed.")
 
     # ── Coverage audit ────────────────────────────────────────────────────────
     gaps = audit_test_coverage()
@@ -1130,14 +1273,41 @@ def main():
         prov["coverage_gap_acknowledged"] = True
     prov_file.write_text(json.dumps(prov, indent=2))
 
+    # ── Dirty state check ─────────────────────────────────────────────────────
+    if not args.start_fresh:
+        _, dirty = run_cmd(["git", "status", "--porcelain"], cwd=REPO_DIR)
+        if dirty.strip():
+            print("[WARNING] Plonky3 repo has uncommitted changes at startup:")
+            print(dirty.strip())
+            print("[WARNING] These may be leftover from a previous run. Use --start-fresh to discard, or commit them first.")
+            answer = input("Continue anyway? [y/N] ").strip().lower()
+            if answer != "y":
+                sys.exit(1)
+
     # ── Establish baseline ────────────────────────────────────────────────────
-    print("\n[init] Building baseline benchmark (this compiles from scratch)...")
-    baseline_ns, _ = run_bench()
+    baseline_ns = None
+    if not args.start_fresh and LOG_FILE.exists():
+        existing = load_experiments()
+        if existing:
+            stored = existing[0].get("baseline_ns")
+            stored_commit = existing[0].get("plonky3_commit", "")
+            current_commit = prov.get("plonky3_commit", "")
+            if stored and stored_commit and stored_commit == current_commit:
+                baseline_ns = stored
+                print(f"\n[init] Resuming — reusing baseline: {baseline_ns / 1e6:.2f}ms "
+                      f"(p3={stored_commit[:12]})\n")
+            elif stored and stored_commit != current_commit:
+                print(f"\n[init] Plonky3 commit changed ({stored_commit[:12]} → "
+                      f"{current_commit[:12]}), re-benchmarking baseline...")
+
     if baseline_ns is None:
-        print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
-              file=sys.stderr)
-        sys.exit(1)
-    print(f"[init] Baseline: {baseline_ns / 1e6:.2f}ms\n")
+        print("\n[init] Building baseline benchmark (this compiles from scratch)...")
+        baseline_ns, _, _ = run_bench()
+        if baseline_ns is None:
+            print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"[init] Baseline: {baseline_ns / 1e6:.2f}ms\n")
 
     # Pre-flight correctness check — catch infra issues before spending any tokens
     print("[init] Running pre-flight tests...")
@@ -1226,7 +1396,9 @@ def main():
             "reason": "no_changes",
             "score_ns": None,
             "baseline_ns": round(best_ns),
+            "plonky3_commit": prov.get("plonky3_commit", ""),
             "improvement_pct": 0.0,
+            "bench_p_value": None,
             "agent_idea": idea,
             "agent_thinking": "",  # omitted — full reasoning in terminal log
             "input_tokens": input_tokens,
@@ -1307,7 +1479,7 @@ def main():
             continue
 
         # 4. Benchmark
-        score_ns, bench_out = run_bench()
+        score_ns, bench_p_value, bench_out = run_bench()
         if score_ns is None:
             exp["reason"] = "bench_failed"
             exp["commit_hash"] = exp["commit_hash_before"]  # F10
@@ -1320,6 +1492,7 @@ def main():
         improvement_pct = (best_ns - score_ns) / best_ns * 100
         exp["score_ns"] = round(score_ns)
         exp["improvement_pct"] = round(improvement_pct, 4)
+        exp["bench_p_value"] = bench_p_value
 
         # 5. Keep or revert
         if improvement_pct > 0 and improvement_pct < MIN_IMPROVEMENT_PCT:
@@ -1328,6 +1501,11 @@ def main():
             exp["commit_hash"] = exp["commit_hash_before"]  # F10: no commit made
             git_revert()
             print(f"[loop] REVERTED — improvement {improvement_pct:+.2f}% below noise threshold ({MIN_IMPROVEMENT_PCT}%).", flush=True)
+        elif improvement_pct > 0 and bench_p_value is not None and bench_p_value > P_VALUE_THRESHOLD:
+            exp["kept"] = False
+            exp["reason"] = "weak_signal"
+            git_revert()
+            print(f"[loop] REVERTED — improvement {improvement_pct:+.2f}% but p={bench_p_value:.2f} > {P_VALUE_THRESHOLD} (statistically weak).", flush=True)
         elif improvement_pct > 0:
             # F7: INVARIANT — full correctness validation is ALWAYS required
             # before accepting. This is not configurable. No exceptions.
@@ -1389,6 +1567,7 @@ def main():
     print(f"[done] Best score      : {best_ns / 1e6:.2f}ms")
     print(f"[done] Total gain      : {total_gain_pct:+.2f}%")
     print(f"[done] Log             : {LOG_FILE}")
+    archive_experiment_log()
 
 
 if __name__ == "__main__":

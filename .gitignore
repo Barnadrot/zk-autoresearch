@@ -1,5 +1,5 @@
 # Target repo — clone separately, add to gitignore before pushing
-Plonky3/
+/Plonky3/
 
 # Python
 .venv/
@@ -13,11 +13,6 @@ improvement_ideas.md
 agent_context.md
 tests_guidance.md
 
-# Experiment logs (gitignored — table.md and *_kept/full.jsonl are tracked)
-experiment_logs/**/experiment_report.md
-experiment_logs/**/terminal*.log
-experiment_logs/**/terminal_report.md
-experiment_logs/**/*with_bug*.jsonl
 
 # Runtime files
 experiments.jsonl
