@@ -36,7 +36,7 @@ fn generate_deterministic_matrix(seed: u64, rows: usize, cols: usize) -> RowMajo
         .map(|_| {
             use rand::RngCore;
             let v = rng.next_u32() % (1u32 << 31);
-            BabyBear::from_canonical_u32(v)
+            BabyBear::new(v)
         })
         .collect();
     RowMajorMatrix::new(values, cols)
@@ -53,7 +53,7 @@ fn resolve_shift(desc: &str) -> BabyBear {
         other => {
             // Try parsing as a raw field element
             if let Ok(v) = other.parse::<u32>() {
-                BabyBear::from_canonical_u32(v)
+                BabyBear::new(v)
             } else {
                 eprintln!("[checker] ERROR: unknown shift '{other}'. Use 'generator' or a numeric value.");
                 std::process::exit(2);

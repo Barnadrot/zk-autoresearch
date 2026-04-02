@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Pre-commit hook: verify correctness-checker compiles against current Plonky3.
+# Install: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+CHECKER_DIR="$(git rev-parse --show-toplevel)/correctness-checker"
+
+# Only run if checker source or Cargo.toml changed
+CHANGED=$(git diff --cached --name-only -- "correctness-checker/")
+if [ -z "$CHANGED" ]; then
+    exit 0
+fi
+
+echo "[pre-commit] correctness-checker files changed — verifying build..."
+
+if [ ! -d "$(git rev-parse --show-toplevel)/Plonky3" ]; then
+    echo "[pre-commit] WARNING: Plonky3/ not found, skipping checker build check."
+    echo "[pre-commit] CI will catch build errors."
+    exit 0
+fi
+
+if ! cargo check --profile bench --manifest-path "$CHECKER_DIR/Cargo.toml" 2>&1; then
+    echo ""
+    echo "[pre-commit] FAILED: correctness-checker does not compile."
+    echo "[pre-commit] Fix the build errors before committing."
+    exit 1
+fi
+
+echo "[pre-commit] correctness-checker builds OK."
