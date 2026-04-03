@@ -47,7 +47,7 @@ MAX_TOKENS     = 40000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
-P_VALUE_THRESHOLD   = 0.10  # improvements with p > this are treated as noise (weak statistical evidence)
+P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
 
 # Correctness checker configuration
 # "partial" = fast spot-check (2^14 × 16, ~1s) — every iteration
@@ -72,6 +72,10 @@ BENCH_FILTER = "coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<Mon
 # Parser safety check — must appear in the matched benchmark name line
 # Note: criterion truncates long names so "1048576" is not visible; coset_lde+Radix2DitParallel is unique enough
 BENCH_MUST_CONTAIN = ["coset_lde", "Radix2DitParallel"]
+# Criterion baseline name used for within-session p-value comparisons.
+# --save-baseline saves the current run as this named baseline.
+# --baseline compares the next run against it (gives a real p-value instead of None).
+CRITERION_BASELINE = "loop-baseline"
 
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 # NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
@@ -104,7 +108,7 @@ FORBIDDEN_DIFF_PATTERNS = [
 
 # Recovery and dry-spell limits
 MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
-DRY_SPELL_MIN_ITERS = 20  # don't auto-stop before this many iterations
+DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
 # build profile, CPU features, and thread configuration.
@@ -438,19 +442,28 @@ def run_cmd(cmd, cwd=None, timeout=600, extra_env=None):
         return 1, f"ERROR: Command timed out after {timeout}s: {' '.join(str(c) for c in cmd)}"
 
 
-def run_bench():
+def run_bench(save_baseline: bool = False):
     """
     Run cargo bench for BENCH_TARGET with parallel feature enabled.
     Returns (median_ns: float | None, p_value: float | None, raw_output: str).
-    p_value is None if no Criterion baseline exists (first run).
+
+    save_baseline=True  → passes --save-baseline <CRITERION_BASELINE> (saves this run as the
+                          named baseline; p_value will be None since there is nothing to compare).
+    save_baseline=False → passes --baseline <CRITERION_BASELINE> (compares against the saved
+                          baseline and returns a real p_value from Criterion's t-test).
     """
+    mode_flags = (
+        ["--save-baseline", CRITERION_BASELINE]
+        if save_baseline
+        else ["--baseline", CRITERION_BASELINE]
+    )
     print("  [bench] Running...", flush=True)
     t0 = time.time()
 
     rc, out = run_cmd(
         ["cargo", "bench", "-p", "p3-dft", "--bench", "fft",
          "--features", "p3-dft/parallel",
-         "--", BENCH_FILTER, "--noplot", "--measurement-time", "35"],
+         "--", BENCH_FILTER, "--noplot", "--measurement-time", "35"] + mode_flags,
         timeout=600,
         extra_env=BENCH_ENV,
     )
@@ -1219,7 +1232,7 @@ def main():
                         help=f"Max iterations (default {MAX_ITERATIONS})")
     parser.add_argument("--start-fresh", action="store_true",
                         help="Reset git state + rename old log before starting")
-    parser.add_argument("--dry-spell", type=int, default=15,
+    parser.add_argument("--dry-spell", type=int, default=30,
                         help="Auto-stop after N consecutive non-improvements (default 15)")
     args = parser.parse_args()
 
@@ -1302,7 +1315,7 @@ def main():
 
     if baseline_ns is None:
         print("\n[init] Building baseline benchmark (this compiles from scratch)...")
-        baseline_ns, _, _ = run_bench()
+        baseline_ns, _, _ = run_bench(save_baseline=True)
         if baseline_ns is None:
             print("ERROR: Baseline benchmark failed. Fix the project before running the loop.",
                   file=sys.stderr)
@@ -1541,6 +1554,8 @@ def main():
                 prev_best = best_ns
                 best_ns = score_ns
                 print(f"[loop] KEPT -{improvement_pct:.2f}% faster — committed.", flush=True)
+                # Update Criterion baseline so future p-values compare against the new best.
+                run_bench(save_baseline=True)
         else:
             exp["reason"] = "regression"
             exp["commit_hash"] = exp["commit_hash_before"]  # F10: no commit made
