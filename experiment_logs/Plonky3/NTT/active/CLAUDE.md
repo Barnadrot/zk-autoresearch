@@ -48,6 +48,8 @@ them, focus on what remains unexplored.
 4. **No out-of-scope files** — only edit files under `dft/src/`, `baby-bear/src/`, or `monty-31/src/x86_64_avx512/`.
 5. **Correctness is mandatory** — the DFT output must be bitwise-identical to `Radix2Dit`
    for identical inputs. The test suite enforces this.
+6. **Never add `debug_assert!`** — the forbidden pattern gate will reject your diff immediately.
+   Remove any `debug_assert!` lines before submitting.
 
 ## Repository Structure
 
