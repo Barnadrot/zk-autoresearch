@@ -1130,13 +1130,20 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                             print(f"  [tool] write_file → {path} ({len(block.input.get('content',''))} chars)", flush=True)
                         else:
                             print(f"  [tool] write_file → {path} FAILED: {result}", flush=True)
+                    elif block.name == "edit_file":
+                        path = block.input.get("path", "?")
+                        if result.startswith("OK:"):
+                            files_written.append(path)
+                            print(f"  [tool] edit_file → {path} ({result})", flush=True)
+                        else:
+                            print(f"  [tool] edit_file → {path} FAILED: {result}", flush=True)
                     else:
                         print(f"  [tool] {block.name}({list(block.input.keys())})", flush=True)
                     if block.name in ("read_file", "list_dir"):
                         read_call_count += 1
                     # After 4 read/list calls without a write, nudge the agent to stop exploring
                     if read_call_count >= 4 and block.name in ("read_file", "list_dir") and not files_written:
-                        result += "\n\n[SYSTEM] You have read enough files. Stop exploring and write your change NOW using write_file."
+                        result += "\n\n[SYSTEM] You have read enough files. Stop exploring and write your change NOW using write_file or edit_file."
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
