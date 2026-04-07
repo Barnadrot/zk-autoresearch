@@ -47,7 +47,7 @@ MAX_TOKENS     = 40000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
-P_VALUE_THRESHOLD   = 0.10  # improvements with p > this are treated as noise (weak statistical evidence)
+P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
 
 # Correctness checker configuration
 # "partial" = fast spot-check (2^14 × 16, ~1s) — every iteration
@@ -108,7 +108,7 @@ FORBIDDEN_DIFF_PATTERNS = [
 
 # Recovery and dry-spell limits
 MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
-DRY_SPELL_MIN_ITERS = 20  # don't auto-stop before this many iterations
+DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
 # build profile, CPU features, and thread configuration.
@@ -1232,7 +1232,7 @@ def main():
                         help=f"Max iterations (default {MAX_ITERATIONS})")
     parser.add_argument("--start-fresh", action="store_true",
                         help="Reset git state + rename old log before starting")
-    parser.add_argument("--dry-spell", type=int, default=15,
+    parser.add_argument("--dry-spell", type=int, default=30,
                         help="Auto-stop after N consecutive non-improvements (default 15)")
     args = parser.parse_args()
 
