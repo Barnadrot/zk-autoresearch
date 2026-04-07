@@ -48,6 +48,8 @@ them, focus on what remains unexplored.
 4. **No out-of-scope files** — only edit files under `dft/src/`, `baby-bear/src/`, or `monty-31/src/x86_64_avx512/`.
 5. **Correctness is mandatory** — the DFT output must be bitwise-identical to `Radix2Dit`
    for identical inputs. The test suite enforces this.
+6. **Never add `debug_assert!`** — the forbidden pattern gate will reject your diff immediately.
+   Remove any `debug_assert!` lines before submitting.
 
 ## Repository Structure
 
@@ -139,11 +141,6 @@ Two gates must both pass to keep an improvement:
 - **≥ 0.20%** — practical significance minimum
 
 The Criterion baseline advances after every kept improvement.
-
-**What p > 0.05 means:** Criterion runs 10+ samples per benchmark. A p-value of 0.40 means the
-result is indistinguishable from noise across those samples — not "one unlucky measurement."
-Retrying the identical change will not produce a different p-value. If an idea scores p > 0.05
-twice, it is not a near-miss — it is a dead end. Do not retry it.
 
 ## Simplicity Criterion
 
