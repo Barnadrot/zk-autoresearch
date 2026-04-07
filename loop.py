@@ -80,14 +80,13 @@ CRITERION_BASELINE = "loop-baseline"
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 # NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
 # be able to modify the correctness validation to make wrong code pass.
-WRITABLE = ["dft/src/", "baby-bear/src/", "monty-31/src/x86_64_avx512/"]
+WRITABLE = ["dft/src/", "baby-bear/src/"]
 
 # Maps writable path prefixes to the crate whose tests cover them.
 # Update this when WRITABLE or run_tests() changes.
 TARGET_CRATE_MAP = {
     "dft/src/":                    "p3-dft",
     "baby-bear/src/":              "p3-baby-bear",
-    "monty-31/src/x86_64_avx512/": "p3-baby-bear",
 }
 
 # Crates actively tested in run_tests(). Must be kept in sync manually.
@@ -173,7 +172,7 @@ TOOLS = [
             "Make a targeted edit to a source file by replacing an exact string. "
             "Preferred over write_file for small changes — much cheaper in tokens. "
             "The old_string must match exactly (including whitespace and indentation). "
-            "Only allowed under monty-31/src/x86_64_avx512/."
+            "Only allowed under dft/src/ or baby-bear/src/."
         ),
         "input_schema": {
             "type": "object",
@@ -198,7 +197,7 @@ TOOLS = [
         "name": "write_file",
         "description": (
             "Overwrite a source file in the Plonky3 repository. "
-            "Only allowed under monty-31/src/x86_64_avx512/. "
+            "Only allowed under dft/src/ or baby-bear/src/. "
             "Write the COMPLETE new file content — not a diff. "
             "For small changes, prefer edit_file instead."
         ),

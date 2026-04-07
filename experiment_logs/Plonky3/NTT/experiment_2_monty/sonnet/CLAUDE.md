@@ -45,7 +45,7 @@ them, focus on what remains unexplored.
    proof-of-work bits, or anything in `fri/`, `uni-stark/`, or `batch-stark/`.
 2. **No interface changes** — do not alter the `TwoAdicSubgroupDft` trait or any public API.
 3. **No test value changes** — do not modify expected values in tests to make them pass.
-4. **No out-of-scope files** — only edit files under `dft/src/` or `baby-bear/src/`.
+4. **No out-of-scope files** — only edit files under `dft/src/`, `baby-bear/src/`, or `monty-31/src/x86_64_avx512/`.
 5. **Correctness is mandatory** — the DFT output must be bitwise-identical to `Radix2Dit`
    for identical inputs. The test suite enforces this.
 6. **Never add `debug_assert!`** — the forbidden pattern gate will reject your diff immediately.
@@ -68,7 +68,7 @@ baby-bear/src/                ← writable
   x86_64_avx2/             — AVX2 fallback
   aarch64_neon/            — ARM NEON fallback
 
-monty-31/src/x86_64_avx512/   ← read-only
+monty-31/src/x86_64_avx512/   ← writable
   packing.rs              — PackedMontyField31AVX512 arithmetic (mul at line 524)
   utils.rs                — halve_avx512, mul_neg_2exp_neg_N helpers
 
@@ -80,7 +80,7 @@ dft/benches/fft.rs          — Criterion benchmark definitions (read-only)
 - `dft/src/butterflies.rs` — butterfly implementations (DitButterfly, ScaledDitButterfly, TwiddleFreeButterfly)
 - `dft/src/radix_2_dit_parallel.rs` — main DIT parallel FFT (first_half, second_half, dit_layer*)
 
-Underlying arithmetic (read-only — costs are listed below; do not open these files or spend tokens exploring them):
+Underlying arithmetic (also writable — understand before targeting):
 - `monty-31/src/x86_64_avx512/packing.rs` — Montgomery mul/add/sub, AVX512 packed ops
 - `monty-31/src/x86_64_avx512/utils.rs` — halve, mul_neg_2exp helpers
 
@@ -132,6 +132,7 @@ if you have a concrete reason to expect a different outcome.
 |------|--------|------|
 | Fuse first two layers of `first_half_general` | −0.30% (slower) | Borderline; diverged base, unconfirmed |
 | Pre-broadcast all twiddles per layer of `first_half_general` + OOP | −0.41% (slower) | Borderline; diverged base, unconfirmed |
+| `vpcmpge_epu32_mask` add/sub in monty-31 (`vpminud` → mask+conditional) | +0.41%, p=0.23 (faster) | Statistically weak keep; p<0.05 gate would have reverted — needs proper re-test |
 
 ## Benchmark Signal
 
@@ -147,11 +148,8 @@ All else being equal, simpler is better. Weigh complexity cost against improveme
 a 0.2% gain from deleting 10 lines beats a 0.2% gain from 40 lines of hacky special-casing.
 Targeted changes (< ~50 lines, single hot path) have consistently outperformed full-file rewrites here.
 
-## Arithmetic Costs (read-only reference)
+## AVX512 Arithmetic Reference
 
-Use these to reason about which butterfly-level operations are worth eliminating:
-
-- `mul`: 6.5 cyc/vec throughput, 21 cyc latency — most expensive, eliminate where possible
-- `add`, `sub`: ~1 cyc/vec — cheap
-- `halve_avx512`: 2 cyc/vec — use instead of mul for ÷2
-- `mul_neg_2exp_neg_n_avx512`: 3 cyc/vec, 9 cyc latency
+- `mul` (monty-31 packing.rs line 524): 6.5 cyc/vec throughput, 21 cyc latency
+- `add` (line 111), `sub` (line 125), `neg` (line 872)
+- `halve_avx512` (2 cyc/vec), `mul_neg_2exp_neg_n_avx512` (3 cyc/vec, 9 cyc latency)
