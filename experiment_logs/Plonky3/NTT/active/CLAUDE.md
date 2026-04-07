@@ -18,12 +18,14 @@ using `Radix2DitParallel`.
 
 ## Decision Rule
 
-**Pick one idea and implement it. Do not switch ideas mid-iteration.**
+**Identify 2–3 candidate ideas, select the most promising, implement it — even if uncertain.**
 
-Read the relevant files, pick the most promising idea, implement it, submit. If you are still
-exploring after reading 3–4 files without having chosen an idea, stop exploring and implement
-the best candidate you have seen so far. A no-change iteration wastes the full token budget
-with no benchmark signal.
+The benchmark resolves uncertainty. Your job is to make a reasoned bet, not to prove the idea
+correct before submitting. Once you have ruled out 2 ideas in a row, stop analyzing and
+implement the next best candidate you have seen. A clean, correct change with uncertain impact
+is always better than no change — it gives a benchmark signal either way.
+
+Stop exploring after reading 3–4 files. Do not switch ideas mid-iteration.
 
 ## Current Codebase State
 
