@@ -43,7 +43,7 @@ CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
 MODEL          = "claude-sonnet-4-6"
-MAX_TOKENS     = 40000
+MAX_TOKENS     = 20000
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
