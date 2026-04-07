@@ -12,9 +12,18 @@ using `Radix2DitParallel`.
 - `edit_file` — surgical string replacement (preferred over write_file for targeted changes)
 - `list_dir` — list directory contents
 - `read_experiment_diff` — read the full diff from a previous iteration
-- `get_assembly` — get x86-64 assembly for a function. **Use this before submitting any change
-  that relies on compiler behavior** — verify the assembly before and after to confirm your
-  optimization is real. Call it at most once or twice per iteration — it is slow and token-expensive.
+- `get_assembly` — get x86-64 assembly for a function. Use the full Rust path, e.g.:
+  `get_assembly("p3_dft::radix_2_dit_parallel::dit_layer_rev")` or
+  `get_assembly("p3_dft::butterflies::DitButterfly")`. Call at most once or twice per iteration.
+
+## Decision Rule
+
+**Pick one idea and implement it. Do not switch ideas mid-iteration.**
+
+Read the relevant files, pick the most promising idea, implement it, submit. If you are still
+exploring after reading 3–4 files without having chosen an idea, stop exploring and implement
+the best candidate you have seen so far. A no-change iteration wastes the full token budget
+with no benchmark signal.
 
 ## Current Codebase State
 
@@ -88,14 +97,14 @@ function is untried:
 
 ## Known Dead Ends
 
-**Before implementing anything structurally similar to a dead end, explicitly state the key
-difference that makes your approach viable where these failed.** If you cannot articulate a
-clear structural difference, find a different idea.
+Cross-experiment memory — avoid re-attempting these exact approaches. Targeted additions and
+boundary-layer specializations within these functions are NOT dead ends; only broad restructuring is.
 
-### Manual restructuring of `second_half_general` / `first_half_general`
+### Broad restructuring of `second_half_general` / `first_half_general`
 9 approaches tried (layer fusion, loop restructuring, inlining, flag removal, uniform-twiddle
-specialization) — all regressed −0.58% to −2.02%. Architectural changes to these functions
-consistently lose. Targeted additions at specific boundary points work; broad restructuring does not.
+specialization) — all regressed −0.58% to −2.02%. **Broad architectural changes lose.**
+Targeted additions at specific boundary points (e.g. a new specialized function for layer_rev=0)
+remain unexplored and are worth trying.
 
 ### Twiddle layout / access pattern changes
 | Idea | Regression |
@@ -112,15 +121,16 @@ consistently lose. Targeted additions at specific boundary points work; broad re
 
 ## Near Misses — Worth Revisiting
 
-Results below 0.5% regression or statistically weak keeps — not confirmed dead ends. Try these
-before exploring entirely new territory, but only if you have a concrete reason to expect a
-different outcome on the current codebase.
+Small regressions or statistically weak results — not confirmed dead ends. The Result column
+shows the measured change (negative = slower). All ran on a diverged base; direction may have
+flipped on the current codebase. Try these before exploring entirely new territory, but only
+if you have a concrete reason to expect a different outcome.
 
 | Idea | Result | Note |
 |------|--------|------|
-| Fuse first two layers of `first_half_general` | −0.30% | Borderline; run on diverged base, unconfirmed |
-| Pre-broadcast all twiddles per layer of `first_half_general` + OOP | −0.41% | Borderline; run on diverged base, unconfirmed |
-| `vpcmpge_epu32_mask` add/sub in monty-31 (`vpminud` → mask+conditional) | kept at −0.41%, p=0.23 | Statistically weak keep in exp_4; p<0.05 gate would have reverted it — needs proper re-test |
+| Fuse first two layers of `first_half_general` | −0.30% (slower) | Borderline; diverged base, unconfirmed |
+| Pre-broadcast all twiddles per layer of `first_half_general` + OOP | −0.41% (slower) | Borderline; diverged base, unconfirmed |
+| `vpcmpge_epu32_mask` add/sub in monty-31 (`vpminud` → mask+conditional) | +0.41%, p=0.23 (faster) | Statistically weak keep; p<0.05 gate would have reverted — needs proper re-test |
 
 ## Benchmark Signal
 

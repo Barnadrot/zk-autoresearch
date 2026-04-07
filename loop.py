@@ -324,7 +324,7 @@ def tool_get_assembly(function: str) -> str:
     """
     ASM_LINE_LIMIT = 300
     rc, out = run_cmd(
-        ["cargo", "asm", "-p", "p3-dft", "--features", "p3-dft/parallel",
+        ["cargo", "asm", "-p", "p3-dft", "--bench", "fft", "--features", "p3-dft/parallel",
          "--release", function],
         timeout=120,
     )
