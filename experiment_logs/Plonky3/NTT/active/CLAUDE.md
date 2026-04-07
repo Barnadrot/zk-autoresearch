@@ -140,6 +140,11 @@ Two gates must both pass to keep an improvement:
 
 The Criterion baseline advances after every kept improvement.
 
+**What p > 0.05 means:** Criterion runs 10+ samples per benchmark. A p-value of 0.40 means the
+result is indistinguishable from noise across those samples — not "one unlucky measurement."
+Retrying the identical change will not produce a different p-value. If an idea scores p > 0.05
+twice, it is not a near-miss — it is a dead end. Do not retry it.
+
 ## Simplicity Criterion
 
 All else being equal, simpler is better. Weigh complexity cost against improvement magnitude —
