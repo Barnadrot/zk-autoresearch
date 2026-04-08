@@ -89,10 +89,12 @@ dft/benches/fft.rs          — Criterion benchmark definitions (read-only)
 
 ## Optimization Target
 
-Primary: `dft/src/butterflies.rs` and `dft/src/radix_2_dit_parallel.rs`
+- `dft/src/butterflies.rs` — butterfly implementations (DitButterfly, ScaledDitButterfly, TwiddleFreeButterfly)
+- `dft/src/radix_2_dit_parallel.rs` — main DIT parallel FFT (first_half, second_half, dit_layer*)
 
-Secondary: `monty-31/src/x86_64_avx512/packing.rs` and `monty-31/src/x86_64_avx512/utils.rs`
-— Montgomery mul/add/sub is in every butterfly; gains here multiply across the entire NTT.
+Underlying arithmetic (also writable — understand before targeting):
+- `monty-31/src/x86_64_avx512/packing.rs` — Montgomery mul/add/sub, AVX512 packed ops
+- `monty-31/src/x86_64_avx512/utils.rs` — halve, mul_neg_2exp helpers
 
 ## Known Dead Ends
 
