@@ -96,36 +96,6 @@ Underlying arithmetic (also writable — understand before targeting):
 - `monty-31/src/x86_64_avx512/packing.rs` — Montgomery mul/add/sub, AVX512 packed ops
 - `monty-31/src/x86_64_avx512/utils.rs` — halve, mul_neg_2exp helpers
 
-## Known Dead Ends
-
-Cross-experiment memory — avoid re-attempting these exact approaches.
-
-### DFT structure
-| Idea | Result |
-|------|--------|
-| Broad restructuring of `second_half_general` / `first_half_general` (9 attempts) | −0.58% to −2.02% |
-| Pre-reverse twiddle slice for sequential prefetcher access (tried twice) | −0.97% |
-| Fuse `layer_rev==3` and `layer_rev==2` (`dit_layer_rev_pair32`) | −1.22% |
-| Manual loop unroll | −49.4% |
-| `#[inline(always)]` on butterfly functions | regressed |
-| Remove `backwards` bool from `dit_layer_rev` | broke correctness |
-| Boundary-layer specialization (`dit_layer_rev_base`, `dit_layer_oop_base`) | −0.68% to −0.73% |
-| Pre-broadcast hoisting outside per-block loop (`first_half_general_oop` layer 0, `dit_layer_uniform`) | −0.73% to −0.92% |
-| `DifButterfly::apply_to_rows` pre-broadcast (targets `Radix2Bowers`, not `Radix2DitParallel`) | borderline |
-
-### Montgomery arithmetic (monty-31)
-| Idea | Result |
-|------|--------|
-| Add/sub mask-based approach (iter 1 monty) | NOT valid — code was never called; ignore this result |
-
-## Near Misses — Worth Revisiting
-
-| Idea | Result | Note |
-|------|--------|------|
-| Fuse first two layers of `first_half_general` | −0.30% | Borderline; diverged base, unconfirmed |
-| Pre-broadcast all twiddles per layer of `first_half_general` + OOP | −0.41% | Borderline; diverged base, unconfirmed |
-| Replace `vpminud` with `vpcmpgeud`/`vpcmpltud` in `Add`/`Sub` (`monty-31/packing.rs`) | NOT TESTED | Reduces port 0 pressure; prior −1.68% result was invalid (dead code never called) |
-
 ## Benchmark Signal
 
 Two gates must both pass to keep an improvement:
