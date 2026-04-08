@@ -44,8 +44,8 @@ CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
 MODEL              = "claude-sonnet-4-6"
-MAX_TOKENS         = 20000   # max output tokens per API call — caps individual response length
-ITER_TIMEOUT_SECS  = 420     # 7 min wall-clock limit per iteration — kill and revert if exceeded
+MAX_TOKENS         = 20000   # max output tokens per API call — forces writes, limits runaway iters
+MAX_RECOVERY       = 2       # max recovery prompts per iteration before abandoning
 MAX_ITERATIONS     = 100
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
@@ -1076,17 +1076,11 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
     idea = "(no IDEA: line found)"
     all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
     read_call_count = 0  # counts read_file + list_dir calls only
+    recovery_count = 0
     total_input_tokens = 0
     total_output_tokens = 0
-    iter_start = time.time()
-    timed_out = False
 
     while True:
-        elapsed = time.time() - iter_start
-        if elapsed > ITER_TIMEOUT_SECS:
-            print(f"  [TIMEOUT] Iteration exceeded {ITER_TIMEOUT_SECS}s ({elapsed:.0f}s elapsed) — aborting.", flush=True)
-            timed_out = True
-            break
         for _attempt in range(5):
             try:
                 with client.messages.stream(
@@ -1186,19 +1180,47 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
             messages.append({"role": "user", "content": tool_results})
 
         elif response.stop_reason == "max_tokens":
-            # Hit per-call output limit — continue the conversation naturally.
-            # The iteration-level timeout (ITER_TIMEOUT_SECS) is the kill switch.
-            print(f"  [agent] Hit max_tokens — continuing ({time.time() - iter_start:.0f}s elapsed).", flush=True)
+            # Ran out of output tokens — give up to MAX_RECOVERY chances.
+            recovery_count += 1
+            if recovery_count > MAX_RECOVERY:
+                print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts without writing. Stopping.", flush=True)
+                break
+            print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt ({recovery_count}/{MAX_RECOVERY}).", flush=True)
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
+            budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
+            last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
+            thinking_context = (
+                f"\n\nYour last reasoning before the cut-off:\n\"\"\"\n{last_thinking}\n\"\"\"\n\n"
+                "Continue from exactly where you left off. Do not explore new directions."
+            ) if last_thinking else ""
+
             if tool_use_blocks:
-                # Satisfy API requirement: every tool_use needs a tool_result
-                messages.append({"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": b.id, "content": "Response cut off — continue."}
+                # Satisfy the API requirement: every tool_use needs a tool_result
+                recovery_content = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": (
+                            f"Response was cut off.{thinking_context}\n\n"
+                            f"{budget_note} Write your change now using write_file. "
+                            "End with: IDEA: <one sentence>"
+                        ),
+                    }
                     for b in tool_use_blocks
-                ]})
+                ]
             else:
-                messages.append({"role": "user", "content": "Continue."})
+                recovery_content = [{
+                    "type": "text",
+                    "text": (
+                        f"Your response was cut off before you wrote any file.{thinking_context}\n\n"
+                        f"{budget_note} "
+                        "Now write your change immediately using write_file — "
+                        "be concise, no lengthy preamble. "
+                        "End with: IDEA: <one sentence>"
+                    )
+                }]
+            messages.append({"role": "user", "content": recovery_content})
         else:
             print(f"  [agent] Stopped: {response.stop_reason}", flush=True)
             break
@@ -1206,7 +1228,7 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
     thinking_summary = "\n\n".join(all_text_blocks) if all_text_blocks else ""
     cost_usd = (total_input_tokens * COST_PER_M_INPUT
                 + total_output_tokens * COST_PER_M_OUTPUT) / 1_000_000
-    return bool(files_written), idea, thinking_summary, total_input_tokens, total_output_tokens, cost_usd, timed_out
+    return bool(files_written), idea, thinking_summary, total_input_tokens, total_output_tokens, cost_usd
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -1405,7 +1427,7 @@ def main():
         # 2. Call agent
         print("[agent] Calling Claude...", flush=True)
         t_agent = time.time()
-        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd, timed_out = run_agent_iteration(client, system_blocks, prompt)
+        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, system_blocks, prompt)
         agent_secs = round(time.time() - t_agent, 1)
         print(f"[agent] Done in {agent_secs}s | tokens={input_tokens}in/{output_tokens}out | cost=${cost_usd:.4f} | idea: {idea}", flush=True)
 
@@ -1441,8 +1463,8 @@ def main():
         }
 
         if not made_changes:
-            exp["reason"] = "timeout" if timed_out else "no_change"
-            print(f"[loop] No files changed ({exp['reason']}) — skipping benchmark.", flush=True)
+            exp["reason"] = "no_change"
+            print(f"[loop] No files changed — skipping benchmark.", flush=True)
             exp["commit_hash"] = exp["commit_hash_before"]  # F10
             log_experiment(exp)
             experiments.append(exp)
