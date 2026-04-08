@@ -1044,10 +1044,12 @@ Benchmark command: `cargo bench -p p3-dft --features p3-dft/parallel --bench fft
 Make ONE focused, targeted optimization to the DFT implementation.
 
 Process:
-1. Identify a specific hot-path target
-2. Use `get_assembly` to verify what LLVM actually emits before assuming compiler behavior
-3. Make exactly one logical change using `write_file`
-4. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
+1. Read `eliminated_ideas.md` to see what has already been ruled out
+2. Identify a specific hot-path target
+3. Use `get_assembly` to verify what LLVM actually emits before assuming compiler behavior
+4. Before implementing: append any ideas you ruled out to `eliminated_ideas.md` using `write_file("eliminated_ideas.md", full_updated_content)`
+5. Make exactly one logical change using `write_file` or `edit_file`
+6. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
 
 **Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%.
 
