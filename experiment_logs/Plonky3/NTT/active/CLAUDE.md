@@ -8,13 +8,21 @@ using `Radix2DitParallel`.
 ## Tools Available
 
 - `read_file` — read source files
-- `write_file` — write changes (only to writable files listed below)
-- `edit_file` — surgical string replacement (preferred over write_file for targeted changes)
+- `write_file` — write changes (only to writable files listed below). Use this when you need
+  precision: if you are unsure whether a targeted edit will produce the correct result, rewrite
+  the full function plus ~50 lines of surrounding context. Wider is safer than wrong.
+- `edit_file` — surgical string replacement. Prefer for small, confident changes. If uncertain,
+  use `write_file` instead — rewriting 100–150 lines is fine and avoids edit mistakes.
 - `list_dir` — list directory contents
 - `read_experiment_diff` — read the full diff from a previous iteration
 - `get_assembly` — get x86-64 assembly for a function. Use the full Rust path, e.g.:
   `get_assembly("p3_dft::radix_2_dit_parallel::dit_layer_rev")` or
-  `get_assembly("p3_dft::butterflies::DitButterfly")`. Call at most once or twice per iteration.
+  `get_assembly("p3_dft::butterflies::DitButterfly")`.
+  **No call limit.** Use freely for exploration (understanding current codegen) and verification
+  (confirming expected instructions after editing). For intrinsic-level changes (`unsafe`,
+  `_mm512_*`), call once per function before AND after editing — for a change touching both
+  Add and Sub that means 4 calls minimum. This is correct and necessary; do not skip post-edit
+  verification to save calls.
 
 ## Decision Rule
 

@@ -43,11 +43,17 @@ CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
 MODEL          = "claude-sonnet-4-6"
-MAX_TOKENS     = 20000
+MAX_TOKENS     = 20000       # max output tokens per API call
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
+
+# Unified token budget — shared recovery counter for both input and output overflow
+MAX_RECOVERY          = 3        # max recovery attempts per iter (input + output combined)
+INPUT_WARN_THRESHOLD  = 150_000  # soft nudge appended to tool result (one-time)
+INPUT_RECOV_THRESHOLD = 300_000  # strong recovery prompt, same path as output max_tokens
+INPUT_HARD_STOP       = 450_000  # abandon iter regardless of write state
 
 # Correctness checker configuration
 # "partial" = fast spot-check (2^14 × 16, ~1s) — every iteration
@@ -107,7 +113,7 @@ FORBIDDEN_DIFF_PATTERNS = [
 ]
 
 # Recovery and dry-spell limits
-MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
+MAX_RECOVERY      = 3   # max recovery attempts per iter (shared: input + output overflow)
 DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
@@ -1150,15 +1156,44 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                         "content": result,
                     })
             messages.append({"role": "assistant", "content": response.content})
-            # Input token forcing message: if no files written yet and input budget is high,
-            # append a forcing nudge to the last tool result to stop analyzing and write.
-            if not files_written and total_input_tokens >= 150_000:
+
+            # Hard input stop — abandon iter regardless of write state
+            if total_input_tokens >= INPUT_HARD_STOP:
+                print(f"  [agent] Hard input stop ({total_input_tokens // 1000}k >= {INPUT_HARD_STOP // 1000}k). Abandoning iter.", flush=True)
+                messages.append({"role": "user", "content": tool_results})
+                break
+
+            # Soft nudge (one-time, 150k): appended to tool result, low salience
+            if not files_written and INPUT_WARN_THRESHOLD <= total_input_tokens < INPUT_RECOV_THRESHOLD:
                 tool_results[-1]["content"] += (
                     f"\n\n[SYSTEM] You have used {total_input_tokens // 1000}k input tokens without writing any file. "
                     "Stop analyzing. Write your best available change NOW using write_file or edit_file."
                 )
-                print(f"  [agent] Input token budget warning ({total_input_tokens // 1000}k). Forcing write.", flush=True)
+                print(f"  [agent] Input budget soft nudge ({total_input_tokens // 1000}k).", flush=True)
+
             messages.append({"role": "user", "content": tool_results})
+
+            # Recovery prompt (300k+): same strong path as output max_tokens recovery
+            if not files_written and total_input_tokens >= INPUT_RECOV_THRESHOLD:
+                recovery_count += 1
+                if recovery_count > MAX_RECOVERY:
+                    print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts (input). Stopping.", flush=True)
+                    break
+                print(f"  [agent] Input recovery prompt ({total_input_tokens // 1000}k, attempt {recovery_count}/{MAX_RECOVERY}).", flush=True)
+                last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
+                thinking_context = (
+                    f"\n\nYour last reasoning:\n\"\"\"\n{last_thinking}\n\"\"\"\n\nContinue from exactly where you left off."
+                ) if last_thinking else ""
+                budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
+                messages.append({"role": "user", "content": [{
+                    "type": "text",
+                    "text": (
+                        f"Response was cut off.{thinking_context}\n\n"
+                        f"{budget_note} Write your change now using write_file. "
+                        "End with: IDEA: <one sentence>"
+                    )
+                }]})
+
         elif response.stop_reason == "max_tokens" or (total_output_tokens >= MAX_TOKENS and not files_written):
             # Ran out of tokens before writing — give up to MAX_RECOVERY chances.
             # Also fires when cumulative output across round trips hits MAX_TOKENS without
@@ -1175,7 +1210,7 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt ({recovery_count}/{MAX_RECOVERY}).", flush=True)
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
-            budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
+            budget_note = f"Recovery attempt {recovery_count}/{MAX_RECOVERY}. You MUST write now or this iteration is abandoned."
 
             # Inject last reasoning block so agent continues its in-progress idea
             # rather than pivoting to a safe fallback. Cap at 2000 chars — enough
