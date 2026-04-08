@@ -43,16 +43,11 @@ CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
 MODEL          = "claude-sonnet-4-6"
-MAX_TOKENS     = 20000       # max output tokens per API call
+MAX_TOKENS     = 20000        # max output tokens per API call — forces writes, limits runaway iters
 MAX_ITERATIONS = 100
 HISTORY_WINDOW = 5   # last N experiments shown in each prompt
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
-
-# Token budget — shared recovery counter for both input and output overflow
-MAX_RECOVERY        = 3        # max recovery prompts per iter (input + output combined)
-MAX_INPUT_TOKENS    = 300_000  # cumulative input limit → triggers recovery prompt
-# Output limit is MAX_TOKENS (per-call), triggers recovery on stop_reason == "max_tokens"
 
 # Correctness checker configuration
 # "partial" = fast spot-check (2^14 × 16, ~1s) — every iteration
@@ -111,7 +106,8 @@ FORBIDDEN_DIFF_PATTERNS = [
     r'^\+[^+].*cfg!\(feature\s*=',                    # F4: cfg! macro feature gates
 ]
 
-# Dry-spell limit
+# Recovery and dry-spell limits
+MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
 DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
@@ -1156,36 +1152,13 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
 
-            # Input budget: fire recovery every round-trip after MAX_INPUT_TOKENS.
-            # No files_written gate — write-then-revert does not exempt the agent.
-            if total_input_tokens >= MAX_INPUT_TOKENS:
-                recovery_count += 1
-                if recovery_count > MAX_RECOVERY:
-                    print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts (input {total_input_tokens // 1000}k). Stopping.", flush=True)
-                    break
-                print(f"  [agent] Input budget recovery ({total_input_tokens // 1000}k >= {MAX_INPUT_TOKENS // 1000}k, attempt {recovery_count}/{MAX_RECOVERY}).", flush=True)
-                last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
-                thinking_context = (
-                    f"\n\nYour last reasoning before the cut-off:\n\"\"\"\n{last_thinking}\n\"\"\"\n\n"
-                    "Continue from exactly where you left off. Do not explore new directions."
-                ) if last_thinking else ""
-                budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
-                messages.append({"role": "user", "content": [{
-                    "type": "text",
-                    "text": (
-                        f"Response was cut off.{thinking_context}\n\n"
-                        f"{budget_note} Write your change now using write_file. "
-                        "End with: IDEA: <one sentence>"
-                    )
-                }]})
-
         elif response.stop_reason == "max_tokens":
-            # Output budget hit — send recovery prompt.
+            # Ran out of output tokens — give up to MAX_RECOVERY chances.
             recovery_count += 1
             if recovery_count > MAX_RECOVERY:
-                print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts (output). Stopping.", flush=True)
+                print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts without writing. Stopping.", flush=True)
                 break
-            print(f"  [agent] Hit max_tokens. Sending recovery prompt ({recovery_count}/{MAX_RECOVERY}).", flush=True)
+            print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt ({recovery_count}/{MAX_RECOVERY}).", flush=True)
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
             budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
