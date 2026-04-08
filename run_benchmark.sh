@@ -20,7 +20,7 @@ MULTISIZE=0
 MULTISIZE_ISOLATED=0
 SLEEP_SECS=240  # cool-down between baseline and branch per size
 BRANCH="perf/monty31-addsub-port-pressure"
-MEASURE_ISOLATED="--measurement-time 60 --noplot"
+MEASURE_ISOLATED="--measurement-time 60"
 
 for arg in "$@"; do
   [[ "$arg" == "--skip-main" ]]          && SKIP_MAIN=1
