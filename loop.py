@@ -38,14 +38,15 @@ ROOT_DIR    = Path(__file__).parent
 REPO_DIR    = ROOT_DIR / "Plonky3"
 LOG_FILE    = ROOT_DIR / "experiments.jsonl"
 STOP_FILE   = ROOT_DIR / "STOP"
-CLAUDE_MD   = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "CLAUDE.md"
+CLAUDE_MD        = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "CLAUDE.md"
+ELIMINATED_FILE  = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "eliminated_ideas.md"
 CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
-MODEL          = "claude-sonnet-4-6"
-MAX_TOKENS     = 20000        # max output tokens per API call — forces writes, limits runaway iters
-MAX_ITERATIONS = 100
-HISTORY_WINDOW = 5   # last N experiments shown in each prompt
+MODEL              = "claude-sonnet-4-6"
+MAX_TOKENS         = 20000   # max output tokens per API call — caps individual response length
+ITER_TIMEOUT_SECS  = 420     # 7 min wall-clock limit per iteration — kill and revert if exceeded
+MAX_ITERATIONS     = 100
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
 
@@ -106,8 +107,7 @@ FORBIDDEN_DIFF_PATTERNS = [
     r'^\+[^+].*cfg!\(feature\s*=',                    # F4: cfg! macro feature gates
 ]
 
-# Recovery and dry-spell limits
-MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
+# Dry-spell limit
 DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
@@ -199,8 +199,9 @@ TOOLS = [
         "description": (
             "Overwrite a source file in the Plonky3 repository. "
             "Only allowed under dft/src/, baby-bear/src/, or monty-31/src/x86_64_avx512/. "
+            "Also allowed: 'eliminated_ideas.md' — write the FULL updated file each time (read first, append your entry, rewrite). "
             "Write the COMPLETE new file content — not a diff. "
-            "For small changes, prefer edit_file instead."
+            "For small changes to source files, prefer edit_file instead."
         ),
         "input_schema": {
             "type": "object",
@@ -278,6 +279,10 @@ TOOLS = [
 # ── Tool handlers ─────────────────────────────────────────────────────────────
 
 def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
+    if path == "eliminated_ideas.md":
+        if not ELIMINATED_FILE.exists():
+            return "// eliminated_ideas.md (empty — no ideas logged yet)\n"
+        return f"// eliminated_ideas.md\n{ELIMINATED_FILE.read_text(encoding='utf-8')}"
     if any(path.startswith(p) for p in READABLE) or path == "CLAUDE.md":
         full = (REPO_DIR / path).resolve()
         if not str(full).startswith(str(REPO_DIR.resolve())):
@@ -346,6 +351,9 @@ def tool_get_assembly(function: str) -> str:
 
 
 def tool_write_file(path: str, content: str) -> str:
+    if path == "eliminated_ideas.md":
+        ELIMINATED_FILE.write_text(content, encoding="utf-8")
+        return f"OK: wrote {len(content):,} bytes to eliminated_ideas.md"
     if any(path.startswith(p) for p in WRITABLE):
         full = (REPO_DIR / path).resolve()
         if not str(full).startswith(str(REPO_DIR.resolve())):
@@ -957,10 +965,10 @@ def format_history(experiments: list) -> str:
             p_str = f" p={p:.2f}" if p is not None else ""
             lines.append(f"  #{e['iteration']:03d} {delta:>8}{p_str} — {e.get('agent_idea','?')}")
 
-    # 2. Recent attempts for immediate context (non-kept only, last N)
-    recent_non_kept = [e for e in experiments[-HISTORY_WINDOW:] if not e.get("kept")]
+    # 2. All non-kept attempts
+    recent_non_kept = [e for e in experiments if not e.get("kept")]
     if recent_non_kept:
-        lines.append(f"\n=== RECENT ATTEMPTS (last {HISTORY_WINDOW}) ===")
+        lines.append(f"\n=== ALL ATTEMPTS ({len(recent_non_kept)}) ===")
         for e in recent_non_kept:
             delta  = f"{e.get('improvement_pct', 0):+.2f}%" if e.get("score_ns") else "N/A"
             reason = e.get("reason", "?")
@@ -1018,6 +1026,10 @@ def build_prompt(current_best_ns: float, experiments: list) -> tuple[list, str]:
         }
     ]
 
+    eliminated = ""
+    if ELIMINATED_FILE.exists():
+        eliminated = f"\n## Eliminated Ideas (agent-maintained — read before exploring)\n{ELIMINATED_FILE.read_text(encoding='utf-8')}\n"
+
     # Dynamic user prompt — changes every iter, not cached.
     user_prompt = f"""## Current State
 Benchmark: coset_lde / Radix2DitParallel / BabyBear / 2^20 rows / 256 cols
@@ -1027,7 +1039,7 @@ Benchmark command: `cargo bench -p p3-dft --features p3-dft/parallel --bench fft
 
 ## Experiment History
 {history}
-
+{eliminated}
 ## Your Task
 Make ONE focused, targeted optimization to the DFT implementation.
 
@@ -1062,11 +1074,15 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
     idea = "(no IDEA: line found)"
     all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
     read_call_count = 0  # counts read_file + list_dir calls only
-    recovery_count = 0
     total_input_tokens = 0
     total_output_tokens = 0
+    iter_start = time.time()
 
     while True:
+        elapsed = time.time() - iter_start
+        if elapsed > ITER_TIMEOUT_SECS:
+            print(f"  [TIMEOUT] Iteration exceeded {ITER_TIMEOUT_SECS}s ({elapsed:.0f}s elapsed) — aborting.", flush=True)
+            break
         for _attempt in range(5):
             try:
                 with client.messages.stream(
@@ -1165,47 +1181,19 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
             messages.append({"role": "user", "content": tool_results})
 
         elif response.stop_reason == "max_tokens":
-            # Ran out of output tokens — give up to MAX_RECOVERY chances.
-            recovery_count += 1
-            if recovery_count > MAX_RECOVERY:
-                print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts without writing. Stopping.", flush=True)
-                break
-            print(f"  [agent] Hit max_tokens without writing. Sending recovery prompt ({recovery_count}/{MAX_RECOVERY}).", flush=True)
+            # Hit per-call output limit — continue the conversation naturally.
+            # The iteration-level timeout (ITER_TIMEOUT_SECS) is the kill switch.
+            print(f"  [agent] Hit max_tokens — continuing ({time.time() - iter_start:.0f}s elapsed).", flush=True)
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
-            budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
-            last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
-            thinking_context = (
-                f"\n\nYour last reasoning before the cut-off:\n\"\"\"\n{last_thinking}\n\"\"\"\n\n"
-                "Continue from exactly where you left off. Do not explore new directions."
-            ) if last_thinking else ""
-
             if tool_use_blocks:
-                # Satisfy the API requirement: every tool_use needs a tool_result
-                recovery_content = [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": b.id,
-                        "content": (
-                            f"Response was cut off.{thinking_context}\n\n"
-                            f"{budget_note} Write your change now using write_file. "
-                            "End with: IDEA: <one sentence>"
-                        ),
-                    }
+                # Satisfy API requirement: every tool_use needs a tool_result
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": b.id, "content": "Response cut off — continue."}
                     for b in tool_use_blocks
-                ]
+                ]})
             else:
-                recovery_content = [{
-                    "type": "text",
-                    "text": (
-                        f"Your response was cut off before you wrote any file.{thinking_context}\n\n"
-                        f"{budget_note} "
-                        "Now write your change immediately using write_file — "
-                        "be concise, no lengthy preamble. "
-                        "End with: IDEA: <one sentence>"
-                    )
-                }]
-            messages.append({"role": "user", "content": recovery_content})
+                messages.append({"role": "user", "content": "Continue."})
         else:
             print(f"  [agent] Stopped: {response.stop_reason}", flush=True)
             break
