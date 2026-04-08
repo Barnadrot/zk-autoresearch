@@ -80,13 +80,14 @@ CRITERION_BASELINE = "loop-baseline"
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 # NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
 # be able to modify the correctness validation to make wrong code pass.
-WRITABLE = ["dft/src/", "baby-bear/src/"]
+WRITABLE = ["dft/src/", "baby-bear/src/", "monty-31/src/x86_64_avx512/"]
 
 # Maps writable path prefixes to the crate whose tests cover them.
 # Update this when WRITABLE or run_tests() changes.
 TARGET_CRATE_MAP = {
-    "dft/src/":                    "p3-dft",
-    "baby-bear/src/":              "p3-baby-bear",
+    "dft/src/":                          "p3-dft",
+    "baby-bear/src/":                    "p3-baby-bear",
+    "monty-31/src/x86_64_avx512/":      "p3-baby-bear",
 }
 
 # Crates actively tested in run_tests(). Must be kept in sync manually.
@@ -172,7 +173,7 @@ TOOLS = [
             "Make a targeted edit to a source file by replacing an exact string. "
             "Preferred over write_file for small changes — much cheaper in tokens. "
             "The old_string must match exactly (including whitespace and indentation). "
-            "Only allowed under dft/src/ or baby-bear/src/."
+            "Only allowed under dft/src/, baby-bear/src/, or monty-31/src/x86_64_avx512/."
         ),
         "input_schema": {
             "type": "object",
@@ -197,7 +198,7 @@ TOOLS = [
         "name": "write_file",
         "description": (
             "Overwrite a source file in the Plonky3 repository. "
-            "Only allowed under dft/src/ or baby-bear/src/. "
+            "Only allowed under dft/src/, baby-bear/src/, or monty-31/src/x86_64_avx512/. "
             "Write the COMPLETE new file content — not a diff. "
             "For small changes, prefer edit_file instead."
         ),
@@ -1149,10 +1150,24 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                         "content": result,
                     })
             messages.append({"role": "assistant", "content": response.content})
+            # Input token forcing message: if no files written yet and input budget is high,
+            # append a forcing nudge to the last tool result to stop analyzing and write.
+            if not files_written and total_input_tokens >= 150_000:
+                tool_results[-1]["content"] += (
+                    f"\n\n[SYSTEM] You have used {total_input_tokens // 1000}k input tokens without writing any file. "
+                    "Stop analyzing. Write your best available change NOW using write_file or edit_file."
+                )
+                print(f"  [agent] Input token budget warning ({total_input_tokens // 1000}k). Forcing write.", flush=True)
             messages.append({"role": "user", "content": tool_results})
-        elif response.stop_reason == "max_tokens" and not files_written:
+        elif response.stop_reason == "max_tokens" or (total_output_tokens >= MAX_TOKENS and not files_written):
             # Ran out of tokens before writing — give up to MAX_RECOVERY chances.
+            # Also fires when cumulative output across round trips hits MAX_TOKENS without
+            # a write (bug fix: previously only fired on single-call max_tokens stop).
             # Must provide tool_result for any tool_use blocks in the truncated response.
+            if response.stop_reason != "max_tokens" and files_written:
+                # Output budget hit but files already written — just stop cleanly.
+                print(f"  [agent] Output token budget ({MAX_TOKENS}) reached. Stopping.", flush=True)
+                break
             recovery_count += 1
             if recovery_count > MAX_RECOVERY:
                 print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts without writing. Stopping.", flush=True)
