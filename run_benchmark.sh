@@ -63,11 +63,12 @@ run_branch() {
   echo "  Median: ${MEDIAN}ms  |  p=${PVAL}  |  ${CHANGE}" | tee -a "$SUMMARY"
 }
 
-# ── 2–5. Experiment branches ───────────────────────────────────────────────────
-run_branch "round1"  "perf/dft-butterfly-optimizations"              "2/5"
-run_branch "round2"  "myfork/perf/dft-butterfly-layer-fusion-exp-2"  "3/5"
-run_branch "round3"  "perf/dft-exp3-round3-improvements"             "4/5"
-run_branch "exp4"    "exp-4-monty31-avx512"                          "5/5"
+# ── 2–6. Experiment branches ───────────────────────────────────────────────────
+run_branch "round1"  "perf/dft-butterfly-optimizations"              "2/6"
+run_branch "round2"  "myfork/perf/dft-butterfly-layer-fusion-exp-2"  "3/6"
+run_branch "round3"  "perf/dft-exp3-round3-improvements"             "4/6"
+run_branch "exp4"    "exp-4-monty31-avx512"                          "5/6"
+run_branch "monty"   "perf/monty31-addsub-port-pressure"             "6/6"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "" | tee -a "$SUMMARY"
