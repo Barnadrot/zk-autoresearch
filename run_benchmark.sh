@@ -31,14 +31,14 @@ echo "" | tee -a "$SUMMARY"
 
 # ── 1. Save main as Criterion baseline ────────────────────────────────────────
 if [[ $SKIP_MAIN -eq 0 ]]; then
-  echo "=== [1/5] BASELINE — origin/main ===" | tee -a "$SUMMARY"
+  echo "=== [1/2] BASELINE — origin/main ===" | tee -a "$SUMMARY"
   git checkout origin/main
   cargo bench -p p3-dft $BENCH_FLAGS -- "$BENCH_FILTER" \
     --save-baseline main $MEASURE \
     2>&1 | tee "$RESULTS/bench_main_${TIMESTAMP}.txt"
   echo "Baseline saved." | tee -a "$SUMMARY"
 else
-  echo "=== [1/5] Skipping main baseline (--skip-main) ===" | tee -a "$SUMMARY"
+  echo "=== [1/2] Skipping main baseline (--skip-main) ===" | tee -a "$SUMMARY"
 fi
 
 # ── Helper: run one branch and compare vs main baseline ───────────────────────
@@ -63,12 +63,8 @@ run_branch() {
   echo "  Median: ${MEDIAN}ms  |  p=${PVAL}  |  ${CHANGE}" | tee -a "$SUMMARY"
 }
 
-# ── 2–6. Experiment branches ───────────────────────────────────────────────────
-run_branch "round1"  "perf/dft-butterfly-optimizations"              "2/6"
-run_branch "round2"  "myfork/perf/dft-butterfly-layer-fusion-exp-2"  "3/6"
-run_branch "round3"  "perf/dft-exp3-round3-improvements"             "4/6"
-run_branch "exp4"    "exp-4-monty31-avx512"                          "5/6"
-run_branch "monty"   "perf/monty31-addsub-port-pressure"             "6/6"
+# ── 2. Monty branch ───────────────────────────────────────────────────────────
+run_branch "monty"   "perf/monty31-addsub-port-pressure"             "2/2"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "" | tee -a "$SUMMARY"
