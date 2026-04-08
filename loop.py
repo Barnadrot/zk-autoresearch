@@ -1079,11 +1079,13 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
     total_input_tokens = 0
     total_output_tokens = 0
     iter_start = time.time()
+    timed_out = False
 
     while True:
         elapsed = time.time() - iter_start
         if elapsed > ITER_TIMEOUT_SECS:
             print(f"  [TIMEOUT] Iteration exceeded {ITER_TIMEOUT_SECS}s ({elapsed:.0f}s elapsed) — aborting.", flush=True)
+            timed_out = True
             break
         for _attempt in range(5):
             try:
@@ -1204,7 +1206,7 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
     thinking_summary = "\n\n".join(all_text_blocks) if all_text_blocks else ""
     cost_usd = (total_input_tokens * COST_PER_M_INPUT
                 + total_output_tokens * COST_PER_M_OUTPUT) / 1_000_000
-    return bool(files_written), idea, thinking_summary, total_input_tokens, total_output_tokens, cost_usd
+    return bool(files_written), idea, thinking_summary, total_input_tokens, total_output_tokens, cost_usd, timed_out
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -1403,7 +1405,7 @@ def main():
         # 2. Call agent
         print("[agent] Calling Claude...", flush=True)
         t_agent = time.time()
-        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, system_blocks, prompt)
+        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd, timed_out = run_agent_iteration(client, system_blocks, prompt)
         agent_secs = round(time.time() - t_agent, 1)
         print(f"[agent] Done in {agent_secs}s | tokens={input_tokens}in/{output_tokens}out | cost=${cost_usd:.4f} | idea: {idea}", flush=True)
 
@@ -1439,7 +1441,8 @@ def main():
         }
 
         if not made_changes:
-            print("[loop] No files changed — skipping benchmark.", flush=True)
+            exp["reason"] = "timeout" if timed_out else "no_change"
+            print(f"[loop] No files changed ({exp['reason']}) — skipping benchmark.", flush=True)
             exp["commit_hash"] = exp["commit_hash_before"]  # F10
             log_experiment(exp)
             experiments.append(exp)
