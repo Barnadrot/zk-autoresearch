@@ -111,8 +111,7 @@ FORBIDDEN_DIFF_PATTERNS = [
     r'^\+[^+].*cfg!\(feature\s*=',                    # F4: cfg! macro feature gates
 ]
 
-# Recovery and dry-spell limits
-MAX_RECOVERY      = 3   # max recovery attempts per iter (shared: input + output overflow)
+# Dry-spell limit
 DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
