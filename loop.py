@@ -997,7 +997,8 @@ def format_history(experiments: list) -> str:
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
-def build_prompt(current_best_ns: float, experiments: list) -> str:
+def build_prompt(current_best_ns: float, experiments: list) -> tuple[list, str]:
+    """Returns (system_blocks, user_prompt). system_blocks is cached; user_prompt changes each iter."""
     constraints = CLAUDE_MD.read_text(encoding="utf-8") if CLAUDE_MD.exists() else ""
     history = format_history(experiments)
 
@@ -1008,11 +1009,17 @@ def build_prompt(current_best_ns: float, experiments: list) -> str:
         if first_base:
             total_gain = (first_base - current_best_ns) / first_base * 100
 
-    return f"""You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.
+    # Static system content — CLAUDE.md + role. Cached across round-trips.
+    system_blocks = [
+        {
+            "type": "text",
+            "text": f"You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.\n\n{constraints}",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
-{constraints}
-
-## Current State
+    # Dynamic user prompt — changes every iter, not cached.
+    user_prompt = f"""## Current State
 Benchmark: coset_lde / Radix2DitParallel / BabyBear / 2^20 rows / 256 cols
 Current best time: **{current_best_ns / 1e6:.2f}ms** (lower is better)
 Total improvement so far: {total_gain:+.2f}%
@@ -1036,17 +1043,21 @@ Process:
 
 **You must always make a change.**
 """
+    return system_blocks, user_prompt
 
 
 # ── Agent runner ──────────────────────────────────────────────────────────────
 
-def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool, str, str]:
+def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt: str) -> tuple[bool, str, str]:
     """
     Run one multi-turn agent conversation until end_turn.
     Returns (made_file_changes: bool, extracted_idea: str, thinking_summary: str,
              input_tokens: int, output_tokens: int, cost_usd: float).
+    system_blocks is passed as the system parameter (cached); prompt is the first user message.
     """
     messages = [{"role": "user", "content": prompt}]
+    # Cache tool definitions — static across all round-trips in this iter.
+    tools_cached = TOOLS[:-1] + [{**TOOLS[-1], "cache_control": {"type": "ephemeral"}}]
     files_written: list[str] = []
     idea = "(no IDEA: line found)"
     all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
@@ -1061,7 +1072,8 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                 with client.messages.stream(
                     model=MODEL,
                     max_tokens=MAX_TOKENS,
-                    tools=TOOLS,
+                    system=system_blocks,
+                    tools=tools_cached,
                     messages=messages,
                 ) as stream:
                     had_text = False
@@ -1395,12 +1407,12 @@ def main():
               f"Speedup: -{(baseline_ns - best_ns) / baseline_ns * 100:.2f}%", flush=True)
 
         # 1. Build prompt
-        prompt = build_prompt(best_ns, experiments)
+        system_blocks, prompt = build_prompt(best_ns, experiments)
 
         # 2. Call agent
         print("[agent] Calling Claude...", flush=True)
         t_agent = time.time()
-        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, prompt)
+        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, system_blocks, prompt)
         agent_secs = round(time.time() - t_agent, 1)
         print(f"[agent] Done in {agent_secs}s | tokens={input_tokens}in/{output_tokens}out | cost=${cost_usd:.4f} | idea: {idea}", flush=True)
 
