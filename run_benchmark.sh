@@ -61,6 +61,7 @@ if [[ $MULTISIZE_ISOLATED -eq 1 ]]; then
 
     echo "  [baseline] origin/main..." | tee -a "$SUMMARY"
     git checkout origin/main
+    cargo clean
     cargo bench -p p3-dft $BENCH_FLAGS -- "$filter" \
       --save-baseline "$bname" $MEASURE_ISOLATED --noplot \
       2>&1 | tee "${logfile}.main"
@@ -70,6 +71,7 @@ if [[ $MULTISIZE_ISOLATED -eq 1 ]]; then
 
     echo "  [branch] $BRANCH..." | tee -a "$SUMMARY"
     git checkout "$BRANCH"
+    cargo clean
     cargo bench -p p3-dft $BENCH_FLAGS -- "$filter" \
       --baseline "$bname" $MEASURE_ISOLATED --noplot \
       2>&1 | tee "$logfile"
