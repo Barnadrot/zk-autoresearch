@@ -11,15 +11,25 @@
 set -e
 cd ~/zk-autoresearch/Plonky3
 
-BENCH_FILTER="coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols=256/1048576"
 BENCH_FLAGS="--features p3-dft/parallel --bench fft"
-MEASURE="--measurement-time 60 --noplot"
 RESULTS=~/bench_results
 SKIP_MAIN=0
+MULTISIZE=0
 
 for arg in "$@"; do
   [[ "$arg" == "--skip-main" ]] && SKIP_MAIN=1
+  [[ "$arg" == "--multisize" ]] && MULTISIZE=1
 done
+
+if [[ $MULTISIZE -eq 1 ]]; then
+  BENCH_FILTER="coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel"
+  MEASURE="--measurement-time 30 --noplot"
+  BASELINE_NAME="main_multisize"
+else
+  BENCH_FILTER="coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols=256/1048576"
+  MEASURE="--measurement-time 60 --noplot"
+  BASELINE_NAME="main"
+fi
 
 mkdir -p "$RESULTS"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -34,7 +44,7 @@ if [[ $SKIP_MAIN -eq 0 ]]; then
   echo "=== [1/2] BASELINE — origin/main ===" | tee -a "$SUMMARY"
   git checkout origin/main
   cargo bench -p p3-dft $BENCH_FLAGS -- "$BENCH_FILTER" \
-    --save-baseline main $MEASURE \
+    --save-baseline $BASELINE_NAME $MEASURE \
     2>&1 | tee "$RESULTS/bench_main_${TIMESTAMP}.txt"
   echo "Baseline saved." | tee -a "$SUMMARY"
 else
@@ -52,7 +62,7 @@ run_branch() {
   echo "=== [$step] $label — $branch ===" | tee -a "$SUMMARY"
   git checkout "$branch"
   cargo bench -p p3-dft $BENCH_FLAGS -- "$BENCH_FILTER" \
-    --baseline main $MEASURE \
+    --baseline $BASELINE_NAME $MEASURE \
     2>&1 | tee "$logfile"
 
   # Extract median and p-value from Criterion output
