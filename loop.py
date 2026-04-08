@@ -1154,7 +1154,8 @@ def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt
                     elif block.name == "write_file":
                         path = block.input.get("path", "?")
                         if result.startswith("OK:"):
-                            files_written.append(path)
+                            if path != "eliminated_ideas.md":
+                                files_written.append(path)
                             print(f"  [tool] write_file → {path} ({len(block.input.get('content',''))} chars)", flush=True)
                         else:
                             print(f"  [tool] write_file → {path} FAILED: {result}", flush=True)
