@@ -66,12 +66,20 @@ if [[ $MULTISIZE_ISOLATED -eq 1 ]]; then
       --save-baseline "$bname" $MEASURE_ISOLATED --noplot \
       2>&1 | tee "${logfile}.main"
 
+    # Back up Criterion baseline before cargo clean destroys it
+    CRITERION_BAK="$RESULTS/criterion_bak_${logn}"
+    rm -rf "$CRITERION_BAK"
+    cp -r target/criterion "$CRITERION_BAK"
+
     echo "  Sleeping ${SLEEP_SECS}s to cool CPU..." | tee -a "$SUMMARY"
     sleep $SLEEP_SECS
 
     echo "  [branch] $BRANCH..." | tee -a "$SUMMARY"
     git checkout "$BRANCH"
     cargo clean
+    # Restore baseline so --baseline comparison can find it
+    mkdir -p target/criterion
+    cp -r "$CRITERION_BAK/." target/criterion/
     cargo bench -p p3-dft $BENCH_FLAGS -- "$filter" \
       --baseline "$bname" $MEASURE_ISOLATED --noplot \
       2>&1 | tee "$logfile"
