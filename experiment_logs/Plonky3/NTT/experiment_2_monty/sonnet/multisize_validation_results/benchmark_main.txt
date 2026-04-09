@@ -1,0 +1,44 @@
+    Finished `bench` profile [optimized] target(s) in 0.10s
+     Running benches/fft.rs (target/release/deps/fft-bbaaafd3d628ff88)
+Gnuplot not found, using plotters backend
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...: Collecting 10 samples in estimated 30.332 s (825 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...
+                        time:   [36.486 ms 36.612 ms 36.757 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high mild
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2: Collecting 10 samples in estimated 34.425 s (220 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2
+                        time:   [155.68 ms 155.96 ms 156.33 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 30.0s. You may wish to increase target time to 36.0s or enable flat sampling.
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3: Collecting 10 samples in estimated 35.952 s (55 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3
+                        time:   [655.60 ms 657.73 ms 659.24 ms]
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Collecting 10 samples in estimated 53.734 s (20 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+                        time:   [2.6866 s 2.6969 s 2.7064 s]
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 30.0s. You may wish to increase target time to 111.2s.
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5: Collecting 10 samples in estimated 111.21 s (10 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5
+                        time:   [11.183 s 11.249 s 11.329 s]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild

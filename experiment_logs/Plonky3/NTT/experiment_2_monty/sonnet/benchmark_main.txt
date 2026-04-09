@@ -1,0 +1,20 @@
+   Compiling p3-dft v0.5.1 (/root/zk-autoresearch/Plonky3/dft)
+   Compiling p3-mds v0.5.1 (/root/zk-autoresearch/Plonky3/mds)
+   Compiling p3-poseidon2 v0.5.1 (/root/zk-autoresearch/Plonky3/poseidon2)
+   Compiling p3-monty-31 v0.5.1 (/root/zk-autoresearch/Plonky3/monty-31)
+   Compiling p3-challenger v0.5.1 (/root/zk-autoresearch/Plonky3/challenger)
+   Compiling p3-goldilocks v0.5.1 (/root/zk-autoresearch/Plonky3/goldilocks)
+   Compiling p3-mersenne-31 v0.5.1 (/root/zk-autoresearch/Plonky3/mersenne-31)
+   Compiling p3-baby-bear v0.5.1 (/root/zk-autoresearch/Plonky3/baby-bear)
+    Finished `bench` profile [optimized] target(s) in 6.50s
+     Running benches/fft.rs (target/release/deps/fft-bbaaafd3d628ff88)
+Gnuplot not found, using plotters backend
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Collecting 10 samples in estimated 81.079 s (30 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+                        time:   [2.7191 s 2.7272 s 2.7360 s]
+                        change: [−0.1736% +0.2495% +0.6827%] (p = 0.30 > 0.05)
+                        No change in performance detected.
+

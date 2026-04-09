@@ -1,0 +1,11 @@
+=== Benchmark run: 20260408_171808 ===
+Filter: coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel
+
+=== [1/2] BASELINE — origin/main ===
+Baseline saved.
+
+=== [2/2] monty — perf/monty31-addsub-port-pressure ===
+  Median: 36.447ms  |  p=0.79  |  
+
+=== ALL DONE ===
+Results in: /root/bench_results/

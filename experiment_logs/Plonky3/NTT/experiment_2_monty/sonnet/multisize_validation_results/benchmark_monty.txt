@@ -1,0 +1,54 @@
+    Finished `bench` profile [optimized] target(s) in 0.10s
+     Running benches/fft.rs (target/release/deps/fft-bbaaafd3d628ff88)
+Gnuplot not found, using plotters backend
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...: Collecting 10 samples in estimated 30.430 s (825 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols...
+                        time:   [36.447 ms 36.545 ms 36.636 ms]
+                        change: [−0.6570% −0.0909% +0.5589%] (p = 0.79 > 0.05)
+                        No change in performance detected.
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2: Collecting 10 samples in estimated 34.332 s (220 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #2
+                        time:   [154.42 ms 154.67 ms 155.01 ms]
+                        change: [−1.3800% −0.9713% −0.5632%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 30.0s. You may wish to increase target time to 35.9s or enable flat sampling.
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3: Collecting 10 samples in estimated 35.896 s (55 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #3
+                        time:   [653.02 ms 653.90 ms 655.35 ms]
+                        change: [−0.6671% −0.2769% +0.1751%] (p = 0.23 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Collecting 10 samples in estimated 53.579 s (20 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+                        time:   [2.6766 s 2.6837 s 2.6890 s]
+                        change: [−0.9259% −0.4872% −0.0490%] (p = 0.05 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 30.0s. You may wish to increase target time to 111.0s.
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5: Collecting 10 samples in estimated 111.03 s (10 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #5
+                        time:   [11.110 s 11.130 s 11.151 s]
+                        change: [−1.7788% −1.0570% −0.4253%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+
