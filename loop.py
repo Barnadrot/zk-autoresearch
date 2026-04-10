@@ -38,14 +38,15 @@ ROOT_DIR    = Path(__file__).parent
 REPO_DIR    = ROOT_DIR / "Plonky3"
 LOG_FILE    = ROOT_DIR / "experiments.jsonl"
 STOP_FILE   = ROOT_DIR / "STOP"
-CLAUDE_MD   = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "CLAUDE.md"
+CLAUDE_MD        = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "CLAUDE.md"
+ELIMINATED_FILE  = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" / "eliminated_ideas.md"
 CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
-MODEL          = "claude-sonnet-4-6"
-MAX_TOKENS     = 20000
-MAX_ITERATIONS = 100
-HISTORY_WINDOW = 5   # last N experiments shown in each prompt
+MODEL              = "claude-sonnet-4-6"
+MAX_TOKENS         = 20000   # max output tokens per API call — forces writes, limits runaway iters
+MAX_RECOVERY       = 2       # max recovery prompts per iteration before abandoning
+MAX_ITERATIONS     = 100
 MIN_IMPROVEMENT_PCT = 0.20  # improvements below this are treated as noise
 P_VALUE_THRESHOLD   = 0.05  # improvements with p > this are treated as noise (95% confidence required)
 
@@ -80,13 +81,14 @@ CRITERION_BASELINE = "loop-baseline"
 # Files agent may WRITE (prefix match, relative to REPO_DIR)
 # NOTE: correctness-checker/ is deliberately EXCLUDED — the agent must not
 # be able to modify the correctness validation to make wrong code pass.
-WRITABLE = ["dft/src/", "baby-bear/src/"]
+WRITABLE = ["dft/src/", "baby-bear/src/", "monty-31/src/x86_64_avx512/"]
 
 # Maps writable path prefixes to the crate whose tests cover them.
 # Update this when WRITABLE or run_tests() changes.
 TARGET_CRATE_MAP = {
-    "dft/src/":                    "p3-dft",
-    "baby-bear/src/":              "p3-baby-bear",
+    "dft/src/":                          "p3-dft",
+    "baby-bear/src/":                    "p3-baby-bear",
+    "monty-31/src/x86_64_avx512/":      "p3-baby-bear",
 }
 
 # Crates actively tested in run_tests(). Must be kept in sync manually.
@@ -105,8 +107,7 @@ FORBIDDEN_DIFF_PATTERNS = [
     r'^\+[^+].*cfg!\(feature\s*=',                    # F4: cfg! macro feature gates
 ]
 
-# Recovery and dry-spell limits
-MAX_RECOVERY      = 2   # max recovery prompts per iteration before abandoning
+# Dry-spell limit
 DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
 
 # Shared environment for benchmark AND correctness checker — ensures identical
@@ -172,7 +173,7 @@ TOOLS = [
             "Make a targeted edit to a source file by replacing an exact string. "
             "Preferred over write_file for small changes — much cheaper in tokens. "
             "The old_string must match exactly (including whitespace and indentation). "
-            "Only allowed under dft/src/ or baby-bear/src/."
+            "Only allowed under dft/src/, baby-bear/src/, or monty-31/src/x86_64_avx512/."
         ),
         "input_schema": {
             "type": "object",
@@ -197,9 +198,10 @@ TOOLS = [
         "name": "write_file",
         "description": (
             "Overwrite a source file in the Plonky3 repository. "
-            "Only allowed under dft/src/ or baby-bear/src/. "
+            "Only allowed under dft/src/, baby-bear/src/, or monty-31/src/x86_64_avx512/. "
+            "Also allowed: 'eliminated_ideas.md' — write the FULL updated file each time (read first, append your entry, rewrite). "
             "Write the COMPLETE new file content — not a diff. "
-            "For small changes, prefer edit_file instead."
+            "For small changes to source files, prefer edit_file instead."
         ),
         "input_schema": {
             "type": "object",
@@ -277,6 +279,10 @@ TOOLS = [
 # ── Tool handlers ─────────────────────────────────────────────────────────────
 
 def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
+    if path == "eliminated_ideas.md":
+        if not ELIMINATED_FILE.exists():
+            return "// eliminated_ideas.md (empty — no ideas logged yet)\n"
+        return f"// eliminated_ideas.md\n{ELIMINATED_FILE.read_text(encoding='utf-8')}"
     if any(path.startswith(p) for p in READABLE) or path == "CLAUDE.md":
         full = (REPO_DIR / path).resolve()
         if not str(full).startswith(str(REPO_DIR.resolve())):
@@ -345,6 +351,9 @@ def tool_get_assembly(function: str) -> str:
 
 
 def tool_write_file(path: str, content: str) -> str:
+    if path == "eliminated_ideas.md":
+        ELIMINATED_FILE.write_text(content, encoding="utf-8")
+        return f"OK: wrote {len(content):,} bytes to eliminated_ideas.md"
     if any(path.startswith(p) for p in WRITABLE):
         full = (REPO_DIR / path).resolve()
         if not str(full).startswith(str(REPO_DIR.resolve())):
@@ -956,10 +965,10 @@ def format_history(experiments: list) -> str:
             p_str = f" p={p:.2f}" if p is not None else ""
             lines.append(f"  #{e['iteration']:03d} {delta:>8}{p_str} — {e.get('agent_idea','?')}")
 
-    # 2. Recent attempts for immediate context (non-kept only, last N)
-    recent_non_kept = [e for e in experiments[-HISTORY_WINDOW:] if not e.get("kept")]
+    # 2. All non-kept attempts
+    recent_non_kept = [e for e in experiments if not e.get("kept")]
     if recent_non_kept:
-        lines.append(f"\n=== RECENT ATTEMPTS (last {HISTORY_WINDOW}) ===")
+        lines.append(f"\n=== ALL ATTEMPTS ({len(recent_non_kept)}) ===")
         for e in recent_non_kept:
             delta  = f"{e.get('improvement_pct', 0):+.2f}%" if e.get("score_ns") else "N/A"
             reason = e.get("reason", "?")
@@ -996,7 +1005,8 @@ def format_history(experiments: list) -> str:
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
-def build_prompt(current_best_ns: float, experiments: list) -> str:
+def build_prompt(current_best_ns: float, experiments: list) -> tuple[list, str]:
+    """Returns (system_blocks, user_prompt). system_blocks is cached; user_prompt changes each iter."""
     constraints = CLAUDE_MD.read_text(encoding="utf-8") if CLAUDE_MD.exists() else ""
     history = format_history(experiments)
 
@@ -1007,11 +1017,21 @@ def build_prompt(current_best_ns: float, experiments: list) -> str:
         if first_base:
             total_gain = (first_base - current_best_ns) / first_base * 100
 
-    return f"""You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.
+    # Static system content — CLAUDE.md + role. Cached across round-trips.
+    system_blocks = [
+        {
+            "type": "text",
+            "text": f"You are a Rust performance engineer optimizing Plonky3's DFT/NTT implementation.\n\n{constraints}",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
-{constraints}
+    eliminated = ""
+    if ELIMINATED_FILE.exists():
+        eliminated = f"\n## Eliminated Ideas (agent-maintained — read before exploring)\n{ELIMINATED_FILE.read_text(encoding='utf-8')}\n"
 
-## Current State
+    # Dynamic user prompt — changes every iter, not cached.
+    user_prompt = f"""## Current State
 Benchmark: coset_lde / Radix2DitParallel / BabyBear / 2^20 rows / 256 cols
 Current best time: **{current_best_ns / 1e6:.2f}ms** (lower is better)
 Total improvement so far: {total_gain:+.2f}%
@@ -1019,15 +1039,17 @@ Benchmark command: `cargo bench -p p3-dft --features p3-dft/parallel --bench fft
 
 ## Experiment History
 {history}
-
+{eliminated}
 ## Your Task
 Make ONE focused, targeted optimization to the DFT implementation.
 
 Process:
-1. Identify a specific hot-path target
-2. Use `get_assembly` to verify what LLVM actually emits before assuming compiler behavior
-3. Make exactly one logical change using `write_file`
-4. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
+1. Read `eliminated_ideas.md` to see what has already been ruled out
+2. Identify a specific hot-path target
+3. Use `get_assembly` to verify what LLVM actually emits before assuming compiler behavior
+4. Before implementing: append any ideas you ruled out to `eliminated_ideas.md` using `write_file("eliminated_ideas.md", full_updated_content)`
+5. Make exactly one logical change using `write_file` or `edit_file`
+6. End your response with: `IDEA: <one sentence describing the change and hypothesis>`
 
 **Value criterion**: The only measure of a good change is benchmark improvement in milliseconds. A 3-line change that saves 1% is better than a 1000-line rewrite that saves 0.5%.
 
@@ -1035,17 +1057,21 @@ Process:
 
 **You must always make a change.**
 """
+    return system_blocks, user_prompt
 
 
 # ── Agent runner ──────────────────────────────────────────────────────────────
 
-def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool, str, str]:
+def run_agent_iteration(client: anthropic.Anthropic, system_blocks: list, prompt: str) -> tuple[bool, str, str]:
     """
     Run one multi-turn agent conversation until end_turn.
     Returns (made_file_changes: bool, extracted_idea: str, thinking_summary: str,
              input_tokens: int, output_tokens: int, cost_usd: float).
+    system_blocks is passed as the system parameter (cached); prompt is the first user message.
     """
     messages = [{"role": "user", "content": prompt}]
+    # Cache tool definitions — static across all round-trips in this iter.
+    tools_cached = TOOLS[:-1] + [{**TOOLS[-1], "cache_control": {"type": "ephemeral"}}]
     files_written: list[str] = []
     idea = "(no IDEA: line found)"
     all_text_blocks: list[str] = []  # accumulate all agent text for thinking_summary
@@ -1060,7 +1086,8 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                 with client.messages.stream(
                     model=MODEL,
                     max_tokens=MAX_TOKENS,
-                    tools=TOOLS,
+                    system=system_blocks,
+                    tools=tools_cached,
                     messages=messages,
                 ) as stream:
                     had_text = False
@@ -1125,7 +1152,8 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                     elif block.name == "write_file":
                         path = block.input.get("path", "?")
                         if result.startswith("OK:"):
-                            files_written.append(path)
+                            if path != "eliminated_ideas.md":
+                                files_written.append(path)
                             print(f"  [tool] write_file → {path} ({len(block.input.get('content',''))} chars)", flush=True)
                         else:
                             print(f"  [tool] write_file → {path} FAILED: {result}", flush=True)
@@ -1150,9 +1178,9 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
                     })
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
-        elif response.stop_reason == "max_tokens" and not files_written:
-            # Ran out of tokens before writing — give up to MAX_RECOVERY chances.
-            # Must provide tool_result for any tool_use blocks in the truncated response.
+
+        elif response.stop_reason == "max_tokens":
+            # Ran out of output tokens — give up to MAX_RECOVERY chances.
             recovery_count += 1
             if recovery_count > MAX_RECOVERY:
                 print(f"  [agent] Exhausted {MAX_RECOVERY} recovery attempts without writing. Stopping.", flush=True)
@@ -1161,10 +1189,6 @@ def run_agent_iteration(client: anthropic.Anthropic, prompt: str) -> tuple[bool,
             messages.append({"role": "assistant", "content": response.content})
             tool_use_blocks = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
             budget_note = f"This is recovery attempt {recovery_count} of {MAX_RECOVERY}. You must write now or the iteration will be abandoned."
-
-            # Inject last reasoning block so agent continues its in-progress idea
-            # rather than pivoting to a safe fallback. Cap at 2000 chars — enough
-            # to capture the active idea without inflating the recovery message.
             last_thinking = (all_text_blocks[-1] if all_text_blocks else "")[-2000:]
             thinking_context = (
                 f"\n\nYour last reasoning before the cut-off:\n\"\"\"\n{last_thinking}\n\"\"\"\n\n"
@@ -1398,12 +1422,12 @@ def main():
               f"Speedup: -{(baseline_ns - best_ns) / baseline_ns * 100:.2f}%", flush=True)
 
         # 1. Build prompt
-        prompt = build_prompt(best_ns, experiments)
+        system_blocks, prompt = build_prompt(best_ns, experiments)
 
         # 2. Call agent
         print("[agent] Calling Claude...", flush=True)
         t_agent = time.time()
-        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, prompt)
+        made_changes, idea, thinking_summary, input_tokens, output_tokens, cost_usd = run_agent_iteration(client, system_blocks, prompt)
         agent_secs = round(time.time() - t_agent, 1)
         print(f"[agent] Done in {agent_secs}s | tokens={input_tokens}in/{output_tokens}out | cost=${cost_usd:.4f} | idea: {idea}", flush=True)
 
@@ -1439,7 +1463,8 @@ def main():
         }
 
         if not made_changes:
-            print("[loop] No files changed — skipping benchmark.", flush=True)
+            exp["reason"] = "no_change"
+            print(f"[loop] No files changed — skipping benchmark.", flush=True)
             exp["commit_hash"] = exp["commit_hash_before"]  # F10
             log_experiment(exp)
             experiments.append(exp)

@@ -1,0 +1,12 @@
+    Finished `bench` profile [optimized] target(s) in 0.08s
+     Running benches/fft.rs (target/release/deps/fft-bbaaafd3d628ff88)
+Gnuplot not found, using plotters backend
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Warming up for 3.0000 s
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Collecting 10 samples in estimated 80.314 s (30 iterations)
+Benchmarking coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4: Analyzing
+coset_lde/MontyField31<BabyBearParameters>/Radix2DitParallel<MontyField31<BabyBearParameters>>/ncols... #4
+                        time:   [2.6763 s 2.6838 s 2.6916 s]
+                        change: [−2.0132% −1.5897% −1.1430%] (p = 0.00 < 0.05)
+                        Performance has improved.
+

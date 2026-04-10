@@ -8,13 +8,21 @@ using `Radix2DitParallel`.
 ## Tools Available
 
 - `read_file` — read source files
-- `write_file` — write changes (only to writable files listed below)
-- `edit_file` — surgical string replacement (preferred over write_file for targeted changes)
+- `write_file` — write changes (only to writable files listed below). Use this when you need
+  precision: if you are unsure whether a targeted edit will produce the correct result, rewrite
+  the full function plus ~50 lines of surrounding context. Wider is safer than wrong.
+- `edit_file` — surgical string replacement. Prefer for small, confident changes. If uncertain,
+  use `write_file` instead — rewriting 100–150 lines is fine and avoids edit mistakes.
 - `list_dir` — list directory contents
 - `read_experiment_diff` — read the full diff from a previous iteration
 - `get_assembly` — get x86-64 assembly for a function. Use the full Rust path, e.g.:
   `get_assembly("p3_dft::radix_2_dit_parallel::dit_layer_rev")` or
-  `get_assembly("p3_dft::butterflies::DitButterfly")`. Call at most once or twice per iteration.
+  `get_assembly("p3_dft::butterflies::DitButterfly")`.
+  **No call limit.** Use freely for exploration (understanding current codegen) and verification
+  (confirming expected instructions after editing). For intrinsic-level changes (`unsafe`,
+  `_mm512_*`), call once per function before AND after editing — for a change touching both
+  Add and Sub that means 4 calls minimum. This is correct and necessary; do not skip post-edit
+  verification to save calls.
 
 ## Decision Rule
 
@@ -23,23 +31,25 @@ using `Radix2DitParallel`.
 The benchmark resolves uncertainty. Your job is to make a reasoned bet, not to prove the idea
 correct before submitting. Once you have ruled out 2 ideas in a row, stop analyzing and
 implement the next best candidate you have seen. A clean, correct change with uncertain impact
-is always better than no change — it gives a benchmark signal either way.
+is always better than no change — it gives a benchmark signal for the next iteration.
 
 Stop exploring after reading 3–4 files. Do not switch ideas mid-iteration.
 
 ## Current Codebase State
 
-The codebase includes all kept improvements from Round 1 (applied via merged upstream PR).
-You are optimizing on top of these already-applied changes — do not re-implement or re-verify
-them, focus on what remains unexplored.
+This is the **second autoresearch run** on this codebase. The first run already found and merged
+improvements upstream. You are optimizing on top of those — do not re-implement or re-verify them.
 
-**Round 1 improvements already in the codebase:**
-- Merge 1/N scaling into first butterfly layer (`ScaledDitButterfly`) — eliminates a separate O(N) memory pass
-- Precompute `twiddle × scale` in `ScaledDitButterfly` — reduces multiplications 3→2 per element
-- Pre-broadcast twiddle into `F::Packing` before inner loop in `DitButterfly::apply_to_rows` — eliminates 16 redundant scalar→vector broadcasts per row-pair
-- `TwiddleFreeButterfly` for layer 0 of `first_half` — twiddle=1 eliminates one Montgomery mul per element
-- Pre-broadcast on `ScaledDitButterfly::apply_to_rows`
-- Hoist `scale.is_none()` check in `second_half` — avoids per-iteration branch on the forward transform path
+**Improvements from the first autoresearch run (already in the codebase):**
+These are calibration references — p < 0.05 kept changes, showing what a real improvement looks like:
+- Merge 1/N scaling into first butterfly layer (`ScaledDitButterfly`) — +0.06%
+- Precompute `twiddle × scale` in `ScaledDitButterfly` — +0.96%
+- Pre-broadcast twiddle into `F::Packing` in `DitButterfly::apply_to_rows` — +0.73%
+- `TwiddleFreeButterfly` for layer 0 of `first_half` — +0.40%
+- `TwiddleFreeButterfly` for first row-pair of layers 1..mid-1 — +0.15%
+- Hoist `scale.is_none()` check in `second_half` + `ScaledDitButterfly` pre-broadcast — +0.58%
+
+These are done and exhausted — do not re-implement or extend. The range +0.15% to +0.96% is the benchmark for what a real improvement looks like.
 
 ## Hard Constraints (never violate)
 
@@ -47,7 +57,7 @@ them, focus on what remains unexplored.
    proof-of-work bits, or anything in `fri/`, `uni-stark/`, or `batch-stark/`.
 2. **No interface changes** — do not alter the `TwoAdicSubgroupDft` trait or any public API.
 3. **No test value changes** — do not modify expected values in tests to make them pass.
-4. **No out-of-scope files** — only edit files under `dft/src/` or `baby-bear/src/`.
+4. **No out-of-scope files** — only edit files under `dft/src/`, `baby-bear/src/`, or `monty-31/src/x86_64_avx512/`.
 5. **Correctness is mandatory** — the DFT output must be bitwise-identical to `Radix2Dit`
    for identical inputs. The test suite enforces this.
 6. **Never add `debug_assert!`** — the forbidden pattern gate will reject your diff immediately.
@@ -65,12 +75,12 @@ dft/src/                      ← writable
 baby-bear/src/                ← writable
   baby_bear.rs              — BabyBear field definition and Montgomery arithmetic
   x86_64_avx512/
-    packing.rs              — 37 lines: type alias + BabyBear constants (entry point)
+    packing.rs              — type alias + BabyBear constants (thin wrapper over monty-31)
     mod.rs                  — exposes packing, poseidon1, poseidon2
   x86_64_avx2/             — AVX2 fallback
   aarch64_neon/            — ARM NEON fallback
 
-monty-31/src/x86_64_avx512/   ← read-only
+monty-31/src/x86_64_avx512/   ← writable
   packing.rs              — PackedMontyField31AVX512 arithmetic (mul at line 524)
   utils.rs                — halve_avx512, mul_neg_2exp_neg_N helpers
 
@@ -82,58 +92,9 @@ dft/benches/fft.rs          — Criterion benchmark definitions (read-only)
 - `dft/src/butterflies.rs` — butterfly implementations (DitButterfly, ScaledDitButterfly, TwiddleFreeButterfly)
 - `dft/src/radix_2_dit_parallel.rs` — main DIT parallel FFT (first_half, second_half, dit_layer*)
 
-Underlying arithmetic (read-only — costs are listed below; do not open these files or spend tokens exploring them):
+Underlying arithmetic (also writable — understand before targeting):
 - `monty-31/src/x86_64_avx512/packing.rs` — Montgomery mul/add/sub, AVX512 packed ops
 - `monty-31/src/x86_64_avx512/utils.rs` — halve, mul_neg_2exp helpers
-
-## Proven Techniques (extend these first)
-
-Before exploring new territory, check whether a symmetric path, adjacent layer, or related
-function is untried:
-
-- **Pre-broadcast twiddle into `F::Packing`** — applied to `DitButterfly` and `ScaledDitButterfly`.
-  Are all butterfly types and call sites covered? Check `apply_to_rows_oop`.
-- **TwiddleFreeButterfly for structurally-1 twiddles** — applied to layer 0 of `first_half`.
-  Are there other layers in `second_half`, `first_half_general`, or OOP paths where the twiddle
-  is structurally 1 or a known constant?
-- **Boundary-layer specialization** — layers with block size 2 can eliminate general loop overhead.
-  Check: OOP paths, `first_half_general` boundary layers.
-
-## Known Dead Ends
-
-Cross-experiment memory — avoid re-attempting these exact approaches. Targeted additions and
-boundary-layer specializations within these functions are NOT dead ends; only broad restructuring is.
-
-### Broad restructuring of `second_half_general` / `first_half_general`
-9 approaches tried (layer fusion, loop restructuring, inlining, flag removal, uniform-twiddle
-specialization) — all regressed −0.58% to −2.02%. **Broad architectural changes lose.**
-Targeted additions at specific boundary points (e.g. a new specialized function for layer_rev=0)
-remain unexplored and are worth trying.
-
-### Twiddle layout / access pattern changes
-| Idea | Regression |
-|------|-----------|
-| Pre-reverse twiddle slice for sequential prefetcher access (tried twice) | −0.97% |
-| Fuse `layer_rev==3` and `layer_rev==2` (`dit_layer_rev_pair32`) | −1.22% |
-
-### Low-level micro-optimizations
-| Idea | Regression |
-|------|-----------|
-| Manual loop unroll | −49.4% — LLVM handles ILP; manual unrolling broke the vectorizer |
-| `#[inline(always)]` on butterfly functions | Regressed — LLVM already inlining optimally |
-| Remove `backwards` bool from `dit_layer_rev` | Flag does real work; removal broke correctness |
-
-## Near Misses — Worth Revisiting
-
-Small regressions or statistically weak results — not confirmed dead ends. The Result column
-shows the measured change (negative = slower). All ran on a diverged base; direction may have
-flipped on the current codebase. Try these before exploring entirely new territory, but only
-if you have a concrete reason to expect a different outcome.
-
-| Idea | Result | Note |
-|------|--------|------|
-| Fuse first two layers of `first_half_general` | −0.30% (slower) | Borderline; diverged base, unconfirmed |
-| Pre-broadcast all twiddles per layer of `first_half_general` + OOP | −0.41% (slower) | Borderline; diverged base, unconfirmed |
 
 ## Benchmark Signal
 
@@ -149,11 +110,15 @@ All else being equal, simpler is better. Weigh complexity cost against improveme
 a 0.2% gain from deleting 10 lines beats a 0.2% gain from 40 lines of hacky special-casing.
 Targeted changes (< ~50 lines, single hot path) have consistently outperformed full-file rewrites here.
 
-## Arithmetic Costs (read-only reference)
+## AVX512 Arithmetic Reference
 
-Use these to reason about which butterfly-level operations are worth eliminating:
+Key functions in `monty-31/src/x86_64_avx512/`:
 
-- `mul`: 6.5 cyc/vec throughput, 21 cyc latency — most expensive, eliminate where possible
-- `add`, `sub`: ~1 cyc/vec — cheap
-- `halve_avx512`: 2 cyc/vec — use instead of mul for ÷2
-- `mul_neg_2exp_neg_n_avx512`: 3 cyc/vec, 9 cyc latency
+- `packing.rs` — `mul`: 6.5 cyc/vec throughput, 21 cyc latency. Uses `confuse_compiler` to avoid `vpmullq`; underflow check relieves port 0 pressure. Most expensive op — eliminate where possible.
+- `packing.rs` — `add`, `sub`: ~1 cyc/vec — cheap
+- `packing.rs` — `neg`, `partial_monty_red_unsigned_to_signed`, `partial_monty_red_signed_to_signed`
+- `utils.rs` — `halve_avx512`: 2 cyc/vec — use instead of mul for ÷2
+- `utils.rs` — `mul_neg_2exp_neg_n_avx512`: 3 cyc/vec, 9 cyc latency
+- `utils.rs` — `mul_neg_2exp_neg_two_adicity_avx512`: 3 cyc/vec, 5 cyc latency
+
+Use `get_assembly` to verify actual codegen before assuming what the compiler emits.
