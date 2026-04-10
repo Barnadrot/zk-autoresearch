@@ -1,4 +1,7 @@
 // eliminated_ideas.md
+// eliminated_ideas.md
+// eliminated_ideas.md
+// eliminated_ideas.md
 
 ## Eliminated ideas (do not re-attempt)
 
@@ -71,6 +74,41 @@
   `confuse_compiler` is applied to `prod * MU` where `prod` depends on `lhs` (changes each
   iter). The only hoistable rhs computation is `rhs_odd = movehdup_epi32(rhs)`, which
   LLVM already hoists since `twiddle_packed` is loop-invariant.
+
+- **Remove `backwards` from `dit_layer_rev` / `dit_layer_rev_scaled`** (iter #008, -3.88%):
+  These use per-block unique twiddles from an outer iterator. Reversing blocks+twiddles
+  together (`.rev()` on the zip) IS different from forward-only when correctness is needed.
+  Also produced worse codegen.
+
+- **Exact-slice twiddle for `dit_layer_rev` backwards alignment** (analyzed):
+  Zip::next_back() alignment via nth_back() on a slice iterator is O(1) (pointer arithmetic).
+  Passing exact-length slice instead of [first_block..] has negligible overhead.
+
+- **Port 0 pressure further reduction beyond iter #001** (analyzed):
+  The masked vpaddd/vpsubd instructions in Add/Sub and mul underflow correction
+  all require port 0. No known instruction sequence achieves the same result on port 5 only.
+  vpblendmd (port 5) + vpaddd (port 0) = 2 instructions vs 1 masked instruction, no net gain.
+
+- **Non-temporal stores in apply_to_rows_oop** (analyzed):
+  dst data is read again soon (subsequent butterfly layers), so NT stores would cause
+  cache misses on the next read. Not applicable.
+
+- **`TwiddleFreeButterfly::apply_to_rows` explicit override** (analyzed):
+  Adding a direct loop over packed elements avoids the default path's apply_in_place→apply
+  indirection. But LLVM inlines everything, so codegen is identical. Not implemented.
+
+- **Computing butterfly diff from sum: `diff = sum - 2*x_2_twiddle`** (analyzed):
+  Avoids re-reading x_1 for the sub, but requires computing `2*x_2_twiddle mod P`
+  (extra add+correction), giving 1 mul + 3 add/sub vs current 1 mul + 2. Worse.
+
+- **Alt formulation: `new_x2 = new_x1 - 2*x_2_twiddle`** (analyzed):
+  Same issue — requires doubling x_2_twiddle which costs an extra field add. Not better.
+
+- **Uniform twiddle (layer=0) block merging in `dit_layer` / `dit_layer_oop`** (analyzed):
+  For coset DFT layer=0, all blocks use the same twiddle (= shift). Could pre-broadcast
+  once outside block loop. But broadcasts are ~1 cyc, saves ~512 cyc vs ~53K cyc total
+  for that layer. Negligible. Also, lo/hi rows are interleaved in memory so blocks can't
+  be merged into one contiguous call.
 
 ### Run 1 eliminations (from CLAUDE.md)
 
