@@ -39,25 +39,4 @@ The following ideas were attempted by a previous agent (Sonnet 4.6) and did not 
   Pre-broadcasting in DifButterfly. Not in the coset_lde_batch hot path.
 
 
-### Run 2 eliminations (from Opus 4.6, 23 iterations)
 
-The following ideas were attempted by Opus 4.6 in Round 2 and did not yield statistically significant
-improvements. 1 improvement was found (iter 2: `#[inline]` hints on layer functions, +1.02%, p=0.00).
-The remaining 21 iterations explored variants of the backwards-bool DCE family.
-
-- **`#[inline]` hints on layer functions** — ALREADY KEPT (iter 2, +1.02%).
-  Applied to: `dit_layer`, `dit_layer_rev`, `dit_layer_rev_scaled`, `dit_layer_oop`,
-  `dit_layer_twiddle_free`, `dit_layer_first_one`. Do not re-apply.
-
-- **Loop unrolling to eliminate `backwards` bool** (21 attempts, −0.06% to +1.06%, all p > 0.05):
-  Opus spent 21 consecutive iterations unrolling `dit_layer_rev` / `first_half_general` to create
-  separate forward/backward code paths, hoping LLVM would DCE the branch and improve codegen.
-  Warmest result: iter 7, +1.06%, p=0.06 (just outside gate). Never crossed p=0.05 despite
-  many structural variants. Do not re-attempt without a fundamentally different approach (e.g.
-  compile-time const generics instead of runtime unrolling).
-
-- **`first_half_general` + `first_half_general_oop` backwards-specialized variants** (multiple):
-  Splitting into separate forward/backward functions. Consistently weak signal, never p < 0.05.
-
-- **Opus never explored `monty-31/src/x86_64_avx512/` scope** — this remains untested by Opus.
-  The monty arithmetic (mul, add, sub, reductions) is a strong candidate for the next run.
