@@ -43,7 +43,7 @@ ELIMINATED_FILE  = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT" / "active" /
 CHECKER_DIR = ROOT_DIR / "correctness-checker"
 EXP_LOGS    = ROOT_DIR / "experiment_logs" / "Plonky3" / "NTT"
 
-MODEL              = "claude-sonnet-4-6"
+MODEL              = "claude-opus-4-6"
 MAX_TOKENS         = 20000   # max output tokens per API call — forces writes, limits runaway iters
 MAX_RECOVERY       = 2       # max recovery prompts per iteration before abandoning
 MAX_ITERATIONS     = 100
@@ -64,8 +64,8 @@ CORRECTNESS_FULL_EVERY    = 5   # run full check every N iterations
 CORRECTNESS_REPEAT_RUNS = 2
 
 # Pricing per million tokens — update if Anthropic changes rates
-COST_PER_M_INPUT  = 3.00   # USD, claude-sonnet-4-6
-COST_PER_M_OUTPUT = 15.00  # USD, claude-sonnet-4-6
+COST_PER_M_INPUT  = 15.00   # USD, claude-opus-4-6
+COST_PER_M_OUTPUT = 75.00   # USD, claude-opus-4-6
 
 # Cargo bench filter — targets exactly one benchmark (subprocess passes <> literally, no shell)
 # BabyBear's pretty_name is MontyField31<BabyBearParameters> — confirmed from bench output
@@ -107,8 +107,7 @@ FORBIDDEN_DIFF_PATTERNS = [
     r'^\+[^+].*cfg!\(feature\s*=',                    # F4: cfg! macro feature gates
 ]
 
-# Dry-spell limit
-DRY_SPELL_MIN_ITERS = 30  # don't auto-stop before this many iterations
+# Dry-spell limit (consecutive non-improvements since last keep)
 
 # Shared environment for benchmark AND correctness checker — ensures identical
 # build profile, CPU features, and thread configuration.
@@ -1262,8 +1261,8 @@ def main():
                         help=f"Max iterations (default {MAX_ITERATIONS})")
     parser.add_argument("--start-fresh", action="store_true",
                         help="Reset git state + rename old log before starting")
-    parser.add_argument("--dry-spell", type=int, default=30,
-                        help="Auto-stop after N consecutive non-improvements (default 15)")
+    parser.add_argument("--dry-spell", type=int, default=10,
+                        help="Auto-stop after N consecutive non-improvements since last keep (default 10)")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -1392,10 +1391,17 @@ def main():
     start_iteration = len(experiments)
 
     dry_spell = args.dry_spell
+    # Track consecutive non-improvements since last keep (reset to 0 on every kept iteration).
+    # On resume, recompute from history so the counter is correct from the start.
+    consecutive_no_improve = 0
+    for _e in reversed(experiments):
+        if _e.get("kept"):
+            break
+        consecutive_no_improve += 1
 
     print(f"[init] Starting at iteration {start_iteration + 1}, max {args.max_iter}")
     print(f"[init] Log file: {LOG_FILE}")
-    print(f"[init] Auto-stop after {dry_spell} consecutive non-improvements (after iter {DRY_SPELL_MIN_ITERS}).")
+    print(f"[init] Auto-stop after {dry_spell} consecutive non-improvements since last keep.")
     print(f"[init] Touch '{STOP_FILE.name}' in this directory to stop gracefully.\n")
 
     # ── Main loop ─────────────────────────────────────────────────────────────
@@ -1407,12 +1413,10 @@ def main():
             STOP_FILE.unlink()
             break
 
-        # Auto-stop on dry spell
-        if iteration > DRY_SPELL_MIN_ITERS and len(experiments) >= dry_spell:
-            recent = experiments[-dry_spell:]
-            if all(not e.get("kept") for e in recent):
-                print(f"\n[loop] No improvement in last {dry_spell} iterations. Auto-stopping.")
-                break
+        # Auto-stop on dry spell (consecutive non-improvements since last keep)
+        if consecutive_no_improve >= dry_spell:
+            print(f"\n[loop] No improvement in last {consecutive_no_improve} iterations since last keep. Auto-stopping.")
+            break
 
         ts = datetime.now(timezone.utc).isoformat()
         print(f"\n{'=' * 65}", flush=True)
@@ -1596,10 +1600,16 @@ def main():
         log_experiment(exp)
         experiments.append(exp)
 
+        if exp.get("kept"):
+            consecutive_no_improve = 0
+        else:
+            consecutive_no_improve += 1
+
         print(
             f"[loop] score={score_ns / 1e6:.2f}ms  "
             f"delta={-improvement_pct:+.2f}%  "
-            f"best={best_ns / 1e6:.2f}ms",
+            f"best={best_ns / 1e6:.2f}ms  "
+            f"dry={consecutive_no_improve}/{dry_spell}",
             flush=True
         )
 
