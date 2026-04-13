@@ -64,8 +64,8 @@ CORRECTNESS_FULL_EVERY    = 5   # run full check every N iterations
 CORRECTNESS_REPEAT_RUNS = 2
 
 # Pricing per million tokens — update if Anthropic changes rates
-COST_PER_M_INPUT  = 15.00   # USD, claude-opus-4-6
-COST_PER_M_OUTPUT = 75.00   # USD, claude-opus-4-6
+COST_PER_M_INPUT  = 5.00   # USD, claude-opus-4-6
+COST_PER_M_OUTPUT = 25.00  # USD, claude-opus-4-6
 
 # Cargo bench filter — targets exactly one benchmark (subprocess passes <> literally, no shell)
 # BabyBear's pretty_name is MontyField31<BabyBearParameters> — confirmed from bench output
