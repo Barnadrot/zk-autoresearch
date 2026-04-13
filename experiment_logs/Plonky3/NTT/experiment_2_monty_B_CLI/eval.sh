@@ -10,6 +10,7 @@
 # Exit code: 0 always (agent reads the output, not the exit code).
 
 set -e
+export RUSTFLAGS="-C target-cpu=native"
 cd ~/zk-autoresearch/Plonky3
 
 BENCH_FLAGS="--features p3-dft/parallel --bench fft"

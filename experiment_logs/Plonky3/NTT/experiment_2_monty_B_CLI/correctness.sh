@@ -4,6 +4,7 @@
 # Exit code: 0 = pass, 1 = fail.
 
 set -e
+export RUSTFLAGS="-C target-cpu=native"
 cd ~/zk-autoresearch/Plonky3
 
 echo "[correctness] Running test suite (~60s)..."

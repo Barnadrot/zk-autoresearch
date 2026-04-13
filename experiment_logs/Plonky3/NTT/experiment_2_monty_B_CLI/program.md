@@ -109,6 +109,7 @@ Search directions, roughly in priority order:
 3. No test value changes — do not modify expected values in tests.
 4. No new `debug_assert!` — do not add debug assertions that weren't already there.
 5. Correctness is mandatory — DFT output must be bitwise-identical to `Radix2Dit`.
+6. Do not modify `eval.sh`, `correctness.sh`, or anything in `~/zk-autoresearch/experiment_logs/` or `~/zk-autoresearch/correctness-checker/`.
 
 ## NEVER STOP
 Once the loop begins, do NOT pause to ask for confirmation. Do NOT ask "should I continue?". Run experiments autonomously until manually stopped. If you run out of ideas, re-read the assembly, study the AMD Zen 3 microarchitecture, search for research papers about NTT optimization, and think harder about what hasn't been tried.
