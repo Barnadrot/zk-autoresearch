@@ -18,10 +18,12 @@ Every butterfly in every layer calls `mul`, `add`, `sub` from the Montgomery fie
 Keep a change if: **improvement > 0.20% AND p < 0.05** (Criterion reports both).
 
 ## Target Files (writable)
-- `monty-31/src/x86_64_avx512/packing.rs` — Montgomery field arithmetic (mul, add, sub, reductions)
-- `monty-31/src/x86_64_avx512/utils.rs` — halve, mul_neg_2exp helpers
+- `monty-31/src/x86_64_avx2/packing.rs` — Montgomery field arithmetic for AVX2 (mul, add, sub, reductions)
+- `monty-31/src/x86_64_avx2/utils.rs` — AVX2 helpers
 - `dft/src/radix_2_dit_parallel.rs` — DIT parallel FFT (first_half, second_half, dit_layer*)
 - `dft/src/butterflies.rs` — butterfly implementations
+
+**Note:** This machine (AMD EPYC Milan, Hetzner CCX33) has AVX2 but not AVX-512. The hot path compiles `monty-31/src/x86_64_avx2/` — the AVX-512 files are not compiled here. Compile with `RUSTFLAGS="-C target-cpu=native"` (already set in eval.sh).
 
 All other files are read-only.
 
@@ -29,23 +31,24 @@ All other files are read-only.
 
 LOOP FOREVER:
 
-1. Read `iters.tsv` to understand what has been tried and what the current best is.
-2. Read relevant source files to understand the current hot path.
-3. Devise ONE targeted change. Think about what to change and why before touching code.
-4. Edit the source file(s).
-5. Run correctness check (~60s):
+1. Read `program.md` (this file) to refresh constraints, target files, and evaluation criteria.
+2. Read `iters.tsv` to understand what has been tried and what the current best is.
+3. Read relevant source files to understand the current hot path.
+4. Devise ONE targeted change. Think about what to change and why before touching code.
+5. Edit the source file(s).
+6. Run correctness check (~60s):
    ```bash
    bash ~/zk-autoresearch/experiment_logs/Plonky3/NTT/experiment_2_monty_B_CLI/correctness.sh
    ```
    If tests fail: `git checkout -- .`, append `correctness_fail` row to `iters.tsv`, and try a different idea.
-6. `git commit -am "iter N: <short description>"`
-7. Run benchmark (~30s):
+7. `git commit -am "iter N: <short description>"`
+8. Run benchmark (~30s):
    ```bash
    bash ~/zk-autoresearch/experiment_logs/Plonky3/NTT/experiment_2_monty_B_CLI/eval.sh
    ```
-8. Read the output. Extract change %, p-value, verdict.
-9. If improvement > 0.20% AND p < 0.05: append `keep` row to `iters.tsv`.
-10. If not: `git revert HEAD`, append `discard` row to `iters.tsv`.
+9. Read the output. Extract change %, p-value, verdict.
+10. If improvement > 0.20% AND p < 0.05: append `keep` row to `iters.tsv`.
+11. If not: `git revert HEAD`, append `discard` row to `iters.tsv`.
 
 ## Logging
 
