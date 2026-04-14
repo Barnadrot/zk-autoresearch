@@ -10,12 +10,8 @@
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mt_koala_bear::KoalaBear;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rec_aggregation::{compilation::init_aggregation_bytecode, xmss_aggregate};
-use xmss::signers_cache::{
-    BENCHMARK_SLOT, get_benchmark_signers_cache, message_for_benchmark,
-    reconstruct_signer_for_benchmark,
-};
+use rec_aggregation::{init_aggregation_bytecode, xmss_aggregate};
+use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
 const N_SIGS: usize = 100;
@@ -26,11 +22,7 @@ fn bench_xmss_leaf(c: &mut Criterion) {
     precompute_dft_twiddles::<KoalaBear>(1 << 24);
     init_aggregation_bytecode();
 
-    let cache = get_benchmark_signers_cache();
-    let raw_xmss: Vec<_> = (0..N_SIGS)
-        .into_par_iter()
-        .map(|i| reconstruct_signer_for_benchmark(i, cache[i]))
-        .collect();
+    let raw_xmss: Vec<_> = get_benchmark_signatures()[..N_SIGS].to_vec();
     let message = message_for_benchmark();
 
     c.bench_function(&format!("xmss_leaf_{N_SIGS}sigs"), |b| {
