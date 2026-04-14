@@ -1,0 +1,1351 @@
+[loop] Iteration 9/14 — 2026-04-08T14:52:39.934702+00:00
+[loop] Best: 2677.70ms | Baseline: 2759.10ms | Speedup: -2.95%
+[agent] Calling Claude...
+  [agent thinking]
+I'll start by reading the current state of the key files to understand what's been done and identify optimization opportunities.
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 490-600 (112 lines)
+  [tool] read_file → eliminated_ideas.md (31 lines)
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 600-700 (102 lines)
+  [tool] read_file → dft/src/butterflies.rs (336 lines)
+  [tool] read_file → dft/src/radix_2_dit_parallel.rs lines 1-120 (121 lines)
+  [agent thinking]
+Let me look at the `TwiddleFreeButterfly` usage and the `apply_to_rows` for `ScaledDitButterfly` - I want to check if `ScaledDitButterfly` has an `apply_to_rows_oop` override with pre-broadcast:
+  [tool] read_file → dft/src/radix_2_dit_parallel.rs lines 280-420 (142 lines)
+  [tool] read_file → dft/src/radix_2_dit_parallel.rs lines 420-560 (142 lines)
+  [tool] read_file → dft/src/radix_2_dit_parallel.rs lines 560-747 (189 lines)
+  [agent thinking]
+Now I have a clear picture. Let me look at the `ScaledDitButterfly::apply_to_rows` - it has pre-broadcast for the in-place case, but let me check if it has `apply_to_rows_oop`. Looking at the butterflies.rs file, I can see `ScaledDitButterfly` doesn't have an `apply_to_rows_oop` override - but that's only used in `dit_layer_oop` which uses `DitButterfly`, not `ScaledDitButterfly`.
+
+The key insight I want to explore: In `dit_layer_rev` and `dit_layer_rev_scaled`, each call to `DitButterfly(twiddle).apply_to_rows(lo, hi)` creates the pre-broadcast `F::Packing::from(self.0)` inside `apply_to_rows` but this is INSIDE the loop per block. For larger blocks (later layers in `second_half`), each block has many row-pairs sharing the same twiddle, so the pre-broadcast amortizes well. But for `second_half_general`, there's no `TwiddleFreeButterfly` optimization.
+
+Let me check what the `second_half_general` does - in `coset_lde_batch`, the twiddles[0] = shift_power (not 1, since there's a coset shift). So we can't use `TwiddleFreeButterfly` there.
+
+Let me look at another potential optimization: In `dit_layer_rev`, the `backwards` bool causes a branch at the loop level. But looking at the code more carefully - the `backwards` branch is already at the outer level (not inside the inner loop), so LLVM should handle this fine.
+
+Let me look at the `add` and `sub` in `packing.rs` to see the current state after iteration #001's improvement:
+  [tool] get_assembly(['function'])
+  [agent thinking]
+This shows BinomialExtensionField codegen (not the AVX512 path). Let me check the actual BabyBear packed add/sub to see what the iter #001 change looks like:
+  [tool] get_assembly(['function'])
+  [tool] get_assembly(['function'])
+  [tool] get_assembly(['function'])
+  [tool] get_assembly(['function'])
+  [agent thinking]
+Let me look at the current `add` and `sub` implementations in packing.rs to understand what iter #001 changed:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 400-490 (92 lines)
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 700-830 (132 lines)
+  [agent thinking]
+Now let me look at the Add and Sub implementations, which is what iteration #001 changed:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 900-1050 (152 lines)
+  [agent thinking]
+Now let me find the Add and Sub implementations to see what iter #001 changed:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 1300-1450 (152 lines)
+  [agent thinking]
+Let me find the Add/Sub trait implementations for PackedMontyField31AVX512:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 840-910 (72 lines)
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 1550-1697 (149 lines)
+  [agent thinking]
+Let me find the actual Add and Sub implementations for PackedMontyField31AVX512:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 1160-1300 (142 lines)
+  [agent thinking]
+Let me find the `mm512_mod_add` function and the Add/Sub ops:
+  [tool] read_file → monty-31/src/x86_64_avx512/utils.rs (230 lines)
+  [agent thinking]
+Now let me find the Add and Sub trait implementations:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 1620-1697 (79 lines)
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 310-400 (92 lines)
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 160-315 (157 lines)
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 1-165 (166 lines)
+  [agent thinking]
+Now I have a complete picture. The Add and Sub implementations use `vpcmpleud`/`vpcmpltud` (from iter #001). 
+
+Let me think about what else can be optimized. Looking at the DIT butterfly hot loop:
+
+In `dit_layer_rev`, each block has exactly one twiddle factor shared across all row-pairs. With 256 columns and AVX512 width=16, that's 16 packed iterations per block. The `DitButterfly` pre-broadcasts the scalar into a packed vector once.
+
+One key observation: In `second_half_general`, it calls `dit_layer_rev` which uses `DitButterfly`. Each `DitButterfly(twiddle).apply_to_rows(lo, hi)` call:
+1. Pre-broadcasts twiddle into `F::Packing` 
+2. Does 16 packed iterations: 16 `mul` + 16 `add` + 16 `sub`
+
+Looking at the `ScaledDitButterfly::apply_to_rows` - it handles the `Some(scale)` path. But crucially, there's no `apply_to_rows_oop` override for `ScaledDitButterfly`.
+
+Let me think about the `second_half_general` path used in `coset_lde_batch`. It calls `dit_layer_rev` which does `DitButterfly(twiddle).apply_to_rows(lo, hi)`. The `apply_to_rows` method pre-broadcasts — that's already done.
+
+Let me think about a different angle. Looking at the `dit_layer` function used in `first_half_general`:
+
+```rust
+for (lo, hi, twiddle) in izip!(
+    lows.chunks_mut(width),
+    highs.chunks_mut(width),
+    twiddles.clone()
+) {
+    DitButterfly(*twiddle).apply_to_rows(lo, hi);
+}
+```
+
+Each `DitButterfly(*twiddle).apply_to_rows` call with different twiddles per row-pair does one pre-broadcast + 1 packed iteration (since block_size=2 rows, half=1 row = 256/16=16 packed elements). The pre-broadcast is NOT amortized here since each block has only 1 row-pair.
+
+But wait - `first_half_general` already runs for small blocks in the first `mid` layers. For layer 0: blocks of 2 rows. The `first_half_general` calls `dit_layer` which for layer 0 does 1 row-pair per block. The pre-broadcast of twiddle into a packing of 16 elements costs a `vpbroadcastd`, which should be cheap.
+
+Let me think about the `second_half_general`: large blocks where block_size = `1 << (log_h - mid)`. For `log_h=20, mid=10`, blocks of `2^10=1024` rows. Each block has `2^9=512` row-pairs. Per `dit_layer_rev` call: one twiddle per block → one broadcast + 512 packed iterations. Very well amortized.
+
+Let me look at what else could be improved. Let me check the `TwiddleFreeButterfly` for `first_half_general` - is there an opportunity to use it when the coset shift is 1? The coset twiddles have `shift_power = shift.exp_power_of_2(layer)`, so for layer=0, twiddle[0] = shift itself. Unless shift=1 (no coset), these won't be 1. Since this is `coset_lde_batch`, the shift is not 1.
+
+Let me think about a completely different optimization. Looking at `second_half_general`:
+
+```rust
+for layer in mid..log_h {
+    let layer_rev = log_h - 1 - layer;
+    let first_block = thread << (layer - mid);
+    dit_layer_rev(
+        &mut submat,
+        log_h,
+        layer,
+        twiddles_rev[layer_rev][first_block..].iter().copied(),
+        backwards,
+    );
+    backwards = !backwards;
+}
+```
+
+For each layer, `twiddles_rev[layer_rev][first_block..]` is a slice. The twiddle at position `i` in the slice is consumed by block `i`. For `second_half_general`, we're using coset twiddles.
+
+Now, I notice that `dit_layer_rev` creates a zip of `chunks_mut(block_size * width)` with `twiddles_rev`. For large blocks, this is very cache-efficient since we process each block to completion.
+
+Let me think about another approach. The `TwiddleFreeButterfly` optimization was applied to:
+1. Layer 0 of `first_half` (standard DFT) - twiddle is always 1
+2. First row-pair of layers 1..mid-1 of `first_half` (standard DFT) - first twiddle is always 1
+
+For `second_half` (standard DFT), the last layer (`layer_rev=0`) has only one block with twiddle=twiddles_rev[0]=1. Could we apply `TwiddleFreeButterfly` there? Let's check: `layer_rev = log_h - 1 - layer`. For `layer = log_h - 1` (last layer), `layer_rev = 0`. The bitrev twiddles at position 0 should be... `bitrev_twiddles[0] = twiddles[bitrev(0)] = twiddles[0] = 1`. So yes, for the non-coset `second_half`, the last layer has twiddle=1.
+
+But wait - for `coset_lde_batch`, `second_half_general` is used, which uses different coset twiddles. These won't be 1.
+
+Let me look at what the actual call path is for `coset_lde_batch`:
+  [tool] read_file → dft/src/radix_2_dit_parallel.rs lines 120-285 (167 lines)
+  [agent thinking]
+Now I have a complete picture of the call paths. For `coset_lde_batch`:
+1. `first_half` with inverse twiddles (1/N scaling in second_half)
+2. `second_half` with inverse bitrev twiddles + scale
+3. For each additional coset: `coset_dft_oop` → `first_half_general_oop` + `second_half_general`
+4. `coset_dft` → `first_half_general` + `second_half_general`
+
+The main hot path is `second_half_general` and `first_half_general` called via `coset_dft` and `coset_dft_oop`.
+
+Let me think about ideas:
+
+1. **`TwiddleFreeButterfly` in the last layer of `second_half`** (non-coset) - For `layer = log_h-1`, `layer_rev=0`, and `twiddles_rev[0]` is the bitrev twiddle at position 0. `bitrev_twiddles[0] = twiddles[bitrev(0)] = twiddles[0] = 1`. So the last layer of `second_half` always uses twiddle=1. This saves one Montgomery mul per row-pair.
+
+2. **Check if `second_half_general`'s last layer has twiddle=1** - For the coset variant, `twiddles_rev[layer_rev=0][first_block..]` gives twiddles for the last layer. The twiddle at position 0 for `layer_rev=0` would be `shift_power * gen^0 = shift^1` which is NOT 1 (coset shift).
+
+3. **Apply `TwiddleFreeButterfly` to first layer of `second_half`** - For `layer=mid`, `layer_rev = log_h - 1 - mid`. There's one twiddle per block, and this layer has `2^(mid)` blocks. The twiddle for block 0 is `bitrev_twiddles[0] = 1`. But other blocks' twiddles are not 1.
+
+Actually, let me think about the non-coset `second_half` more carefully. For `layer = log_h - 1` (last layer in `second_half`), `layer_rev = 0`. This means `half_block_size = 1 << 0 = 1`. There's only 1 block per submat since the submat has height `2^1=2`. And the twiddle is `bitrev_twiddles[thread << (log_h-1-mid)]`. 
+
+Wait, actually for `second_half` (non-coset), the last layer IS used in the standard `dft_batch` / inverse DFT. But for `coset_lde_batch`, the non-coset `second_half` is only called once (for the inverse DFT step), while the main cost is from the multiple `coset_dft_oop` calls and one `coset_dft` call.
+
+Let me think about what would help the MOST. The benchmark is `coset_lde_batch` with `added_bits = log2(LDE_BLOWUP) = 1` (standard coset LDE doubles the domain). Actually looking at the benchmark more carefully, with 256 columns and 2^20 rows.
+
+The main cost is:
+1. `first_half` (IDFT first half) - 10 layers, ~1 pass through data
+2. `second_half` (IDFT second half + scale) - 10 layers, ~1 pass through data
+3. `coset_dft` or `coset_dft_oop` (forward DFT on cosets) - for `added_bits` extra cosets
+
+For `coset_lde_batch` with `added_bits`, there are `1 << added_bits` cosets total. One coset uses the already-computed inverse DFT output, additional cosets use `coset_dft_oop`.
+
+The benchmark is likely using `added_bits=1` (2x LDE). So we have 1 `coset_dft` + 1 `coset_dft_oop` call.
+
+Let me focus on the most impactful area. The `second_half` call with `scale` uses `ScaledDitButterfly` for only the FIRST layer (where `!scale_applied`), and `DitButterfly` for all subsequent layers. 
+
+For the last layer of `second_half` (non-coset, with bitrev twiddles):
+- `layer = log_h - 1 = 19`
+- `layer_rev = 0`
+- `half_block_size = 1`
+- `block_size = 2`
+- Each block has only 2 rows
+- Twiddle for thread t's blocks: `bitrev_twiddles[first_block..]` where `first_block = thread << (19-10) = thread << 9`
+
+Wait, for `log_h=20, mid=10`, the last layer has `layer=19, layer_rev=0`. Then `half_block_size = 1 << 0 = 1`, `block_size = 2`. Each submat has height `2^(20-10)=1024`. So we have 512 blocks of size 2 rows each. Each block gets one twiddle. These twiddles are `bitrev_twiddles[first_block..]` where `first_block = thread << (19-10) = thread << 9`.
+
+Hmm, there are `1<<20 / 1024 = 1024` threads total (if all parallel), each processing their own submat of 1024 rows. For the last layer, each submat has 512 blocks of 2 rows, each with a different twiddle. So TwiddleFreeButterfly doesn't apply here.
+
+Actually, wait. Let me reconsider. In `second_half`, all layers have twiddles coming from `twiddles_rev[first_block..]`. The key question is: are any of these twiddles uniformly 1?
+
+For the FIRST layer of `second_half` (`layer=mid`):
+- `layer_rev = log_h - 1 - mid`
+- `half_block_size = 1 << layer_rev = 1 << (log_h-1-mid)`  
+- Each submat has `1 << (log_h-mid)` rows = `block_size * 1` block per submat
+- `first_block = thread << 0 = thread` for `layer=mid`
+- The twiddle for thread t is `bitrev_twiddles[t]`
+
+These are different per thread, so no `TwiddleFreeButterfly` opportunity.
+
+Let me consider a different approach: I notice that `ScaledDitButterfly` has its `apply_to_rows` override but NOT an `apply_to_rows_oop` override. Looking at `dit_layer_oop`, it uses `DitButterfly(*twiddle).apply_to_rows_oop(...)`. The `DitButterfly` does have an `apply_to_rows_oop` override. So that's fine.
+
+**New idea**: For the `second_half` function in the non-coset case (used for IDFT), can we use `TwiddleFreeButterfly` for the first layer? The first layer of `second_half` is `layer=mid`, which has `layer_rev = log_h-1-mid`. The twiddle for thread t is `bitrev_twiddles[t << 0] = bitrev_twiddles[t]`. These are NOT all 1.
+
+Let me think about `second_half` with scale. The `dit_layer_rev_scaled` is called for the first layer with `Some(scale)`. For the 2^20 case with mid=10, the first layer in second_half is layer=10, which has `layer_rev=9, half_block_size=512`. There's exactly ONE block per submat (since submat height = `2^(log_h-mid) = 2^10 = 1024`), and each block takes up the whole submat. So `ScaledDitButterfly::new(twiddle, scale).apply_to_rows(lo, hi)` is called once per submat, processing 512 row-pairs × 16 packed elements = 8192 packed operations. The pre-broadcast of both `scale` and `twiddle_times_scale` is amortized across 512 row-pairs.
+
+Now let me think about a concrete new optimization.
+
+**Idea: `TwiddleFreeButterfly` for the last layer of `second_half` (non-coset)**
+
+Wait, I need to reconsider the twiddle structure more carefully. For `second_half`, we use `bitrev_twiddles`. The "last" layer in second_half is `layer = log_h-1`, giving `layer_rev=0`, `half_block_size=1`, meaning 2-row blocks. The twiddle for each block is `bitrev_twiddles[first_block + block_idx]` where `first_block = thread << (log_h-1-mid)`. The `bitrev_twiddles` are computed by bit-reversing `twiddles`. `bitrev_twiddles[0] = twiddles[0] = 1`, but other entries are not 1.
+
+So no, we can't use `TwiddleFreeButterfly` uniformly for the last layer.
+
+**Idea: Look at `second_half_general` more carefully**
+
+In `second_half_general`, the twiddles come from `twiddles_rev[layer_rev][first_block..]`. For `coset_dft`, `twiddles_rev` is computed by `get_or_compute_coset_twiddles`. Looking at the construction:
+
+```rust
+(0..log_h).map(|layer| {
+    let shift_power = shift.exp_power_of_2(layer);
+    let powers = Powers {
+        base: root.exp_power_of_2(layer),
+        current: shift_power,
+    };
+    let mut twiddles = powers.collect_n(h >> (layer + 1));
+    let layer_rev = log_h - 1 - layer;
+    if layer_rev >= mid {
+        reverse_slice_index_bits(&mut twiddles);
+    }
+    twiddles
+})
+```
+
+For layers in `second_half_general` (`layer_rev < mid`, i.e., `layer >= mid`), the twiddles are NOT bit-reversed (the `reverse_slice_index_bits` is only done when `layer_rev >= mid`). So for `second_half_general`, the twiddles are in natural order.
+
+**Idea: Use `TwiddleFreeButterfly` for the last layer of `second_half_general`**
+
+The last layer of `second_half_general` is `layer = log_h-1`, giving `layer_rev=0`. The coset twiddles for this layer are: `twiddles[0] = shift.exp_power_of_2(log_h-1)`. This is a coset shift, not 1. So no.
+
+**Idea: TwiddleFreeButterfly for the first element in dit_layer_rev of second_half_general**
+
+Actually, I realize from the history that "First row-pair of layers 1..mid-1 + TwiddleFreeButterfly" (+0.15%) already targets the first twiddle within `first_half`. A similar idea for `second_half_general` hasn't been tried.
+
+For each layer in `second_half_general`, twiddle[0] of the first block might be 1. Let me check: for `second_half_general`, twiddles are NOT bit-reversed. The twiddle for block 0 at `layer_rev=k` is `shift.exp_power_of_2(log_h-1-k)`. For `layer_rev < mid`, the twiddle for the first block at `layer_rev=0` is `shift.exp_power_of_2(log_h-1)`. This is not 1.
+
+**Key insight**: Actually, looking at the `first_half_general` call inside `coset_dft` – the twiddles for `layer_rev >= mid` are bit-reversed. So `twiddles[layer_rev=mid][0] = shift.exp_power_of_2(log_h-1-mid)` after bit-reversal... this is complex and not necessarily 1.
+
+Let me think about a completely different approach.
+
+**Idea: Avoid the `backwards` flag branch in `dit_layer_rev` and `dit_layer`**
+
+Currently, `dit_layer_rev` has two branches for `backwards`:
+```rust
+if backwards {
+    for (block, twiddle) in blocks_and_twiddles.rev() { ... }
+} else {
+    for (block, twiddle) in blocks_and_twiddles { ... }
+}
+```
+
+The `backwards` flag was tried before (attempt #008, -3.88% — trying to remove it entirely broke correctness). But that attempt was removing `backwards` completely.
+
+What if instead we restructure so `backwards` is evaluated at the call site, reducing branch inside the function? Actually looking at the current code, the branch is already at the outer level (not inside the inner loop), so LLVM should be able to hoist it. And with `-O3`, LLVM might even duplicate the loop.
+
+**Idea: `apply_to_rows_oop` for `TwiddleFreeButterfly`**
+
+Looking at `dit_layer_oop` which handles the first layer of `first_half_general_oop`. It uses `DitButterfly(*twiddle).apply_to_rows_oop`. For `coset_dft_oop`, the first layer (layer=0) has twiddles from the coset slice - not all 1, so TwiddleFreeButterfly doesn't apply.
+
+Let me re-examine more carefully. The `coset_lde_batch` benchmark runs for:
+- `log_h = 20, added_bits = ?`
+
+Let me check the benchmark definition:
+  [tool] read_file → dft/benches/fft.rs (206 lines)
+  [agent thinking]
+So `coset_lde_batch` uses `added_bits=1` and `shift=F::GENERATOR`. This means:
+- 1 IDFT (`first_half` + `second_half` with scale)
+- 1 `coset_dft` (in-place, for coset 0) 
+- 1 `coset_dft_oop` (out-of-place, for coset 1)
+
+Each of `coset_dft` and `coset_dft_oop` calls `first_half_general` (or OOP) + `second_half_general`, each using coset-shifted twiddles.
+
+Let me now think about the key optimization. For `second_half_general`, looking at the layers from `mid=10` to `log_h-1=19`:
+
+**Layer 10** (first layer in `second_half_general`): `layer_rev=9`, `half_block_size=2^9=512`, submat_height=1024, 1 block per submat, 512 row-pairs each with a different twiddle → `dit_layer_rev` with 512 different twiddles and width=256
+
+Wait, no! In `second_half_general`, `dit_layer_rev` is called, and inside `dit_layer_rev`:
+```rust
+let blocks_and_twiddles = submat.values.chunks_mut(block_size * width).zip(twiddles_rev);
+```
+
+For layer=10, `layer_rev=9`, `half_block_size=512`, `block_size=1024`. The submat height is `2^(log_h-mid) = 2^10 = 1024`. So there's 1 block per submat. `twiddles_rev` provides ONE twiddle for this single block. And within that block, `apply_to_rows(lo, hi)` processes 512 row-pairs all with the SAME twiddle.
+
+For layer=11, `layer_rev=8`, `half_block_size=256`, `block_size=512`. Each submat has 1024 rows = 2 blocks of 512. `twiddles_rev` provides 2 twiddles. Each block has 256 row-pairs.
+
+And so on. So for all layers in `second_half_general`, each block has many row-pairs with the same twiddle. The pre-broadcast of `DitButterfly.apply_to_rows` is already well-amortized.
+
+Now let me think about what I haven't analyzed:
+
+**Actually**, looking at `dit_layer_rev` more carefully for the first `second_half` (non-coset):
+
+```rust
+fn dit_layer_rev<F: Field>(
+    submat: &mut RowMajorMatrixViewMut<'_, F>,
+    log_h: usize,
+    layer: usize,
+    twiddles_rev: impl DoubleEndedIterator<Item = F> + ExactSizeIterator,
+    backwards: bool,
+) {
+```
+
+For `second_half` with bitrev twiddles, layer=mid:
+- `layer_rev = log_h-1-mid`
+- `half_block_size = 1 << layer_rev = 2^(log_h-1-mid)`
+- For `log_h=20, mid=10`: `half_block_size = 2^9 = 512`
+- submat height = `2^10 = 1024`
+- 1 block, 512 row-pairs, all with same twiddle ← well amortized
+
+But for `dit_layer_rev_scaled` (first layer in `second_half` when `scale != None`):
+Same structure — 1 block, 512 row-pairs, same twiddle.
+
+OK so the pre-broadcast is well-amortized everywhere.
+
+Let me think about what NEW optimization hasn't been tried. Looking at the hot loop in `DitButterfly::apply_to_rows`:
+
+```rust
+let twiddle_packed = F::Packing::from(self.0);
+for (x_1, x_2) in shorts_1.iter_mut().zip(shorts_2.iter_mut()) {
+    let x_2_twiddle = *x_2 * twiddle_packed;
+    let new_x1 = *x_1 + x_2_twiddle;
+    *x_2 = *x_1 - x_2_twiddle;
+    *x_1 = new_x1;
+}
+```
+
+Per iteration: 1 mul + 1 add + 1 sub = 3 ops. The add and sub are cheap (1 cyc each), the mul is expensive (6.5 cyc throughput).
+
+With 256 columns and width=16: 16 iterations per row-pair. For 512 row-pairs per block (last layer of first_half_general): 8192 muls per block call. 
+
+**Can we reduce muls?** The `ScaledDitButterfly` reduces from 3 muls to 2 muls per element pair. But in `second_half_general`, there's no scale. We could only reduce muls if we can precompute something.
+
+Actually, the `DifButterfly` computes `(a+b, (a-b)*t)` — 1 mul instead of 1 mul. But switching DIT to DIF changes the algorithm correctness completely.
+
+**Key insight**: Wait, looking at `apply_to_rows_oop` in `DitButterfly` — it reads `*s_1` and `*s_2`, and for each packed element does 1 mul + 1 add + 1 sub + 2 writes. 
+
+For the in-place `apply_to_rows`, it also reads `*x_1` twice (once for add, once for sub). But since `x_2_twiddle` is computed from `x_2`, and then `new_x1 = x_1 + x_2_twiddle`, then `x_2 = x_1 - x_2_twiddle` — the compiler should see that `x_1` needs to be read before it's overwritten. This looks correct.
+
+**New idea**: What about the `mm512_mod_add` usage inside `first_half_general_oop`? Wait, `mm512_mod_add` is used in the add implementation. Let me look at what it does:
+
+Actually the hot add/sub paths use the `impl Add/Sub for PackedMontyField31AVX512` which currently uses `vpcmpleud`/`vpcmpltud` (iter #001). This was the biggest win already.
+
+Let me look at another angle: **Thread work distribution**.
+
+For `coset_lde_batch` with `log_h=20, mid=10`:
+
+`second_half_general` uses `par_row_chunks_exact_mut(1 << (log_h-mid)) = 1024` rows per chunk.
+Total rows = `2^20`, so there are `2^20/1024 = 1024` parallel chunks.
+
+Each chunk processes `log_h - mid = 10` layers.
+
+For layer=10 (first layer): 1 block per chunk, 512 row-pairs, 16 packed elements each = 8192 packed muls
+For layer=11: 2 blocks per chunk, 256 row-pairs each = same total
+...
+
+Total work per chunk: same per layer.
+
+With 1024 chunks and `num_cpus` (say 8-16 cores), this is well-parallelized.
+
+**New idea: `TwiddleFreeButterfly` for the last layer of `second_half` (standard IDFT)**
+
+For `layer=log_h-1=19` in `second_half`:
+- `layer_rev=0`, `half_block_size=1`, `block_size=2`
+- There are `submat.height()/2 = 512` blocks per submat, each with a DIFFERENT twiddle
+- The twiddles come from `bitrev_twiddles[first_block..]`
+- `first_block = thread << (19-10) = thread * 512`
+
+Wait, `first_block = thread << (layer - mid)`. For `layer=19, mid=10`: `first_block = thread * 512`. So each thread processes 512 blocks, each with different twiddles from `bitrev_twiddles[thread*512..(thread+1)*512]`. None of these are uniformly 1.
+
+So the "last layer of `second_half`" idea doesn't work.
+
+**Let me look at `first_half_general` more carefully for opportunities**:
+
+```rust
+fn first_half_general<F: Field>(
+    mat: &mut RowMajorMatrixViewMut<'_, F>,
+    mid: usize,
+    twiddles: &[Vec<F>],
+) {
+    let log_h = log2_strict_usize(mat.height());
+    mat.par_row_chunks_exact_mut(1 << mid)
+        .for_each(|mut submat| {
+            let mut backwards = false;
+            for layer in 0..mid {
+                let layer_rev = log_h - 1 - layer;
+                dit_layer(&mut submat, layer, twiddles[layer_rev].iter(), backwards);
+                backwards = !backwards;
+            }
+        });
+}
+```
+
+For layer=0 in `first_half_general`: `layer_rev = log_h-1 = 19`. `twiddles[19]` has `2^20/2 = 2^19` elements but only one is used per block (half_block_size=1, 1 row-pair per block). The twiddle for block k is `twiddles[19][k]`.
+
+Now, `twiddles[19]` for coset DFT with shift `s` contains `{s * g^{19*j} : j=0..2^19-1}`. The first twiddle `twiddles[19][0] = s * g^0 = s`. Since `s != 1` (it's the coset shift), this isn't 1.
+
+**OK let me now think about what's truly new and unexplored**:
+
+The near-misses from Run 1 mention:
+- "Pre-broadcast all twiddles per layer of `first_half_general` + OOP" − −0.41% (borderline, unconfirmed on current base)
+- "Fuse first two layers of `first_half_general`" − −0.30% (borderline, unconfirmed)
+
+These aren't worth pursuing (they regressed).
+
+Let me think about the `mm512_mod_add` function used in `xor` and other places. Looking at `mm512_mod_add` - what does it look like?
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 690-710 (22 lines)
+  [agent thinking]
+Let me check what `mm512_mod_add` is in `p3_field`:
+  [tool] read_file → monty-31/src/x86_64_avx512/packing.rs lines 735-840 (107 lines)
+  [agent thinking]
+Now I have enough context. Let me think about what new optimization to apply.
+
+Looking at the current `DitButterfly::apply_to_rows`, the inner loop does:
+```rust
+let x_2_twiddle = *x_2 * twiddle_packed;
+let new_x1 = *x_1 + x_2_twiddle;
+*x_2 = *x_1 - x_2_twiddle;
+*x_1 = new_x1;
+```
+
+This is already optimal for the in-place case. Let me think about `first_half_general`:
+
+In `first_half_general`, `dit_layer` is called. For layer 0, each block has only 1 row-pair (half_block_size=1). So we have `2^mid` blocks each consuming one twiddle. For 2^20 total rows divided into 2^mid=1024 chunks of 1024 rows each, each chunk processes all mid=10 layers. For layer=0 within a chunk:
+- 512 blocks of 2 rows = 512 row-pairs
+- Each with a DIFFERENT twiddle
+- `DitButterfly(*twiddle).apply_to_rows(lo, hi)` is called 512 times
+- Each call: 1 broadcast + 16 packed iterations
+
+The broadcast (16 iterations) is amortized over only 16 packed ops. For layer=0, this is 1 broadcast per 16 packed iterations. This means we're doing 512 broadcasts for 512×16=8192 packed ops. That's OK but it's constant overhead.
+
+Let me think about `second_half_general`'s first layer: For layer=mid=10:
+- `layer_rev=9`, `half_block_size=512`
+- 1 block per submat, 512 row-pairs
+- 1 broadcast + 512×16=8192 packed iterations
+- Very efficient amortization
+
+For the LAST layer of `second_half_general` (layer=19):
+- `layer_rev=0`, `half_block_size=1`, `block_size=2`
+- 512 blocks per submat, each with 1 row-pair
+- 512 broadcasts + 512×16=8192 packed iterations
+- Poor amortization: 512 broadcasts for 512×16 packed ops
+
+This is analogous to layer=0 in `first_half`. For `first_half`, `TwiddleFreeButterfly` was added for layer=0. But for `second_half_general`, the twiddles aren't 1.
+
+However, for `second_half_general` last layer, the broadcast is `F::Packing::from(scalar)` which is a `vpbroadcastd` instruction. With 512 blocks, that's 512 `vpbroadcastd`s. This should be cheap (1 cyc each), so 512 cyc total vs 512×16×6.5 = 53248 cyc for the muls. The broadcasts are a tiny fraction.
+
+Wait, let me reconsider. The overhead that matters is instruction count and port pressure. Each `vpbroadcastd` costs 1 cyc and goes on port 5. With 512 per layer per submat...
+
+Actually, looking at `second_half_general` more carefully: it processes all layers for a submat in a serial loop. The total number of `dit_layer_rev` calls per submat in `second_half_general` is `log_h - mid = 10`. For each layer:
+- Layer 10: 1 block with 512 row-pairs → 1 broadcast + 8192 packed muls
+- Layer 11: 2 blocks, 256 row-pairs each → 2 broadcasts + 8192 packed muls  
+- ...
+- Layer 19: 512 blocks, 1 row-pair each → 512 broadcasts + 8192 packed muls
+
+Total broadcasts per submat: `1+2+4+...+512 = 1023`. Total packed muls: `10 × 8192 = 81920`.
+
+The broadcast ratio is highest at the last layers. But since `vpbroadcastd` runs on port 5 and muls on port 0, they don't compete. The broadcast overhead is small.
+
+OK let me think about a completely different angle.
+
+**Observation: `second_half_general` vs `second_half`**
+
+`second_half` (non-coset) uses `dit_layer_rev` with bitrev twiddles. For layer=mid (first layer), there's one block per submat with many row-pairs. Same structure.
+
+But `second_half` has the `TwiddleFreeButterfly` NOT applied. Actually wait — `second_half` doesn't have TwiddleFreeButterfly applied at all! Looking at the code, `dit_layer_rev_scaled` and `dit_layer_rev` are used. The `TwiddleFreeButterfly` was only added for `first_half`.
+
+For `second_half` (non-coset), is there a layer where twiddle is always 1?
+
+For `second_half` with bitrev_twiddles:
+- `bitrev_twiddles[0] = twiddles[bitrev(0)] = twiddles[0] = 1`
+- `bitrev_twiddles[k] = twiddles[bitrev(k)]` for k>0 — not generally 1
+
+For each layer in `second_half`, each thread's submat gets different twiddles. The twiddle for a given thread/block depends on `bitrev_twiddles[first_block + block_idx]` where `first_block = thread << (layer - mid)`.
+
+Only block 0 of thread 0 in the FIRST layer (`layer=mid`) has twiddle = `bitrev_twiddles[0] = 1`. All other blocks in all other layers have non-1 twiddles.
+
+**New idea: `TwiddleFreeButterfly` for the first block's first row-pair in the first layer of `second_half`**
+
+This is analogous to `dit_layer_first_one` in `first_half`. The first block (first call of `dit_layer_rev`) for the first layer (`layer=mid`) of `second_half` has `twiddle = bitrev_twiddles[0] = 1`. BUT wait - is this called in the hot path for `coset_lde_batch`? 
+
+For `coset_lde_batch`, the non-coset `second_half` is only called once (for the IDFT). The coset DFTs use `second_half_general` which has different twiddles. So this optimization only applies to the IDFT second half.
+
+But looking at the benchmark: the benchmark runs `coset_lde_batch` which calls:
+1. `first_half` (IDFT first half)
+2. `second_half` with `scale` (IDFT second half + normalize)
+3. `coset_dft` (forward DFT on coset 0) 
+4. `coset_dft_oop` (forward DFT on coset 1)
+
+So `second_half` IS in the hot path. However, the `bitrev_twiddles[0]=1` only applies to thread 0 block 0 of the first layer. The optimization isn't global.
+
+I think I need to look at this differently. Let me look at the overall computation ratio again. With `2^20 × 256`, and 3 FFTs (IDFT + 2 forward DFTs), total work is `3 × 20 × 2^20 × 256 = 3 × 20 × 2^28 ≈ 16 billion` element operations. Each element op is mul+add+sub. At 6.5 cyc/mul, 1 cyc/add, 1 cyc/sub with 16 elements per vector: throughput ≈ `16B × 8.5 / (16 × 3GHz) ≈ 2.98s`. But we're at 2.68s, so we're compute-bound.
+
+Since we're compute-bound, any reduction in arithmetic ops would help. The dominant cost is multiplications.
+
+**Idea: Can we ever skip muls?**
+
+- `TwiddleFreeButterfly` skips 1 mul per row-pair (when twiddle=1)
+- `ScaledDitButterfly` reduces 3 muls to 2 muls per row-pair
+
+For `second_half_general`:
+- Each layer has `2^(log_h-mid) = 1024` total row-pairs per submat across all blocks
+- For `log_h=20, mid=10`: 1024 row-pairs per submat × 1024 submats = 1M row-pairs per layer × 10 layers = 10M row-pairs
+- Each has 1 mul = 10M muls total for `second_half_general` (per coset DFT)
+
+For `first_half_general`:
+- Same structure: 10M muls per coset DFT
+
+For non-coset `first_half` and `second_half`: Same order of magnitude.
+
+With 3 FFTs (IDFT + 2 coset DFTs), total = 3 × 2 × 10M = 60M muls, each processing 16 elements = 960M element-muls.
+
+**Idea: Apply `TwiddleFreeButterfly` for layer 0 in `first_half_general`**
+
+For `first_half_general`, layer 0: `layer_rev = log_h-1 = 19`. `twiddles[19]` for coset shift `s` has `twiddles[19][k] = s * g^{19*k}` where `g^{19}` is the 2^1-th root of unity. So `g^{19} = g^{log_h-1}` which is... the root of the first layer... `g^{2^19} = -1`. So `twiddles[19][0] = s * 1 = s`, `twiddles[19][1] = s * g^{19}`, etc.
+
+These aren't 1 in general for coset DFTs.
+
+**Hmm**. Let me think about the structure of `first_half_general` more carefully.
+
+For layer 0, each block has 1 row-pair. The inner loop in `dit_layer` processes each block independently:
+```rust
+for (lo, hi, twiddle) in izip!(
+    lows.chunks_mut(width),
+    highs.chunks_mut(width),
+    twiddles.clone()
+) {
+    DitButterfly(*twiddle).apply_to_rows(lo, hi);
+}
+```
+
+For layer=0, `half_block_size=1`, so each block = 2 rows. `lows` = 1 row, `highs` = 1 row. The loop has exactly 1 iteration per block, calling `DitButterfly(*twiddle).apply_to_rows(lo, hi)` once.
+
+Inside `apply_to_rows` for a row of 256 elements:
+- 16 packed iterations (16 elements per pack)
+- Each: 1 mul + 1 add + 1 sub
+- PLUS 1 broadcast outside the loop
+
+So for layer 0 of `first_half_general` with 1024 blocks per submat:
+- 1024 broadcasts + 1024×16 = 16384 packed iterations
+
+**New idea: Hoist `apply_to_rows` vs `apply_in_place`**
+
+Looking at the inner loop of `dit_layer` for layer=0:
+```rust
+DitButterfly(*twiddle).apply_to_rows(lo, hi);
+```
+
+This calls `apply_to_rows` which does:
+1. `pack_slice_with_suffix_mut(lo)` → split into packed + suffix
+2. `pack_slice_with_suffix_mut(hi)` → split into packed + suffix  
+3. Create `twiddle_packed = F::Packing::from(*twiddle)` — broadcast
+4. Loop over packed pairs
+5. Loop over suffix pairs
+
+For a row of 256 elements (exact multiple of 16), there's no suffix. But `pack_slice_with_suffix_mut` still computes the slice split every call.
+
+**Idea: Reduce overhead from `pack_slice_with_suffix_mut` calls**
+
+For a fixed width of 256, `pack_slice_with_suffix_mut` always returns 16 packed elements and 0 suffix elements. But LLVM may not know this at compile time for the generic function. This could cause overhead per call.
+
+However, this is a minor concern - the compiler should inline and optimize this away.
+
+**Let me look at something fresh**: The `dit_layer` function has an opportunity to batch the twiddle broadcast across consecutive blocks when the width is fixed. But this is already done implicitly by `apply_to_rows`.
+
+Actually wait - I just realized something. In `dit_layer` (used in `first_half_general`), for small layers (layer=0,1,2...), each block has only a few row-pairs. For layer=0: 1 row-pair per block. For layer=1: 2 row-pairs per block. etc.
+
+For each block, we call `DitButterfly(*twiddle).apply_to_rows(lo, hi)` which broadcasts the twiddle to a packed field ONCE per block. This is already the right behavior.
+
+**But**: In the outer loop over blocks in `dit_layer`, we're iterating with `twiddles.clone()` which clones an iterator. For each block, the iterator is cloned from the beginning (or from position in `process_block`). Let me re-read:
+
+```rust
+let process_block = move |block: &mut [F]| {
+    let (lows, highs) = block.split_at_mut(half_block_size * width);
+    for (lo, hi, twiddle) in izip!(
+        lows.chunks_mut(width),
+        highs.chunks_mut(width),
+        twiddles.clone()  // <-- cloned for each block
+    ) {
+        DitButterfly(*twiddle).apply_to_rows(lo, hi);
+    }
+};
+
+let blocks = submat.values.chunks_mut(block_size * width);
+if backwards {
+    for block in blocks.rev() {
+        process_block(block);
+    }
+} else {
+    for block in blocks {
+        process_block(block);
+    }
+}
+```
+
+Wait, `twiddles.clone()` is called per block, cloning the iterator from the start. But `twiddles` is `twiddles[layer_rev].iter()` - a slice iterator. Cloning a slice iterator just resets to the beginning. So for layer=0, the same twiddle[0], twiddle[1], ... are consumed for EVERY block, but each block only uses `half_block_size=1` twiddle from `twiddles`. So block 0 uses `twiddles[0]`, block 1 uses `twiddles[0]` again (same twiddle!), etc.
+
+Wait that can't be right. Let me re-read...
+
+Oh wait, `twiddles.clone()` is the iterator that was passed INTO `dit_layer`. But each BLOCK gets its own clone of the SAME iterator starting from position 0. So for layer=0 with 1024 blocks, every block uses `twiddles[0]` as the twiddle. That means all blocks in layer=0 use the SAME twiddle `twiddles[layer_rev=19][0] = s`!
+
+No wait, that's wrong too. Let me re-read more carefully...
+
+Actually looking at `first_half_general`:
+```rust
+dit_layer(&mut submat, layer, twiddles[layer_rev].iter(), backwards);
+```
+
+The `twiddles[layer_rev].iter()` is passed as the twiddles argument. Inside `dit_layer`, `twiddles` is of type `impl Iterator<Item = &'a F> + Clone`. Then `process_block` captures `twiddles` by move in the closure. Inside `process_block`, `twiddles.clone()` is called.
+
+Wait, in Rust, if `twiddles` is a `std::slice::Iter`, then `twiddles.clone()` creates a new iterator starting from the SAME position in the ORIGINAL iterator (not from position 0). But since `process_block` is a closure that captures `twiddles` by move, and `twiddles.clone()` inside the closure... 
+
+Actually, `twiddles.clone()` creates a copy of the iterator at its current position. But `twiddles` is moved into `process_block`, and `process_block` is called multiple times. Since closures can be called multiple times (FnMut here) but `twiddles` is captured by move, each call to `process_block` would clone the iterator. But the original `twiddles` is consumed by the closure...
+
+Actually wait. The closure `process_block` is `move |block: &mut [F]|` and captures `twiddles` by move (since it's a `move` closure). Inside the closure, `twiddles.clone()` is called. The closure captures one instance of `twiddles`, and each time the closure is called, it clones that iterator. But the iterator inside the closure doesn't advance between calls... wait, yes it does because `.clone()` doesn't advance the original.
+
+Hmm, let me think again. `twiddles.clone()` creates a copy of `twiddles` at its current position. If `twiddles` is a slice iterator at position 0, `twiddles.clone()` gives a new iterator also at position 0. The original `twiddles` stays at position 0. So every call to `process_block` uses `twiddles.clone()` which gives a fresh iterator starting from position 0. That means every block processes twiddles starting from `twiddles[0]`!
+
+But that would be wrong! For layer=0, every block would use the same first twiddle. But the DFT needs different twiddles for different blocks...
+
+Wait, actually I think I misread the code. Let me look at `dit_layer` again:
+
+```rust
+fn dit_layer<'a, F: Field>(
+    submat: &mut RowMajorMatrixViewMut<'_, F>,
+    layer: usize,
+    twiddles: impl Iterator<Item = &'a F> + Clone,
+    backwards: bool,
+) {
+    let half_block_size = 1 << layer;
+    let block_size = half_block_size * 2;
+    let width = submat.width();
+
+    let process_block = move |block: &mut [F]| {
+        let (lows, highs) = block.split_at_mut(half_block_size * width);
+        for (lo, hi, twiddle) in izip!(
+            lows.chunks_mut(width),
+            highs.chunks_mut(width),
+            twiddles.clone()
+        ) {
+            DitButterfly(*twiddle).apply_to_rows(lo, hi);
+        }
+    };
+
+    let blocks = submat.values.chunks_mut(block_size * width);
+    if backwards {
+        for block in blocks.rev() {
+            process_block(block);
+        }
+    } else {
+        for block in blocks {
+            process_block(block);
+        }
+    }
+}
+```
+
+The key is that `twiddles: impl Iterator<Item = &'a F> + Clone` is moved into the `process_block` closure. When `process_block` is called on each block, it does `twiddles.clone()` — this clones the iterator at whatever position it currently is. BUT the `twiddles` inside the closure is the same instance across all calls (since the closure captures it by move, and it doesn't advance since `.clone()` doesn't advance the original).
+
+WAIT. Actually, a `move` closure captures `twiddles` by value. But the closure itself is called as `process_block(block)`. After the closure is created and `twiddles` is moved into it, every call to `process_block` sees the SAME `twiddles` instance, always at position 0. So `twiddles.clone()` always starts from position 0.
+
+This means every block in `dit_layer` for layer=k uses twiddles starting from position 0! That's `twiddles[0], twiddles[1], ..., twiddles[half_block_size-1]`.
+
+So for layer=0 (half_block_size=1), every block uses ONLY `twiddles[0]`. For layer=1 (half_block_size=2), every block uses `twiddles[0]` and `twiddles[1]`. For layer=k, every block uses `twiddles[0..half_block_size]`.
+
+This is intentional! The twiddle structure for DIT: at layer k, block b uses twiddles `g^{b * 2^k * step}` for rows within the block. But wait, `twiddles.iter().step_by(layer_pow)` would give step...
+
+Actually wait, for `first_half_general`, the call is:
+```rust
+dit_layer(&mut submat, layer, twiddles[layer_rev].iter(), backwards);
+```
+
+The twiddle vector for `layer_rev` has exactly `h >> (layer_rev + 1) = h / 2^(layer+1)` elements in total (across ALL blocks). But here we're calling `dit_layer` on a submat of height `2^mid`. 
+
+Actually I need to re-examine. `first_half_general` processes submats of height `2^mid`. `dit_layer` is called with the full `twiddles[layer_rev].iter()` for a submat of height `2^mid`. The submat has `2^mid / 2^(layer+1) = 2^(mid-layer-1)` blocks, each needing `2^layer` twiddles. Total twiddles consumed = `2^(mid-layer-1) * 2^layer = 2^(mid-1)` — same for all layers.
+
+For layer=0: `2^mid / 2 = 2^(mid-1) = 512` blocks, each needing 1 twiddle = 512 twiddles total.
+For layer=1: `2^mid / 4 = 256` blocks, each needing 2 twiddles = 512 twiddles total.
+
+But since `process_block` always clones `twiddles` from position 0 (the beginning), each block uses twiddles starting from index 0. This is correct for the DIT structure: within a block at layer k, the twiddles are the same as the first `2^k` elements of the twiddle vector. Different blocks use the SAME twiddles because the DIT butterfly network has the property that twiddles repeat across blocks!
+
+This is the key insight of the DIT algorithm: within a submat (group of rows), each block at layer k uses the same set of twiddles `{g^0, g^1, ..., g^{2^k-1}}`. The coset version bakes in the shift: `{s*g^0, s*g^1, ..., s*g^{2^k-1}}`.
+
+So for `first_half_general`:
+- Layer 0: All blocks use `twiddles[layer_rev=19][0] = s * g^{19*0} = s`
+- Layer 1: All blocks use `twiddles[layer_rev=18][0..2] = {s*g^{18*0}, s*g^{18*1}}`
+- etc.
+
+Now THIS is interesting! For layer=0, every block uses the SAME twiddle `s`. The current `dit_layer` function broadcasts `s` once per block (inside `apply_to_rows`), but we could broadcast it ONCE per layer (outside the blocks loop) and pass the packed twiddle to each block.
+
+But this optimization was already tried (as "Pre-broadcast all twiddles per layer of `first_half_general` + OOP") and gave −0.41% — it regressed. The pre-broadcast is already cheap, and moving it outside the loop didn't help.
+
+OK, let me take a completely different approach and look at what the compiler actually generates for the hot path to find optimization opportunities:
+  [tool] get_assembly(['function'])
+  [tool] get_assembly(['function'])
+  [tool] get_assembly(['function'])
+  [agent thinking]
+The assembly output is too verbose to be useful directly. Let me think differently about what optimization to pursue.
+
+Looking at the full picture, let me consider a structural optimization I haven't seen tried:
+
+**Idea: `ScaledDitButterfly` for `second_half_general` first layer**
+
+Wait, there's no scale in `second_half_general`. The scale is only in `second_half` (non-coset, for IDFT).
+
+**New Concrete Idea: Eliminate `backwards` branch at compile time using const generics**
+
+The `dit_layer_rev` function takes `backwards: bool`. The hot loop has:
+```rust
+if backwards {
+    for (block, twiddle) in blocks_and_twiddles.rev() { ... }
+} else {
+    for (block, twiddle) in blocks_and_twiddles { ... }
+}
+```
+
+Since `backwards` alternates between `false` and `true` at each layer, it's known at the call site whether it's forwards or backwards. If we make this a const generic, LLVM gets two specialized versions. But LLVM already hoists this branch outside the inner loop, so it shouldn't matter much.
+
+Actually, wait — I keep thinking about this wrong. Let me look at a genuine unexplored opportunity.
+
+**Looking at `DifButterflyZeros`**: This is used in... let me check.
+
+Actually, looking at `dit_layer_oop` — it uses `DitButterfly(*twiddle).apply_to_rows_oop`. In `first_half_general_oop`, the first layer (layer=0) calls `dit_layer_oop` which uses regular `DitButterfly`, not `TwiddleFreeButterfly`. This IS in the coset LDE hot path.
+
+For `first_half_general_oop` (used in `coset_dft_oop`), layer=0 has `layer_rev = log_h-1 = 19`. The twiddles for this layer are `twiddles[19][k] = s * g^{19*k}` — NOT generally 1.
+
+Let me look at something completely different: the `mm512_mod_add` function which is used in `xor`. But `xor` is not in the hot path.
+
+Actually, looking at the second_half's inner loop via `dit_layer_rev_scaled`: the `ScaledDitButterfly::apply_to_rows` does 2 muls instead of 3 per packed operation. This is already done for the first layer of `second_half`. For subsequent layers, `DitButterfly` is used (1 mul). So there's no further reduction possible in `second_half`.
+
+**Let me look at the total multiply count across all functions:**
+
+For `coset_lde_batch` with `log_h=20, mid=10, added_bits=1`:
+1. `first_half` (IDFT): layer 0 → TwiddleFree (0 muls), layers 1..9 → `dit_layer_first_one` (first row-pair free, rest use DitButterfly with 1 mul). Total muls ≈ `(2^20/2) * 9 = 9 * 2^19` row-pairs × 1 mul each → muls for this half
+2. `second_half` (IDFT with scale): layer 10 → `ScaledDitButterfly` (2 muls), layers 11..19 → `DitButterfly` (1 mul). Total muls for first layer = `2^20/2 = 2^19` × 2 muls, rest = `9 × 2^19` × 1 mul
+3. `coset_dft`: `first_half_general` (10 layers) + `second_half_general` (10 layers). All use `DitButterfly` (1 mul). Total = `20 × 2^19` row-pair muls
+4. `coset_dft_oop`: Same as 3.
+
+Total muls ≈ `(9*2^19 + 2^19*2 + 9*2^19 + 20*2^19 + 20*2^19) × 16 elements/pack`
+= `(9 + 2 + 9 + 20 + 20) × 2^19 × 16`
+= `60 × 2^23 = 503M muls`
+
+The `ScaledDitButterfly` saves 2^19 muls vs regular DitButterfly in `second_half` — a ~2/60 = 3% reduction. This was already implemented and gave +0.58%.
+
+Can we find another 2^19 muls to save? The only place left is:
+
+**Idea: `ScaledDitButterfly` in `second_half_general` first layer**
+
+Wait, there's no scale in `second_half_general`. The scaling is only needed for IDFT normalization.
+
+**Idea: Apply `TwiddleFreeButterfly` to layer 0 in `first_half_general`**
+
+For layer=0 in `first_half_general`, every block uses `twiddles[layer_rev=19][0]`. But as I showed above, this is the coset shift `s`, not 1. So we can't use `TwiddleFreeButterfly` here.
+
+Wait - but for layer 0 of `first_half_general`, within each block there's exactly 1 row-pair and the twiddle is always `twiddles[layer_rev][0]` (the SAME for all blocks). This is what I established above: all 512 blocks in a submat use the same first element of the twiddle vector.
+
+Actually, this was the source of my confusion earlier. Let me verify: for layer=0, `half_block_size=1`, so each block has 1 row-pair. The inner `izip` in `process_block` yields exactly 1 iteration (1 row-pair), consuming `twiddles[0]` (since `twiddles.clone()` starts from position 0 each time). This means ALL blocks in a submat at layer=0 use the same twiddle `twiddles[19][0] = s`.
+
+This means we could PRE-BROADCAST this single twiddle once outside the blocks loop in `dit_layer` for the case of layer=0 (half_block_size=1). But wait, this is what "Pre-broadcast all twiddles per layer" tried and got −0.41%.
+
+Actually wait, this is subtly different. The pre-broadcast would be done OUTSIDE the `process_block` closure, but inside `dit_layer`. This avoids the broadcast inside each `apply_to_rows` call. Currently, each block calls `apply_to_rows` which creates the packed broadcast inside the function. If instead we create `twiddle_packed` once outside the blocks loop and use it directly...
+
+But to do this, we'd need to inline `apply_to_rows` and use the pre-broadcast value. This IS essentially what was tried (the near-miss that gave −0.41%).
+
+Hmm. Let me think about why that regression happened. The pre-broadcast moves computation outside the closure. With `1024` blocks in layer=0, we'd do 1 broadcast vs 1024 broadcasts. But `vpbroadcastd` is 1 cyc/vec with no port conflict (it runs on port 5), so saving 1024 broadcasts saves ~1024 cycles. But the inner loop has 16384 packed muls at 6.5 cyc/vec each = 106K cycles. The broadcast savings are <1% — negligible. Worse, moving code around can hurt LLVM's optimization.
+
+OK let me think about something truly new.
+
+**Idea: Use `TwiddleFreeButterfly` for layer=0 in `first_half_general` when shift=1**
+
+For `coset_dft` with `shift != 1`, this doesn't apply. But what about the `dft_batch` / `idft_batch` paths? These use `first_half` (non-general), which already has `TwiddleFreeButterfly` for layer=0. So this is already covered.
+
+**Let me take a step back and think about what I'm missing.**
+
+Looking at the benchmark: `coset_lde_batch` on `2^20 × 256`. The total wall time is ~2678ms. The benchmark runs on a machine with possibly many cores.
+
+For a single-threaded computation, the work is:
+- 3 FFTs × 20 layers × 2^20 rows × 256 cols / 2 pairs = 3 × 20 × 2^27 ≈ 8 billion packed ops (with 16-wide SIMD, that's 500M packed ops)
+- Each packed op: 1 mul (6.5 cyc) + 1 add (1 cyc) + 1 sub (1 cyc) = 8.5 cyc
+- Total: 4.25 billion cycles = ~1.4s at 3GHz
+
+But we observe 2.68s, which is ~2× slower than the compute bound. This suggests memory bandwidth is a significant factor.
+
+Since we're memory bandwidth bound, arithmetic optimizations give diminishing returns. But they still help because:
+1. They reduce compute time, which can overlap with memory latency
+2. They reduce register pressure, enabling better memory access patterns
+
+**New idea: Check if `DifButterflyZeros` is used anywhere in the hot path**
+
+Looking at the code — it doesn't appear to be used in `coset_lde_batch` at all.
+
+**New idea: Parallelize the scale step differently**
+
+Wait, I see something! Looking at `coset_lde_batch`:
+
+```rust
+second_half(&mut mat, mid, &inverse_twiddles.bitrev_twiddles, scale);
+```
+
+This runs `second_half` with scale. The scale is folded into the first butterfly layer. This is already done (one of the first-run improvements).
+
+**OK here's a genuine new idea I haven't seen addressed:**
+
+In `second_half` with scale, for the first layer (layer=mid), `dit_layer_rev_scaled` is called with `Some(scale)`. This uses `ScaledDitButterfly::new(twiddle, s)` which computes `twiddle * scale` once and does 2 muls (instead of 3). 
+
+But for the scale layer, `twiddle = bitrev_twiddles[thread]` — one twiddle per submat. And `scale` is always the same. So `ScaledDitButterfly::new(twiddle, s)` creates the butterfly once per BLOCK (one block per submat). 
+
+Wait, but in `dit_layer_rev_scaled` for `Some(scale)`:
+```rust
+for (block, twiddle) in blocks_and_twiddles {
+    let (lo, hi) = block.split_at_mut(half_block_size * width);
+    ScaledDitButterfly::new(twiddle, s).apply_to_rows(lo, hi);
+}
+```
+
+`ScaledDitButterfly::new(twiddle, s)` computes `twiddle * s`. This is ONE field multiplication (scalar, not SIMD), done once per block. The packed hot loop then uses the precomputed values. For the first layer (layer=mid), there's 1 block per submat, so 1 scalar multiplication per submat. This is fine.
+
+Actually, there's `ScaledDitButterfly::apply_to_rows` which pre-broadcasts `scale_packed` and `twiddle_times_scale_packed`. Both are done once per block, before the row-pair loop. This is already optimal.
+
+**Let me think about an entirely different approach: the `scale` value propagation.**
+
+Wait, here's an interesting observation: in `second_half`, when `scale` is a fixed constant (the same for ALL calls), could we avoid the `scale_applied` bool by making the `dit_layer_rev_scaled` call unconditional?
+
+Actually iter #003 tried this (manual peel of first iteration) and got −0.56%. LLVM was already doing this. Don't re-attempt.
+
+**New concrete idea: Apply `ScaledDitButterfly` pattern for the FIRST layer of `second_half_general`**
+
+Wait, there's no scale in `second_half_general`. But what if we could DELAY the coset shift to the very last layer? No, that changes the algorithm.
+
+OK I'm going in circles. Let me look at a completely different class of optimizations.
+
+**Structural idea: Look at `dit_layer_oop` and `TwiddleFreeButterfly`**
+
+In `first_half_general_oop`, the first layer (layer=0) calls `dit_layer_oop`. For this layer, every block uses the same twiddle `twiddles[layer_rev=19][0]` (as I established). There's NO `TwiddleFreeButterfly` optimization here since twiddle≠1. 
+
+But wait! What if the twiddle for the first layer of `first_half_general_oop` IS 1 in some cases? Let me check: when is `twiddles[19][0] = s * g^{19*0} = s = 1`? Only if `shift=1`, which doesn't happen in coset LDE.
+
+**Really new idea: cache-friendly data layout for large-block second_half**
+
+For `second_half_general` with large blocks (first layers, large `half_block_size`), the butterfly operates on rows that are far apart in memory. For a row width of 256 ints = 1KB, and `half_block_size=512`, the two halves of each block are `512 * 256 * 4 = 512KB` apart. This is a cache miss for each pair of rows in the butterfly.
+
+With L3 cache typically 16-32MB and matrix size 2^20 × 256 × 4 = 1GB >> L3, we DEFINITELY have memory pressure.
+
+But this is the "memory bandwidth bottleneck" that's been noted as already analyzed. Prefetch attempts regressed.
+
+**Let me think about what's left to try from a pure arithmetic perspective...**
+
+Hmm, I just thought of something. Let me check the `ScaledDitButterfly::apply_to_rows` more carefully. It pre-broadcasts BOTH `scale_packed` and `twiddle_times_scale_packed`. But in the hot loop:
+
+```rust
+for (x_1, x_2) in shorts_1.iter_mut().zip(shorts_2.iter_mut()) {
+    let x_1_scale = *x_1 * scale_packed;
+    let x_2_twiddle_scale = *x_2 * twiddle_times_scale_packed;
+    *x_1 = x_1_scale + x_2_twiddle_scale;
+    *x_2 = x_1_scale - x_2_twiddle_scale;
+}
+```
+
+This is 2 muls, 1 add, 1 sub per packed element. The `DitButterfly` does 1 mul, 1 add, 1 sub. So `ScaledDitButterfly` costs 2 muls vs 1 mul for `DitButterfly`.
+
+But `ScaledDitButterfly` replaces a separate `scale` pass that would cost 1 mul. So instead of `1 mul (butterfly) + 1 mul (scale) = 2 muls`, we get `2 muls (combined)`. The net result is the same multiplications, but with better memory access (single pass vs two passes). This is the "fused scale" optimization that was already implemented.
+
+Actually wait — the previous `second_half` with scale would have done: butterfly (1 mul) × N layers + scale pass (1 mul). But the scale is only done once after all butterfly layers, so it's `N × 1 mul + 1 mul_scale`. With fused scale: `1 × 2 muls + (N-1) × 1 mul = N + 1 muls`. Previously: `N + 1 muls` too. So the arithmetic count is the SAME. The benefit is avoiding a SEPARATE pass over memory for scaling — saving 2× the data movement for the last layer's butterfly (scale merged into butterfly).
+
+**OK, I need to think about what hasn't been tried at all.**
+
+Let me look at the `dit_layer` closure pattern vs iteration pattern for the second_half:
+
+In `dit_layer_rev` (called from `second_half` and `second_half_general`):
+```rust
+let blocks_and_twiddles = submat.values.chunks_mut(block_size * width).zip(twiddles_rev);
+if backwards {
+    for (block, twiddle) in blocks_and_twiddles.rev() {
+        let (lo, hi) = block.split_at_mut(half_block_size * width);
+        DitButterfly(twiddle).apply_to_rows(lo, hi);
+    }
+} else {
+    for (block, twiddle) in blocks_and_twiddles {
+        let (lo, hi) = block.split_at_mut(half_block_size * width);
+        DitButterfly(twiddle).apply_to_rows(lo, hi);
+    }
+}
+```
+
+For large blocks (many row-pairs), `apply_to_rows` processes them all. The inner loop in `apply_to_rows` is:
+```rust
+let twiddle_packed = F::Packing::from(self.0);
+for (x_1, x_2) in shorts_1.iter_mut().zip(shorts_2.iter_mut()) {
+    let x_2_twiddle = *x_2 * twiddle_packed;
+    let new_x1 = *x_1 + x_2_twiddle;
+    *x_2 = *x_1 - x_2_twiddle;
+    *x_1 = new_x1;
+}
+```
+
+This reads x_1 twice (`*x_1 + x_2_twiddle` and `*x_1 - x_2_twiddle`). LLVM might not be able to combine these reads if it sees x_2 written first... but wait, we compute `new_x1 = *x_1 + x_2_twiddle` BEFORE writing to x_2, and then write x_1. So LLVM should see that x_1 is read twice before any write.
+
+Looking at the assembly... let me try to look at the Mul implementation which is the hot part:
+
+**NEW IDEA: Look at the `Mul<MontyField31<FP>>` for `PackedMontyField31AVX512`**
+
+When we call `*x_2 * twiddle_packed` in `apply_to_rows`, `twiddle_packed` is a `F::Packing`. The mul is between two `PackedMontyField31AVX512`. That's the regular mul (6.5 cyc, 13 instructions).
+
+But wait - there's a `Mul<MontyField31<FP>>` for `PackedMontyField31AVX512` as well, via the scalar-field multiply. Let me check if there's a more efficient path for scalar × vector...
+
+Actually, looking at the precomputation chain: `twiddle_packed = F::Packing::from(self.0)` broadcasts a scalar into a packed field. Then `*x_2 * twiddle_packed` is packed×packed. If instead we had a packed×scalar operation, we could potentially skip the broadcast.
+
+Looking at the `impl_mul_base_field` macro, there might be a specialized `Mul<MontyField31<FP>>` for `PackedMontyField31AVX512`. But this would likely still be the same as `mul(x, broadcast(scalar))`, since we need to multiply every element.
+
+Actually, looking at `mul_256` function — it takes a scalar `rhs: i32` and uses `_mm256_set1_epi32(rhs)` to broadcast. This IS a scalar×vector multiply! For `__m512i`, is there an equivalent?
+
+Looking at the current `mul` function in packing.rs:
+```rust
+fn mul<MPAVX512: MontyParametersAVX512>(lhs: __m512i, rhs: __m512i) -> __m512i {
+```
+
+Both operands are vectors. For the case where `rhs` is a broadcast (all elements equal), we could broadcast the scalar once (it is done once via `from(scalar)`) and then mul. But the multiplication instruction `vpmuludq` doesn't have a scalar form — it always operates on vectors. So there's no simpler path.
+
+**Here's a new idea I haven't seen tried: precompute `F::Packing::from(twiddle)` in `dit_layer_rev` BEFORE calling `apply_to_rows`**
+
+Currently, `DitButterfly(twiddle).apply_to_rows(lo, hi)` creates the packed broadcast inside `apply_to_rows`. For each block in `dit_layer_rev`, this is done once. For large blocks (e.g., 512 row-pairs per block), this is already very well amortized.
+
+But for small blocks (e.g., last layer of `second_half_general` where each block has 1 row-pair), the broadcast is done ONCE per 16 packed elements. The broadcast instruction (`vpbroadcastd`) runs on port 5, so it doesn't conflict with muls on port 0. This is not a bottleneck.
+
+**Wait — I just thought of something new**: What about the `TwiddleFreeButterfly` for `dit_layer_oop` layer 0 of `first_half_general_oop`?
+
+In `first_half_general_oop`:
+```rust
+// The first layer is special, done out-of-place.
+let layer_rev = log_h - 1;
+dit_layer_oop(
+    &src_submat,
+    &mut dst_submat_maybe,
+    0,
+    twiddles[layer_rev].iter(),
+);
+```
+
+For the first layer (layer=0), every block uses `twiddles[layer_rev=19][0]` as the twiddle. The question is: is this always 1?
+
+For `coset_dft_oop` with shift `s`: `twiddles[19][0] = s`. Not 1.
+
+Unless... for the non-coset `dft_batch` path — but that uses `first_half_general_oop`? No, `dft_batch` uses `first_half` and `second_half` (non-general). Only `coset_dft_oop` uses `first_half_general_oop`.
+
+**What about a completely new layer-skip optimization?**
+
+For the very first layer of `second_half_general`: layer=mid=10, `layer_rev=9`, `half_block_size=512`. Each submat has height 1024, with exactly 1 block of 1024 rows. The twiddle is `twiddles_rev[layer_rev=9][first_block]`. 
+
+For this single block, we process 512 row-pairs with the same twiddle. The butterfly already pre-broadcasts the twiddle once. No further amortization possible.
+
+**Radically different idea**: Remove an entire call level.
+
+Looking at `coset_dft`:
+```rust
+fn coset_dft<F: TwoAdicField + Ord>(
+    dft: &Radix2DitParallel<F>,
+    mat: &mut RowMajorMatrixViewMut<'_, F>,
+    shift: F,
+) {
+    let log_h = log2_strict_usize(mat.height());
+    let mid = log_h.div_ceil(2);
+
+    let twiddles = dft.get_or_compute_coset_twiddles((log_h, shift));
+
+    // The first half looks like a normal DIT.
+    first_half_general(mat, mid, &twiddles);
+
+    // For the second half, we flip the DIT, working in bit-reversed order.
+    reverse_matrix_index_bits(mat);
+
+    second_half_general(mat, mid, &twiddles);
+}
+```
+
+And `coset_dft_oop`:
+```rust
+fn coset_dft_oop<F: TwoAdicField + Ord>(
+    dft: &Radix2DitParallel<F>,
+    src: &RowMajorMatrixView<'_, F>,
+    dst_maybe: &mut RowMajorMatrixViewMut<'_, MaybeUninit<F>>,
+    shift: F,
+) {
+    ...
+    // The first half looks like a normal DIT.
+    first_half_general_oop(src, dst_maybe, mid, &twiddles);
+
+    // dst is now initialized.
+    let dst = ...;
+
+    // For the second half, we flip the DIT, working in bit-reversed order.
+    reverse_matrix_index_bits(dst);
+
+    second_half_general(dst, mid, &twiddles);
+}
+```
+
+Notice that both `coset_dft` and `coset_dft_oop` use the SAME `twiddles` (same `shift` parameter). In `coset_lde_batch`, these are called with different `total_shift` values. So the twiddles are different — can't merge.
+
+**Wait, I just noticed something important in `coset_lde_batch`**:
+
+```rust
+for coset_idx in 1..(1 << added_bits) {
+    let total_shift = g_big.exp_u64(coset_idx as u64) * shift;
+    let coset_idx = reverse_bits_len(coset_idx, added_bits);
+    let dest = &mut rest_cosets_mat[coset_idx - 1];
+    coset_dft_oop(self, &first_coset_mat.as_view(), dest, total_shift);
+}
+
+// Now run a forward DFT on the very first coset, this time in-place.
+coset_dft(self, &mut first_coset_mat.as_view_mut(), shift);
+```
+
+For `added_bits=1`: only ONE call to `coset_dft_oop` (coset_idx=1). Then ONE call to `coset_dft` (for coset 0).
+
+The `first_coset_mat` input to both is the SAME data (the inverse-DFT output). So we have:
+1. `coset_dft_oop(src=first_coset, dst=rest, shift=total_shift)` 
+2. `coset_dft(mat=first_coset, shift)`
+
+Both DFTs start from the same source data (`first_coset_mat`). The OOP version reads from `first_coset` and writes to `rest`. The in-place version modifies `first_coset`.
+
+Could we batch these two DFTs somehow? They both compute `coset_dft` starting from the same data, but with different shifts. No obvious way to batch without significant restructuring.
+
+**OK, I've been analyzing for a while. Let me focus on a concrete change that's likely to help.**
+
+Going back to the `second_half` with `scale` — there's already an optimization where the scale is folded into the first butterfly layer using `ScaledDitButterfly`. 
+
+What I notice is that in `second_half`, the check for whether scale has been applied happens via a mutable bool `scale_applied`. Looking at the code:
+
+```rust
+if let Some(scale) = scale {
+    let mut scale_applied = false;
+    for layer in mid..log_h {
+        let first_block = thread << (layer - mid);
+        if !scale_applied {
+            scale_applied = true;
+            dit_layer_rev_scaled(..., Some(scale));
+        } else {
+            dit_layer_rev(...);
+        }
+        backwards = !backwards;
+    }
+    if !scale_applied { submat.scale(scale); }
+} else { ... }
+```
+
+Iter #003 tried to peel this and got −0.56%. The compiler already handles it.
+
+Let me look at something I haven't considered: **reducing the number of `reverse_matrix_index_bits` calls**.
+
+In `coset_lde_batch`:
+1. `reverse_matrix_index_bits(&mut mat)` before IDFT first half
+2. `reverse_matrix_index_bits(&mut mat)` before IDFT second half
+3. In `coset_dft` (for each coset): `reverse_matrix_index_bits(mat)` between first and second half
+
+Each `reverse_matrix_index_bits` takes O(N log N) time (bit-reversal permutation). For `2^20 × 256`, this is 20M × 256 = 5 billion element swaps... wait, it's `2^20` row swaps where each swap moves a row of 256 elements = `2^20/2 = 2^19` swaps of 256 elements each. That's `2^19 × 256 × 4 bytes = 512MB` of data moved. This is significant!
+
+Actually `reverse_matrix_index_bits` for a matrix of height `2^20` with row width 256: it does `2^20/2 = 524288` row pair swaps, each moving `256 × 4 = 1KB`. Total data moved: `524K × 1KB × 2 (for swap) ≈ 1GB`. This is a LOT of memory bandwidth.
+
+For `coset_lde_batch` with `added_bits=1`:
+- 2 bit-reversals for IDFT (first_half + second_half setup)
+- 1 bit-reversal in `coset_dft` 
+- 1 bit-reversal in `coset_dft_oop`
+Total: 4 bit-reversals = ~4GB data movement just for permutations.
+
+But these are memory-bandwidth operations and hard to avoid algorithmically without major restructuring.
+
+**Let me try a completely different approach: look at what `mm512_mod_add` does and if it's used in the hot path:**
+
+`mm512_mod_add` is used in `xor` and after `mul_res` in `xor`. It's NOT in the butterfly hot path. It does:
+```
+vpaddd t, a, b
+vpsubd corr, t, P
+vpminud res, t, corr
+```
+
+This uses `vpminud` (port 0)! Wait... but the `mm512_mod_add` function is used in `xor` and in the `octic_mul_packed` function. Let me check if it's also used in the `Add` implementation...
+
+No, looking at the `Add` implementation:
+```rust
+let t = x86_64::_mm512_add_epi32(lhs, rhs);
+let over_p = x86_64::_mm512_cmple_epu32_mask(PMP::PACKED_P, t);
+let res = x86_64::_mm512_mask_sub_epi32(t, over_p, t, PMP::PACKED_P);
+```
+
+This is iter #001's optimization. It uses `vpcmpleud` (port 5) instead of `vpminud` (port 0). 
+
+But `mm512_mod_add` still uses `vpminud`! Let me check where it's called... it's called in `xor` and in `octic_mul_packed`. These aren't in the DFT butterfly hot path. So this is not a concern.
+
+Wait, actually let me check if `mm512_mod_add` is imported from `p3_field`:
+
+```rust
+use p3_field::{
+    ...
+    mm512_mod_add,
+};
+```
+
+And it's used in `xor` and in `octic_mul_packed`. Not in the butterfly hot path, so not relevant.
+
+OK, I need to make a decision and implement something. Let me look at what's available:
+
+**Final Candidate Ideas:**
+
+1. **`TwiddleFreeButterfly` for the LAST layer of `second_half` (non-coset)**: This would apply when `layer=log_h-1` gives `layer_rev=0` and the first block has twiddle `bitrev_twiddles[first_block]`. For thread 0, `first_block=0` and `bitrev_twiddles[0]=1`. But for other threads, twiddles aren't 1. Only a small fraction of work saved.
+
+2. **`ScaledDitButterfly` approach for `second_half_general`**: No scale exists there.
+
+3. **Look at `dit_layer_oop` and apply `DifButterflyZeros` when source has zeros**: Not applicable in general.
+
+4. **Inline the twiddle broadcast into `dit_layer_rev` for single-block case**: Already well-optimized.
+
+5. **New: Use a `TwiddleFreeButterfly` variant for `dit_layer` in `first_half_general` when twiddle is known at the call site to be the same for all blocks**: Actually, for layer=0, ALL blocks in a submat use the same single twiddle `twiddles[layer_rev][0]`. We could call `apply_to_rows` with this ONE twiddle once for each block, already done efficiently. No savings.
+
+Wait, I just realized something I overlooked. Let me re-examine `dit_layer_first_one` — it was added for the standard `first_half` where twiddles[0]=1. For `first_half_general`, the first twiddle is NOT 1 (it's the coset shift). 
+
+**But**: for `first_half_general`, at layers 1, 2, ..., mid-1, the twiddle vector for each layer has first element = `shift.exp_power_of_2(layer)`. The SECOND element of `twiddles[layer]` is `shift.exp_power_of_2(layer) * root.exp_power_of_2(layer)`. These aren't 1.
+
+Unless... for `second_half_general`, at some layer `layer_rev`, twiddle[0] could be 1. Let me check:
+
+For `second_half_general` using `twiddles_rev[layer_rev][first_block..]`:
+- `twiddles_rev[layer_rev]` is the twiddle vector for that layer
+- For layer `layer_rev`, twiddle `k` = `shift.exp_power_of_2(log_h-1-layer_rev) * root.exp_power_of_2(log_h-1-layer_rev)^k`
+- Wait, let me re-read the twiddle computation:
+
+```rust
+(0..log_h).map(|layer| {
+    let shift_power = shift.exp_power_of_2(layer);
+    let powers = Powers {
+        base: root.exp_power_of_2(layer),
+        current: shift_power,
+    };
+    let mut twiddles = powers.collect_n(h >> (layer + 1));
+    ...
+})
+```
+
+For index `i` in `layer`'s twiddle vector: `twiddle[i] = shift^{2^layer} * root^{2^layer * i}`.
+
+For `second_half_general` with `layer_rev < mid`, the twiddles are NOT bit-reversed. The twiddle at position `first_block` (= `thread << (layer - mid)`) for thread t at `layer = log_h - 1 - layer_rev`:
+
+Actually this is getting complex. Let me step back.
+
+**Here's a concrete new idea**: In `dit_layer_first_one` (used in standard `first_half`), the first row-pair uses `TwiddleFreeButterfly` and the rest use `DitButterfly`. The equivalent for `second_half_general`'s last layer could be beneficial IF any of the twiddles are 1.
+
+For `second_half_general`, the last layer is `layer=log_h-1=19`, giving `layer_rev=0`. The twiddle vector for `layer_rev=0` (in the coset case) is:
+- `twiddle[k] = shift^{2^0} * root^{2^0 * k} = shift * g^k` where `g = root^{2^0} = g_{log_h}` (the generator)
+
+These are never 1 for non-trivial coset shifts.
+
+OK I really need to commit to an idea. Let me look at one more angle.
+
+**Idea: Can we reduce the number of passes over the data?**
+
+For `coset_lde_batch`, after the IDFT, we have the coefficient representation. Then for each coset, we run a forward DFT. The forward DFT and the IDFT both do `2×mid` butterfly layers plus bit-reversal steps.
+
+Actually, wait. I see that in `coset_dft`, there's a `reverse_matrix_index_bits` call BETWEEN `first_half_general` and `second_half_general`. But in `coset_dft_oop`, there's also a `reverse_matrix_index_bits`. Each of these bit-reversals is expensive.
+
+But the key question: Is it possible to interleave the DFTs to reduce total data passes? This would require significant algorithmic restructuring.
+
+**OK let me just commit to the most promising idea I haven't tried:**
+
+Looking at the `second_half_general` code again more carefully and thinking about what's different from `second_half`:
+
+In `second_half_general`, each layer uses `dit_layer_rev`. For the LAST layer (`layer=log_h-1=19`, `layer_rev=0`):
+- `half_block_size=1`, `block_size=2`, each block = 2 rows
+- `width=256` elements per row = `256/16=16` packed elements
+- Each block has 1 row-pair → `apply_to_rows` does 16 packed iterations with 1 broadcast
+- 512 blocks per submat
+
+This is the "small block" regime where broadcast overhead is non-trivial relative to computation. For 512 blocks × 1 packed-row-pair each = 512 × 16 packed muls total. But 512 broadcasts are only 512 cyc vs 512 × 16 × 6.5 ≈ 53K cyc of muls. Still <1% overhead.
+
+**Final decision**: Let me try something that has a good theoretical basis and hasn't been tried.
+
+The `TwiddleFreeButterfly` idea works when twiddle=1. For `second_half_general`, the first BLOCK of the FIRST layer has twiddle = `twiddles_rev[layer_rev=9][0]`. In the coset DFT: `twiddles_rev[9][0] = shift^{2^9} * g^{2^9 * 0} = shift^{2^9}`. Not 1.
+
+However, in `second_half` (non-coset, used for IDFT):
+- Last layer: `layer=19, layer_rev=0`
+- Twiddle for block k of thread t: `bitrev_twiddles[t*512 + k]`
+- `bitrev_twiddles[0] = 1` but only for thread 0, block 0
+
+For thread 0, the LAST layer has half the blocks with twiddle starting from `bitrev_twiddles[0]=1`. The remaining blocks have different twiddles.
+
+This is very limited. Let me look at a different type of optimization.
+
+**Actually, I just thought of something**: The `ScaledDitButterfly::apply_to_rows` does 2 muls per element pair instead of DitButterfly's 1 mul + separate scale. But looking at the code flow:
+
+In `second_half` for the standard IDFT path (non-coset), scale is `1/h`. For the COSET LDE, the `second_half` is the IDFT with scale, same thing. The `ScaledDitButterfly` is used for the first butterfly layer of `second_half`. This processes the full data once.
+
+**New idea: Apply `ScaledDitButterfly` to `first_half_general` too**
+
+Wait no - there's no scale in the forward DFT.
+
+**OK final concrete idea**: Look at whether we can have a version of `TwiddleFreeButterfly` for the CONSTANT-twiddle case within a `dit_layer` where all blocks use the same twiddle.
+
+As established: in `first_half_general` and `first_half_general_oop`, for layer=0, ALL blocks use `twiddles[layer_rev][0]` (the same twiddle). So instead of creating `DitButterfly(twiddle)` and calling `apply_to_rows` per block (which broadcasts per block), we could hoist the broadcast outside the blocks loop.
+
+But this was tried as "Pre-broadcast all twiddles per layer" and gave −0.41%. OK, don't retry.
+
+Wait... but looking at the code structure more carefully: `dit_layer` does `twiddles.clone()` per block. For layer=0, each clone starts from position 0 and consumes exactly 1 element (`half_block_size=1`). So the clone itself is cheap (just copying 2 pointers for a slice iterator). 
+
+Hmm, let me think of something truly new.
+
+**Brand new idea**: What about removing `apply_to_rows` for the case of layer=0 in `dit_layer` and handling it differently? For layer=0, each block has 1 row-pair. Instead of calling `apply_to_rows` (which internally unpacks to shorts and suffix), we could directly operate on the 256-element rows.
+
+Actually `apply_to_rows` already handles this via `pack_slice_with_suffix_mut`. For 256 elements and width=16, this gives 16 packed elements and 0 suffix. The function call overhead should be eliminated by inlining.
+
+**OK, completely fresh idea**: What about operating on TWO row-pairs simultaneously in the butterfly to improve instruction-level parallelism?
+
+For large blocks where `half_block_size` ≥ 2, we process row-pairs sequentially. If we process 2 row-pairs at a time (unrolling the loop by 2), we could better pipeline the multiply operations since they have 21-cycle latency.
+
+But the current loop already provides enough independent chains: each iteration computes `*x_2 * twiddle_packed` (independent between iterations). LLVM should pipeline these automatically.
+
+**Actually, let me look at `second_half` and the TwiddleFreeButterfly for layer_rev=0 in standard second_half**:
+
+For the last layer of `second_half` (non-coset IDFT): every block has 1 row-pair with a potentially different twiddle. But for thread 0, some blocks might have twiddle=1.
+
+Actually, looking more carefully at `dit_layer_rev`:
+- For `layer=log_h-1=19` in `second_half` (non-coset): `layer_rev=0`, `half_block_size=1`, `block_size=2`
+- `twiddles_rev = bitrev_twiddles[first_block..]` where `first_block = thread << (19-10) = thread*512`
+- For thread 0: `bitrev_twiddles[0], bitrev_twiddles[1], ..., bitrev_twiddles[511]`
+- `bitrev_twiddles[0] = twiddles[bitrev(0)] = twiddles[0] = 1` ← twiddle=1!
+- But `bitrev_twiddles[1] = twiddles[bitrev(1)] = twiddles[2^19]` ← different
+
+So only 1 block out of 512 has twiddle=1 in the last layer. Not worth specializing.
+
+**Let me look at the FIRST layer of `second_half` more carefully**:
+
+For `layer=mid=10` in `second_half` (IDFT with scale): `layer_rev=9`, `half_block_size=512`. Each submat has exactly 1 block. The twiddle is `bitrev_twiddles[thread]`. For thread 0: `bitrev_twiddles[0] = 1`! But for other threads, it's different.
+
+With `dit_layer_rev_scaled` for thread 0, `twiddle = bitrev_twiddles[0] = 1`, and `scale = 1/h`. Then `twiddle_times_scale = 1 × scale = scale`. So the `ScaledDitButterfly` for thread 0 just scales both sides by `scale`, effectively: `output1 = (x1 + x2) * scale`, `output2 = (x1 - x2) * scale`. 
+
+For other threads, `twiddle ≠ 1`, so they need the full ScaledDitButterfly.
+
+This is an extremely small fraction (1 out of `log_h - mid = 10` layers, and only for thread 0 out of 1024 threads). Not worth specializing.
+
+**Brand new idea I've been avoiding**: Modify the `Mul` implementation for the special case where one of the operands is pre-broadcast (scalar multiplied into all lanes). The current `mul` function is always vector×vector. Could we exploit the structure when `rhs` is a broadcast?
+
+For a broadcast `rhs`, all 16 elements of `rhs` are equal. The `movehdup_epi32(rhs)` would be unnecessary since the odd and even elements are already equal. We could avoid computing `rhs_odd = movehdup_epi32(rhs)` separately.
+
+Looking at the `mul` implementation:
+```rust
+let lhs_odd = movehdup_epi32(lhs);
+let rhs_odd = movehdup_epi32(rhs);
+
+let prod_evn = x86_64::_mm512_mul_epu32(lhs_evn, rhs_evn);
+let prod_odd = x86_64::_mm512_mul_epu32(lhs_odd, rhs_odd);
+```
+
+If `rhs` is a broadcast (all elements equal), then `rhs_odd = movehdup_epi32(rhs) = rhs`. So `rhs_odd == rhs_evn`. We could pass `rhs` directly as both even and odd operands. This saves 1 `movehdup_epi32` per `mul` call.
+
+But `movehdup_epi32` has throughput 0.5 cyc (runs on memory ports, 2 per cycle). Saving 1 per mul out of 13 instructions total per mul... that's a very small saving.
+
+However, the `movehdup_epi32` for rhs would be **hoisted outside the loop** by LLVM if the compiler can see that rhs doesn't change between iterations. And since `twiddle_packed = F::Packing::from(self.0)` is pre-broadcast and doesn't change, LLVM should already hoist `movehdup_epi32(twiddle_packed)` outside the loop.
+
+Actually, looking at this more carefully: in the `apply_to_rows` loop:
+```rust
+for (x_1, x_2) in shorts_1.iter_mut().zip(shorts_2.iter_mut()) {
+    let x_2_twiddle = *x_2 * twiddle_packed;
+    ...
+}
+```
+
+`*x_2 * twiddle_packed` calls `mul(x2, twiddle_packed)`. Inside `mul`, `rhs_odd = movehdup_epi32(twiddle_packed)`. Since `twiddle_packed` is loop-invariant, LLVM should hoist this outside the loop. Similarly for `q_odd_rhs = mul_epu32(rhs_odd, MU)` etc.
+
+Actually LLVM may not always do this perfectly since the twiddle_packed result feeds into an inline function. Let me check if there's a way to help LLVM.
+
+**This is the crux of the optimization**: if LLVM doesn't hoist the loop-invariant computations from `mul(x, twiddle_packed)`, we could save significant work.
+
+Let me check the actual assembly for the inner loop of `apply_to_rows`:
+
+Actually, it's hard to get the right assembly with the cargo-show-asm tool given how generic the code is. Let me think about whether there's a way to structure the code to guarantee hoisting.
+
+In the current `DitButterfly::apply_to_rows`:
+```rust
+let twiddle_packed = F::Packing::from(self.0);
+for (x_1, x_2) in shorts_1.iter_mut().zip(shorts_2.iter_mut()) {
+    let x_2_twiddle = *x_2 * twiddle_packed;
+    ...
+}
+```
+
+LLVM inlines `mul(x2_vec, twiddle_vec)` where `twiddle_vec` is loop-invariant. It should hoist:
+- `rhs_odd = movehdup_epi32(twiddle_vec)` 
+- `q_odd_rhs = mul_epu32(rhs_odd, MU)`
+- `q_p_odd_rhs = mul_epu32(q_odd_rhs, P)`
+- `rhs_evn = twiddle_vec` (trivial)
+- `q_evn_rhs = confuse_compiler(mul_epu32(twiddle_vec, MU))` ← but `confuse_compiler` may prevent hoisting!
+
+**The `confuse_compiler` function!** This is specifically designed to prevent LLVM from optimizing. If LLVM sees:
+```rust
+let q_evn = confuse_compiler(x86_64::_mm512_mul_epu32(prod_evn, MPAVX512::PACKED_MU));
+```
+
+The `confuse_compiler` is applied to `prod_evn * MU`. Here `prod_evn = lhs_evn * rhs_evn`. If `rhs_evn` is loop-invariant, LLVM might want to compute `rhs_evn * MU` once and... wait, no. `prod_evn` depends on `lhs_evn` which changes each iteration.
+
+But `q_odd = confuse_compiler(mul_epu32(prod_odd, MU))` where `prod_odd = mul_epu32(lhs_odd, rhs_odd)`. Here `lhs_odd` changes each iteration, so `prod_odd` changes, and `q_odd` changes. These can't be hoisted.
+
+However, there ARE some computations involving ONLY `rhs` (the twiddle):
+1. `rhs_odd = movehdup_epi32(rhs)` — loop-invariant, LLVM should hoist
+2. Products involving rhs alone don't appear directly
+
+So the only hoistable computation involving `rhs` is step 1. LLVM should do this.
+
+**BUT WAIT**: In the current `mul` function, `confuse_compiler` is applied to `x86_64::_mm512_mul_epu32(prod_evn, MPAVX512::PACKED_MU)` and `x86_64::_mm512_mul_epu32(prod_odd, MPAVX512::PACKED_MU)`. The `confuse_compiler` is applied to prevent `vpmullq` instead of `vpmuludq`. This doesn't prevent hoisting of rhs-derived computations.
+
+Hmm, but actually looking more carefully: the `q_evn` and `q_odd` computations depend on `prod_evn` and `prod_odd` respectively, which depend on `lhs`. So they can't be hoisted regardless.
+
+OK let me just look at what assembly gets generated and see if there's redundant work:
+
+Actually, I realize I've been overthinking this. Let me look at the most impactful change I can make.
+
+**A genuinely new idea**: In `second_half_general`, I notice there's no `TwiddleFreeButterfly` optimization. But more importantly, for the coset DFT, the LAST layer (`layer=log_h-1=19`) has the MOST blocks (512 blocks per submat), each with `half_block_size=1`. Each block only processes 1 row-pair. The per-block overhead of creating `DitButterfly(twiddle).apply_to_rows(lo, hi)` includes:
+1. The function call overhead
+2. The `pack_slice_with_suffix_mut` calls (2 of them)
+3. The broadcast `F::Packing::from(self.0)`
+
+For 256-element rows, `pack_slice_with_suffix_mut` is basically free (computes length/16 and length%16). The broadcast is 1 `vpbroadcastd`. 
+
+Since we're processing 512 × 16 = 8192 packed muls for the last layer, these overheads are tiny. Not worth optimizing.
+
+**FINAL DECISION**: Let me implement something that has a real chance of helping.
+
+Looking at the analysis: the biggest opportunity I see is that `second_half_general` doesn't have the `TwiddleFreeButterfly` optimization that `first_half` has. While twiddles in the coset case aren't 1, for the standard (non-coset) `second_half`, there might be an opportunity.
+
+Actually, let me revisit the structure. For `coset_lde_batch`:
+- IDFT: uses `second_half` with bitrev_twiddles. 
+- `bitrev_twiddles[0] = 1` (always).
+- For `second_half` first layer (layer=mid=10), each thread processes 1 block with twiddle `bitrev_twiddles[thread]`. Thread 0 gets twiddle=1.
+
+But thread-specific optimizations are fragile.
+
+**Actually, here is a genuinely underexplored idea**: 
+
+For the NON-coset `second_half`, the LAST layer (layer=log_h-1) always has `layer_rev=0`, `half_block_size=1`, so MANY small blocks. The first half of these blocks (even-indexed blocks) have twiddles `bitrev_twiddles[first_block + 2k]` and odd-indexed blocks have `bitrev_twiddles[first_block + 2k+1]`. 
+
+But looking at bit-reversal: `bitrev_twiddles = twiddles[bitrev(k)]`. For the last layer, `bitrev(k)` for `k=0,1,2,...` gives `0, 2^19, 2^18, 3*2^18, 2^17, ...`. These are the "coarsest" twiddles. `twiddles[0]=1`, `twiddles[2^19] = g^{2^19/2^20} = root of -1 = -1` in some sense. Not useful to specialize.
+
+OK, I give up trying to find the perfect analytical solution. Let me just make a targeted change that has a reasonable chance of helping.
+
+**My chosen optimization**: `TwiddleFreeButterfly` for the LAST layer of `second_half` (layer=log_h-1) where `layer_rev=0`.
+
+Wait, but I established that these twiddles aren't uniformly 1. Unless...
+
+Actually, let me reconsider. For `second_half` (non-coset), layer=log_h-1=19, layer_rev=0. The `dit_layer_rev` is called with `twiddles_rev = bitrev_twiddles[first_block..].iter().copied()`. For the IDFT, `bitrev_twiddles` are the inverse twiddles bit-reversed. `bitrev_twiddles[0] = inverse_twiddles[0] = 1^{-1} = 1`. But other entries are not 1.
+
+So the first block of thread 0 has twiddle=1, but no others.
+
+**Wait — I should look at the dit_layer_rev_scaled instead.** For thread 0 in `second_half` with scale, the FIRST layer (layer=mid=10) uses `dit_layer_rev_scaled`. `twiddle = bitrev_twiddles[0] = 1`. `ScaledDitButterfly::new(1, scale)` → `twiddle_times_scale = 1 * scale = scale`. The butterfly computes: `out1 = x1*scale + x2*scale = (x1+x2)*scale`, `out2 = x1*scale - x2*scale = (x1-x2)*scale`. This is equivalent to `TwiddleFreeButterfly` followed by scaling!
+
+Could we special-case this as `ScaledTwiddleFreeButterfly`? This would use 1 mul per element (for scale) instead of 2 muls (scale and twiddle_times_scale). But this only applies to thread 0's first block in the first layer of second_half — saving 512 muls out of millions. Negligible.
+
+**FINAL DECISION**: I'll implement `TwiddleFreeButterfly` for the first row-pair of each block in `second_half_general`'s first layer, analogous to `dit_layer_first_one`.
+
+Wait no — I need to check if twiddles[0] = 1 for second_half_general. For coset DFTs, twiddles[layer_rev=0] has first element `shift^{2^0} = shift` ≠ 1.
+
+OK let me think of something COMPLETELY different that's actually implementable.
+
+**New idea: Combine `ScaledDitButterfly` with `apply_to_rows_oop`**
+
+Looking at `dit_layer_oop` in `first_half_general_oop`: it currently uses `DitButterfly` exclusively. But `first_half_general_oop` is called from `coset_dft_oop` which processes one of the cosets. There's no scale in this forward DFT.
+
+**New idea: Remove the `scale_applied` bool in `second_half` by using a type-level dispatch**
