@@ -10,7 +10,7 @@ You are optimizing the Plonky3 NTT implementation in `~/zk-autoresearch/Plonky3/
 
 Every butterfly in every layer calls `mul`, `add`, `sub` from the Montgomery field arithmetic in `monty-31/src/x86_64_avx512/packing.rs`. Gains there multiply across the entire transform.
 
-**Hardware: AMD EPYC Milan (Zen 3) @ 2.0GHz, 8 vCPU (Hetzner CCX33).**
+**Hardware: AMD EPYC Genoa (Zen 4), AVX-512, 8 vCPU (AWS c7a.2xlarge).**
 
 ## The Metric
 **Lower is better.** Score = median latency in ms for `coset_lde_batch` on BabyBear 2^20 × 256.
@@ -18,12 +18,12 @@ Every butterfly in every layer calls `mul`, `add`, `sub` from the Montgomery fie
 Keep a change if: **improvement > 0.20% AND p < 0.05** (Criterion reports both).
 
 ## Target Files (writable)
-- `monty-31/src/x86_64_avx2/packing.rs` — Montgomery field arithmetic for AVX2 (mul, add, sub, reductions)
-- `monty-31/src/x86_64_avx2/utils.rs` — AVX2 helpers
+- `monty-31/src/x86_64_avx512/packing.rs` — Montgomery field arithmetic AVX-512 (mul, add, sub, reductions)
+- `monty-31/src/x86_64_avx512/utils.rs` — AVX-512 helpers
 - `dft/src/radix_2_dit_parallel.rs` — DIT parallel FFT (first_half, second_half, dit_layer*)
 - `dft/src/butterflies.rs` — butterfly implementations
 
-**Note:** This machine (AMD EPYC Milan, Hetzner CCX33) has AVX2 but not AVX-512. The hot path compiles `monty-31/src/x86_64_avx2/` — the AVX-512 files are not compiled here. Compile with `RUSTFLAGS="-C target-cpu=native"` (already set in eval.sh).
+`RUSTFLAGS="-C target-cpu=native"` is already set in eval.sh — AVX-512 codepath is active.
 
 All other files are read-only.
 
@@ -92,16 +92,41 @@ Key functions in `monty-31/src/x86_64_avx512/`:
 - `utils.rs` — `mul_neg_2exp_neg_n_avx512`: 3 cyc/vec, 9 cyc latency
 
 
+## Context: Why Further Improvement Is Expected
+
+5 surgical iterations on `packing.rs` were all discarded on Zen 4. The arithmetic is at a tight local optimum for single-instruction substitutions. However, a core Plonky3 contributor has confirmed that further improvements are likely — the current implementation was designed for a different microarchitecture and there is room left.
+
+**Non-surgical changes are now permitted.** A change that touches more than 50 lines is allowed if:
+1. It passes correctness (bitwise-identical DFT output)
+2. It is motivated by a specific hypothesis, not a blind rewrite
+3. Assembly is verified before and after with `get_assembly`
+
+## Research Directions
+
+Before coding, **search for relevant research papers** on:
+- Montgomery multiplication AVX-512 — papers on faster modular arithmetic for ZK/NTT
+- NTT butterfly optimization — latency hiding, instruction-level parallelism
+- Zen 4 microarchitecture — execution unit layout, port throughput, out-of-order windows
+- CIOS Montgomery multiplication — alternative reduction algorithm (fewer dependent multiplies)
+- Karatsuba-based field multiplication for 31-bit primes
+
+Use web search to find papers. Read abstracts and look for techniques applicable to 31-bit Montgomery fields on AVX-512.
+
 ## What to Optimize
 
-Search directions, roughly in priority order:
+**Confirmed dead (do not retry):**
+- `vpminud→vpcmpgeud` in add/sub — regression on Zen 4, confirmed closed
+- Inverse (`vpcmpgeud→vpminud` in mul correction) — null result
+- `sub_epi64` tail fusion in mul — latency worse
+- Removing `confuse_compiler` around q_evn/q_odd — compiler picks worse lowering
+- `vpsrlq` instead of `vmovshdup` for lhs_odd — shuffle port not contested on Zen 4
 
-- **`Add`/`Sub` correction (`vpminud` replacement)** — a prior run swapped `vpminud` (1 cyc latency) for `vpcmpgeud`/`vpcmpltud` (3 cyc latency) in the underflow correction of `Add` and `Sub`. The hypothesis was Intel port 0/5 pressure: `vpminud` competes with `mul`'s `vpmuludq` on port 0, while `vpcmpgeud` runs on port 5. This reasoning is wrong for AMD — Zen 3 has a different execution unit layout with no port 0/5 split. In-session result was +0.86% (p=0.02); cross-session was −1.59% (p=0.00). 
-- **`mul` reduction sequence** — 6 `vpmuludq` instructions; algebraic alternatives, dependency chain restructuring, different intermediate representations.
-- **`partial_monty_red_*`** — reduction variants (`_unsigned_to_signed`, `_signed_to_signed`); different instruction sequences for AMD's execution units.
-- **Substitute cheaper ops** — where `mul_neg_2exp_neg_n` (3 cyc) can replace Montgomery `mul` (6.5 cyc), or `halve_avx512` (2 cyc) can replace a mul-by-inverse.
-- **Dependency chain length** — introducing independent computation paths to exploit AMD Zen 3's out-of-order execution.
-- **`neg`, `halve`** — verify current implementations are optimal; consider instruction alternatives.
+**Still open:**
+- **CIOS Montgomery reduction** — alternative to schoolbook: fewer serial `vpmuludq`, better instruction-level parallelism. Requires rewriting `mul` non-surgically. Read: "Montgomery Multiplication Using Vector Instructions" and similar.
+- **Dependency chain across butterflies** — the DIT butterfly does mul+add+sub in sequence. If `radix_2_dit_parallel.rs` interleaves independent butterfly pairs, the OOO window can hide latency. Requires touching `dft/src/` alongside `packing.rs`.
+- **`mul_neg_2exp_neg_n` substitution** — where twiddle factors are powers of 2, replace 6.5 cyc Montgomery mul with 3 cyc shift. Check how many butterfly layers use power-of-2 twiddles.
+- **Lazy reduction** — accumulate unreduced values across multiple operations before final reduction. Requires understanding the field's overflow bounds for BabyBear (P = 2^31 - 2^27 + 1).
+- **Alternative `partial_monty_red_*`** — restructure the signed/unsigned reduction variants to reduce critical path depth.
 
 ## Hard Constraints
 1. No security parameter changes — do not touch `fri/`, `uni-stark/`, `batch-stark/`.
@@ -112,4 +137,4 @@ Search directions, roughly in priority order:
 6. Do not modify `eval.sh`, `correctness.sh`, or anything in `~/zk-autoresearch/experiment_logs/` or `~/zk-autoresearch/correctness-checker/`.
 
 ## NEVER STOP
-Once the loop begins, do NOT pause to ask for confirmation. Do NOT ask "should I continue?". Run experiments autonomously until manually stopped. If you run out of ideas, re-read the assembly, study the AMD Zen 3 microarchitecture, search for research papers about NTT optimization, and think harder about what hasn't been tried.
+Once the loop begins, do NOT pause to ask for confirmation. Do NOT ask "should I continue?". Run experiments autonomously until manually stopped. If you run out of surgical ideas, search the web for research papers on Montgomery multiplication, NTT optimization, and Zen 4 microarchitecture — then implement what you find. Non-surgical rewrites are permitted if they pass correctness and are hypothesis-driven.
