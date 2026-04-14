@@ -1,0 +1,15 @@
+iter	improvement_pct	p_value	status	files_changed	description
+1	+0.15	0.66	discard	packing.rs	replace cmplt+mask_add with vpminud in mul/dot_product reductions — no effect on AMD Zen 3
+2	-1.89	0.03	discard	radix_2_dit_parallel.rs	fuse last two DFT layers in second_half — regression, likely losing backwards cache locality optimization
+3	-0.76	0.03	discard	packing.rs	remove confuse_compiler from mul — LLVM emits vpmullq, slight regression confirms barrier is needed
+4	-52.5	0.00	discard	butterflies.rs	manual unroll-by-4 in DitButterfly inner loop — massive regression, broke compiler vectorization
+5	-1.22	0.00	discard	packing.rs	upgrade inline to inline(always) on mul and helpers — slight regression from I-cache pressure
+6	-1.30	0.00	discard	radix_2_dit_parallel.rs	fuse last two layers in second_half_general (v2, proper backwards) — still worse than alternation
+NOTE: Iters 1-6 ran WITHOUT target-cpu=native (SSE2 only, 2.65s baseline). Baseline re-saved with AVX2 (1.41s). Iters 7+ use AVX2.
+7	-0.14	0.63	discard	butterflies.rs	inline(always) on apply_to_rows — no effect, compiler already inlines with AVX2
+8	-0.01	0.98	discard	radix_2_dit_parallel.rs	fuse last two layers in second_half_general with AVX2 — no effect
+9	+0.65	0.19	discard	butterflies.rs	unsafe pointer ops in DitButterfly to skip bounds checks — no effect, compiler already elides
+10	-1.77	0.00	discard	radix_2_dit_parallel.rs	shift mid split point +1 (11 instead of 10) — regression, balanced split is already optimal
+11	-	-	correctness_fail	radix_2_dit_parallel.rs	shift mid split point -1 (9 instead of 10) — test failures for small log_h values
+12	-0.13	0.63	discard	butterflies.rs	specialized apply_to_rows for TwiddleFreeButterfly — no effect, compiler already inlines chain
+SUMMARY: After 12 iterations, no improvements found. Key blocker: AVX2 arithmetic code is read-only. DFT algorithm is well-tuned (backwards alt, twiddle-free, pre-broadcast, scaled butterfly). Best opportunity was enabling target-cpu=native (47% speedup from AVX2, build config not code change).

@@ -1,0 +1,22 @@
+[package]
+name = "leanmultisig-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Criterion benchmarks for leanMultisig autoresearch loop"
+
+# Assumes leanMultisig is cloned at ~/zk-autoresearch/leanMultisig
+# i.e. a sibling of this workspace under ~/zk-autoresearch/
+
+[dependencies]
+rec_aggregation = { path = "../leanMultisig/crates/rec_aggregation" }
+xmss             = { path = "../leanMultisig/crates/xmss" }
+backend          = { path = "../leanMultisig/crates/backend" }
+mt-koala-bear    = { path = "../leanMultisig/crates/backend/koala-bear" }
+rayon            = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "xmss_leaf"
+harness = false

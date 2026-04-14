@@ -21,3 +21,5 @@ run_provenance.json
 bench_debug.txt
 STOP
 
+# Internal analysis — all report/ dirs are private
+experiment_logs/**/report/

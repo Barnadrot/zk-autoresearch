@@ -1,12 +1,15 @@
 # ZK Autoresearch — Workflow Guide
 
-A practical guide for running optimization experiments with the autoresearch loop. Written to capture hard-won lessons from Experiments 1–4.
+A practical guide for running optimization experiments with the autoresearch loop. Covers both Plonky3 (loop.py-based) and leanMultisig (Claude CLI-based) experiments.
 
 ---
 
-## Overview
+## Projects
 
-The loop runs Claude as an autonomous agent that reads Plonky3 source, proposes optimizations, benchmarks them, and keeps improvements. Each "experiment round" targets a specific file set. Rounds build on each other — **branch hygiene matters**.
+| Project | Mode | Server | Primary Target |
+|---------|------|--------|----------------|
+| Plonky3 NTT | loop.py agent | AWS c7a.2xlarge (Zen 4, AVX-512) | monty-31 AVX-512 arithmetic |
+| leanMultisig | Claude CLI agent | AWS c7a.2xlarge (Zen 4, AVX-512) | Poseidon2 arithmetic / sumcheck |
 
 ---
 
@@ -19,218 +22,164 @@ experiment_logs/
       active/
         CLAUDE.md          ← agent instructions for the current run
       experiment_N/
-        CLAUDE.md          ← snapshot of CLAUDE.md used during this experiment
-        logs/              ← terminal.log, experiments.jsonl, report.md
+        CLAUDE.md          ← snapshot used during experiment
+        logs/
       discarded/
         experiment_X/
-          notes.md         ← why it was discarded
-          logs/
+          notes.md
+  leanMultisig/
+    shared/
+      correctness.sh           ← two-layer: KoalaBear unit + WHIR integration
+      eval_poseidon.sh         ← Poseidon microbench (primary signal for exp_1)
+      eval_e2e.sh              ← Criterion xmss_leaf e2e (primary for exp_2, sanity for exp_1)
+      verify_post_experiment.sh ← manual post-run verification before review
+    experiment_1/
+      program.md               ← Poseidon AVX-512 arithmetic target
+      iters.tsv
+    experiment_2/
+      program.md               ← Sumcheck optimization target
+      iters.tsv
+
+leanMultisig-bench/
+  benches/xmss_leaf.rs        ← Criterion bench (used by eval_e2e.sh)
 ```
 
 **Rules:**
-- `active/CLAUDE.md` is the live file the loop reads. Edit this, not the root one.
-- When starting a new experiment, copy `active/CLAUDE.md` into the previous experiment's folder as a snapshot before modifying it.
-- Discarded experiments are moved to `discarded/` with a `notes.md` explaining why.
-
-> **TODO**: Update `loop.py` `CLAUDE_MD` path to point to `experiment_logs/Plonky3/NTT/active/CLAUDE.md`
+- `shared/` scripts are **read-only for the agent** — never modified during experiments
+- Each experiment has its own `program.md` and `iters.tsv`
+- `program.md` is the agent's instruction set — always read first by the agent
 
 ---
 
-## Pre-Run Checklist
+## AWS Server Setup
 
-Before starting a new experiment round:
+**Recommended:** AVX-512 capable instance (e.g. AMD Zen 4+, 8 vCPU, 16 GiB). Stop when not running experiments.
+**User:** Run as the default user directly — do NOT create a separate agent user (breaks Claude CLI paste auth on some terminals).
 
-### 1. Confirm previous PR is merged
 ```bash
-# Check upstream main includes previous round's work
-cd Plonky3 && git fetch origin && git log --oneline origin/main | head -10
-```
-**Do not start a new round until the previous round's PR is merged into upstream main.** Starting on an unmerged branch risks branch divergence (this cost us Experiment 2 and 4).
-
-### 2. Pull fresh main
-```bash
-git checkout main && git pull origin main
+ssh <your-instance>
 ```
 
-### 3. Verify loop is on the correct branch
+**First-time setup on fresh instance:**
 ```bash
-cd Plonky3 && git branch && git log --oneline -5
-```
-The Plonky3 repo should be on `main` (or the agreed starting branch). Check there are no uncommitted changes:
-```bash
-git status
-```
-The loop will now warn if dirty at startup — but prevention is better.
+# System deps
+sudo apt-get update -y && sudo apt-get install -y build-essential pkg-config libssl-dev clang
 
-### 4. Snapshot and update CLAUDE.md
-```bash
-# Snapshot previous experiment's CLAUDE.md
-cp experiment_logs/Plonky3/NTT/active/CLAUDE.md \
-   experiment_logs/Plonky3/NTT/experiment_N/CLAUDE.md
-```
-Then update `active/CLAUDE.md` for the new round:
-- Update "Current Codebase State" section to reflect merged improvements
-- Update writable targets
-- Move confirmed dead ends to the dead ends section
-- Remove dead ends from previous rounds that no longer apply
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
 
-### 5. Run pre-flight benchmark
-```bash
-cargo bench -p p3-dft --features p3-dft/parallel --bench fft \
-  -- "coset_lde" --noplot --measurement-time 35
+# Node + Claude CLI
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g @anthropic-ai/claude-code
+
+# Repos
+git clone https://github.com/Barnadrot/zk-autoresearch.git ~/zk-autoresearch
+git clone https://github.com/Plonky3/Plonky3.git ~/zk-autoresearch/Plonky3
+git clone https://github.com/leanEthereum/leanMultisig.git ~/zk-autoresearch/leanMultisig
+cd ~/zk-autoresearch && git checkout infra/exp3-opus-ntt
+
+# Pre-warm cargo
+cd ~/zk-autoresearch/Plonky3 && cargo fetch
+cd ~/zk-autoresearch/leanMultisig && cargo fetch
 ```
-Record this as your baseline. If it differs significantly from the previous best, investigate before running the loop.
+
+**Verify AVX-512:**
+```bash
+grep -o 'avx512[a-z]*' /proc/cpuinfo | sort -u
+# Must show avx512f
+```
+
+**Claude CLI auth workaround (paste bug on AWS):**
+If OAuth paste fails, use `CLAUDE_CODE_OAUTH_TOKEN` env var — generate token locally via `claude setup-token` then export on server.
 
 ---
 
-## Running the Loop
+## Running a leanMultisig Experiment
 
+### 1. Pull latest main
 ```bash
-# Standard run
-python3 loop.py --max-iter 20
-
-# Fresh start (will prompt before discarding uncommitted changes)
-python3 loop.py --start-fresh --max-iter 20
-
-# Resume after interrupt (reuses baseline if Plonky3 commit unchanged)
-python3 loop.py --max-iter 20
+cd ~/zk-autoresearch/leanMultisig && git checkout main && git pull origin main
 ```
 
-### Monitoring
+### 2. Start Claude agent
 ```bash
-# Graceful stop after current iteration completes
-touch STOP
-
-# Watch live
-tail -f experiment_logs/Plonky3/NTT/active/terminal.log  # if tee'd
+cd ~/zk-autoresearch
+claude --dangerously-skip-permissions
 ```
 
-### When to intervene
-- Agent is reading the same files repeatedly without writing → it's overthinking, check if it needs a nudge in CLAUDE.md
-- Agent is targeting files outside the writable scope → check CLAUDE.md constraints
-- Benchmark variance is high (>1.5%) → hardware contention, stop and retry later
-- 3+ Anthropic 529 errors in one session → regional outage, stop and wait
+### 3. Give the agent its program
+```
+Read ~/zk-autoresearch/experiment_logs/leanMultisig/experiment_1/program.md and execute it.
+The eval baseline is already saved — do not run --save-baseline again unless explicitly told to.
+```
+
+### 4. Monitor
+- Agent commits each iter to leanMultisig repo — check `git log` to track progress
+- Agent appends to `iters.tsv` — check for `correctness_fail` rows
+- Stop if 3+ correctness failures in a row
+
+### 5. Post-experiment verification (manual, before any review)
+```bash
+bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/verify_post_experiment.sh --save-baseline  # once on clean main
+bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/verify_post_experiment.sh                  # after experiment
+```
+All four layers must pass before opening a PR or requesting external review.
 
 ---
 
-## Post-Run Checklist
+## Running a Plonky3 Experiment
 
-### 1. Review kept improvements
+### 1. Pre-run checklist
 ```bash
-python3 -c "
-import json
-exps = [json.loads(l) for l in open('experiments.jsonl')]
-kept = [e for e in exps if e.get('kept')]
-for e in kept:
-    print(f\"#{e['iteration']:03d} {e['improvement_pct']:+.2f}% p={e.get('bench_p_value','?')} — {e['agent_idea']}\")
-"
+cd ~/zk-autoresearch/Plonky3 && git checkout main && git pull origin main
+git status  # must be clean
 ```
 
-### 2. Validate kept improvements cross-session
-Any kept improvement with **p > 0.05** needs cross-session validation before committing upstream:
+### 2. Start agent
 ```bash
-bash run_benchmark.sh  # compares all branches vs main in one Criterion session
+cd ~/zk-autoresearch
+claude --dangerously-skip-permissions
 ```
-Look for p=0.00 and "Performance has improved" verdict from Criterion.
+Point at `experiment_logs/Plonky3/NTT/experiment_2_monty_B_CLI/program.md`.
 
-### 3. Create experiment snapshot
-```bash
-mkdir -p experiment_logs/Plonky3/NTT/experiment_N/logs
-cp experiments.jsonl experiment_logs/Plonky3/NTT/experiment_N/logs/
-# Write report
-```
-
-### 4. Commit Plonky3 improvements to a named branch
-```bash
-cd Plonky3
-git checkout -b perf/dft-exp5-round5-improvements
-git push myfork perf/dft-exp5-round5-improvements
-```
-**Never leave improvements as uncommitted changes on a detached HEAD.** This caused us to lose the exp-4 commit (recovered via reflog, but risky).
-
-### 5. Open PR
-- Target: upstream Plonky3 `main`
-- Include: benchmark numbers from `run_benchmark.sh`, p-values, description of each change
-- Reference: experiment log file for full history
+### 3. Benchmark methodology
+- Primary: `eval.sh` using Criterion `--baseline` comparison
+- Keep threshold: improvement > 0.20% AND p < 0.05
+- Cross-session: run `eval.sh` 3 times back-to-back; all 3 must meet threshold before opening PR
 
 ---
 
-## Benchmark Methodology
+## Correctness Hierarchy (leanMultisig)
 
-### Single-session comparison (authoritative)
-```bash
-bash run_benchmark.sh
-```
-Uses Criterion's `--save-baseline` + `--baseline main` to compare branches in the same session. This gives meaningful p-values. **This is the only benchmark result suitable for upstream PR claims.**
-
-### Loop benchmark (relative, session-local)
-The loop's internal benchmark compares each iteration against the previous best. It has ~1.4% session variance. Improvements below 0.5% at p > 0.10 are likely noise.
-
-**Keep thresholds:**
-- `improvement_pct > 0.20%` (MIN_IMPROVEMENT_PCT)
-- `bench_p_value < 0.10` (P_VALUE_THRESHOLD)
-
-Both must pass for a change to be kept.
-
-### Cooling between runs
-Do **not** add sleep between branch benchmarks in `run_benchmark.sh`. Cooling changes CPU frequency state and introduces systematic bias against improvements (observed: ~1% underreporting).
+| Check | When | Who runs it |
+|-------|------|-------------|
+| `correctness.sh` | After every agent change | Agent (automatic) |
+| `eval_poseidon.sh` / `eval_e2e.sh` | After every iter | Agent (automatic) |
+| `verify_post_experiment.sh` | After experiment, before PR | Human (manual) |
+| External review | After verify passes | Open PR |
 
 ---
+
 
 ## Branch Hygiene
 
-This is the most important section. Experiment 2 was wasted because of branch divergence.
-
-### Rule: always build on the previous round's merged tip
-
-```
-main (after Round N PR merged)
-  └── start new experiment here
-```
-
-Never start a new round from a branch that hasn't been merged. If you must start before merge, cherry-pick the exact tip commit and document it.
-
-### Rule: verify cumulative correctness before benchmarking
-
-```bash
-# Check that your branch includes all expected improvements
-git log --oneline origin/main..HEAD
-```
-
-### Rule: use myfork for all experiment branches
-
-```bash
-git push myfork perf/dft-expN-roundN-improvements
-```
-
-Never push experiment branches to `origin` (upstream Plonky3). Only push PRs to origin.
-
----
-
-## CLAUDE.md Maintenance
-
-CLAUDE.md is the agent's instruction set. It changes frequently. Key principles:
-
-- **Dead ends**: Add confirmed dead ends after 3+ attempts with different implementations. One failed attempt is not enough to declare dead.
-- **Proven techniques**: Remove these when the scope changes (e.g., when moving from dft/src/ to monty-31/, dft techniques are irrelevant).
-- **Writable scope**: Be explicit. Mark everything else as read-only. The agent will drift to familiar code if scope is ambiguous.
-- **False dead ends**: If a result was caused by token cutoff or incomplete implementation, mark it explicitly as "not a real test of this idea."
-- **Trim regularly**: Ask at the start of each round whether CLAUDE.md needs trimming. Stale context wastes tokens.
+- **leanMultisig:** agent commits directly to main locally. Push to fork before opening PR.
+- **Plonky3:** agent commits to main locally. Branch before pushing: `git checkout -b perf/expN-description`.
+- Never push experiment branches to upstream origin.
+- Always build on previous round's merged tip.
 
 ---
 
 ## Cost Management
 
-Typical costs per iteration (claude-sonnet-4-6):
-- Normal iter (focused, edit_file): ~$1–3
-- Large file write iter: ~$5–10
-- Overthinking iter (29 min, 3 full-file rewrites): **$18.78** (Experiment 4, iter 3)
+| Model | Cost/iter (typical) |
+|-------|-------------------|
+| claude-sonnet-4-6 | $1–3 normal, $5–10 large file write |
 
-**edit_file tool**: Always prefer over write_file for changes under ~100 lines. Saves 5–10x tokens on large files.
-
-**MAX_TOKENS**: Currently 40k. Do not reduce — agent needs headroom for large file context. Increasing further raises cost without clear benefit.
-
-**Token budget alarm**: If an iteration exceeds $10, review the terminal log. The agent is almost certainly reconstructing a large file unnecessarily.
+- Always prefer Edit over Write for changes under ~100 lines
+- If a single iter exceeds $10, agent is rewriting large files — check program.md constraints
 
 ---
 
@@ -238,23 +187,31 @@ Typical costs per iteration (claude-sonnet-4-6):
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Agent reads same file 10+ times | No edit_file, planning full rewrite | Ensure edit_file is deployed |
-| Kept improvement later shows no gain | p-value was high (>0.10) | Run cross-session validation |
-| New round benchmarks worse than expected | Branch divergence, missing previous improvements | Check `git log origin/main..HEAD` |
-| Loop baseline drifts between runs | Session variance (~1.4%) | Use run_benchmark.sh for cross-session comparison |
-| Agent targets wrong files | CLAUDE.md scope unclear | Tighten writable list, mark others explicitly read-only |
-| $18+ single iteration | Agent writing full 1700-line file multiple times | edit_file tool; check it's deployed on server |
-| 529 overload errors | Anthropic regional outage | Wait; loop has exponential backoff up to 240s |
-| Uncommitted changes lost on --start-fresh | Loop silently reverted | Fixed: now prompts before discarding |
+| Claude CLI paste fails on AWS | Terminal paste bracketing bug (GH #47669) | Use `CLAUDE_CODE_OAUTH_TOKEN` env var |
+| Agent user breaks paste | `sudo su - agent` drops terminal state | Run as ubuntu directly, no agent user |
+| AVX-512 not active | Missing `RUSTFLAGS="-C target-cpu=native"` | Already set in all eval.sh scripts |
+| Kept improvement later shows no gain | p-value borderline | Run 3 cross-session back-to-back runs |
+| Agent modifies eval scripts | Scope not enforced | NEVER MODIFY constraint in program.md |
+| Correctness pass but wrong output | Unit tests don't cover all edge cases | Run `verify_post_experiment.sh` |
 
 ---
 
 ## Experiment History
 
+### Plonky3
+
 | Experiment | Target | Result | Status |
 |------------|--------|--------|--------|
-| 1 | dft/src/ butterflies + DIT parallel | ~2.7% improvement (74 iters) | Merged → Round1 PR |
-| 2 | dft/src/ layer fusion | Branched before exp-19/21, results invalid | Discarded |
+| 1 | dft/src/ butterflies + DIT parallel | ~2.7% (74 iters) | Merged → Round1 PR |
+| 2 | dft/src/ layer fusion | Invalid branch base | Discarded |
 | 3 | dft/src/ continued | Wrong branch base | Discarded |
-| 4-monty | monty-31/src/x86_64_avx512/ | 0.41% kept (p=0.23, weak) | Needs validation |
-| 5 | TBD — start from merged Round1 | — | Planned |
+| 4-monty | monty-31 AVX-512 | 0.41% (p=0.23, weak) | Needs validation |
+| exp2_monty_B_CLI | monty-31 AVX-512 port pressure | vpminud→vpcmpgeud: regression on Zen 4 | PR closed |
+| exp2_monty_B_CLI | monty-31 AVX-512 arithmetic | In progress (Zen 4, c7a) | Running |
+
+### leanMultisig
+
+| Experiment | Target | Result | Status |
+|------------|--------|--------|--------|
+| 1 | Poseidon2 KoalaBear AVX-512 | — | Infrastructure ready, pending upstream merge |
+| 2 | batched_air_sumcheck | — | Infrastructure ready |

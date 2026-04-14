@@ -21,9 +21,9 @@ Single-size, cross-session Criterion benchmark, 60s measurement, 10 samples:
 - **Median improvement: −1.59%, p=0.00**
 - **Important caveat:** the benchmark ran on an AVX2 machine where AVX-512 codepath was not active. Rust compiled without `target-cpu=native` for the initial run — the improvement may have been in AVX2 fallback code, not the AVX-512 path we modified.
 
-Independent validation by SyxtonPrime on the PR: "a mix of 1-2% increases but also nothing and some slowdowns." Not reproducible across environments.
+Independent validation on the PR by an upstream reviewer: "a mix of 1-2% increases but also nothing and some slowdowns." Not reproducible across environments.
 
-### PR Review Objections (nbgl)
+### PR Review Objections (upstream reviewers)
 1. **Latency increase** — `vpminud` latency=1, `vpcmpud` latency=3 (Intel). Add goes 3→5 cyc, sub 3→4 cyc. Not a dealbreaker but not ideal.
 2. **Port 0 may not be the bottleneck** — per-butterfly port count: port 0 has 8 instructions, port 5 has 5, shared 0/5 has 6. Both ports are already saturated — moving one instruction may not relieve anything.
 3. **AMD mismatch** — the port 0/5 reasoning is Intel-specific. AMD has no equivalent port split. Any improvement observed on AMD is unexplained.
