@@ -7,6 +7,8 @@
 set -e
 cd ~/zk-autoresearch/leanMultisig
 
+export RUSTFLAGS="-C target-cpu=native"
+
 echo "[correctness] Layer 1: KoalaBear field arithmetic unit tests (~10s)..."
 cargo test -p mt-koala-bear --release 2>&1
 

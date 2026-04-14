@@ -1,7 +1,7 @@
 #!/bin/bash
 # End-to-end Criterion benchmark — sanity check for all leanMultisig experiments.
-# Measures full xmss_aggregate (100 sigs). Poseidon = ~25% of signal,
-# sumcheck = ~19%. Use as cross-check every 5 iters, not primary signal.
+# Measures full xmss_aggregate (100 sigs). Sumcheck = ~52% of signal,
+# combine_statement = ~22%, Poseidon/hashing = ~4%. Primary signal for experiment_sumcheck.
 #
 # Usage:
 #   bash eval_e2e.sh                   — compare vs saved baseline
@@ -14,7 +14,7 @@ export RUSTFLAGS="-C target-cpu=native"
 cd ~/zk-autoresearch/leanMultisig-bench
 
 BENCH_FLAGS="--bench xmss_leaf"
-BENCH_FILTER="xmss_leaf_100sigs"
+BENCH_FILTER="xmss_leaf_1400sigs"
 BASELINE_NAME="lm_e2e_baseline"
 MEASURE="--measurement-time 60 --noplot"
 
