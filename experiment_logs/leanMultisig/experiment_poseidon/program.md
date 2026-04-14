@@ -69,14 +69,14 @@ Example rows:
 
 ## How to Evaluate
 
-Save baseline once at the start of the session:
+Run after each change:
 ```bash
-bash ~/zk-autoresearch/experiment_logs/leanMultisig/experiment_1/eval.sh --save-baseline
+bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_poseidon.sh
 ```
 
-Then after each change:
+Every 5 iters, also run e2e sanity check:
 ```bash
-bash ~/zk-autoresearch/experiment_logs/leanMultisig/experiment_1/eval.sh
+bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_e2e.sh
 ```
 
 ## What to Optimize
