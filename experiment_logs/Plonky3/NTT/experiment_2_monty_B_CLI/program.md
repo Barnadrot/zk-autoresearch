@@ -15,7 +15,7 @@ Every butterfly in every layer calls `mul`, `add`, `sub` from the Montgomery fie
 ## The Metric
 **Lower is better.** Score = median latency in ms for `coset_lde_batch` on BabyBear 2^20 × 256.
 
-Keep a change if: **improvement > 0.20% AND p < 0.05** (Criterion reports both).
+Keep a change if: **incremental improvement over the previous kept state > 0.20% AND p < 0.05** (Criterion reports both). Compare each change against the most recent kept commit, not against the fixed session baseline.
 
 ## Target Files (writable)
 - `monty-31/src/x86_64_avx512/packing.rs` — Montgomery field arithmetic AVX-512 (mul, add, sub, reductions)

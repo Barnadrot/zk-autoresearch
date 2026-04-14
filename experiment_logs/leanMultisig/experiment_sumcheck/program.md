@@ -16,7 +16,7 @@ Combined these account for ~35% of proving time — no active PRs targeting them
 **Lower is better.** Score = median latency in ms for `xmss_leaf_100sigs` (100 XMSS signatures).
 
 Primary signal: e2e bench (`eval_e2e.sh`) — sumcheck is ~19% of signal so improvements are directly visible.
-Keep a change if: **improvement > 0.20% AND p < 0.05**.
+Keep a change if: **incremental improvement over the previous kept state > 0.20% AND p < 0.05**. Compare each change against the most recent kept commit, not against the fixed session baseline.
 
 ## Target Files (writable)
 - `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/prove.rs` — sumcheck prover

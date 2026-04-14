@@ -12,7 +12,7 @@ The KoalaBear field has an AVX-512 packed implementation (`x86_64_avx512/packing
 ## The Metric
 **Lower is better.** Score = median latency in ms for `xmss_leaf_100sigs` (100 XMSS signatures, log_inv_rate=1).
 
-Keep a change if: **improvement > 0.20% AND p < 0.05** (Criterion reports both).
+Keep a change if: **incremental improvement over the previous kept state > 0.20% AND p < 0.05** (Criterion reports both). Compare each change against the most recent kept commit, not against the fixed session baseline.
 
 ## Target Files (writable)
 - `~/leanMultisig/crates/backend/koala-bear/src/monty_31/x86_64_avx512/packing.rs` — KoalaBear AVX-512 arithmetic (`mul`, `add`, `sub`, reductions)
