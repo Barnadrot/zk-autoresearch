@@ -19,6 +19,7 @@ Primary signal: e2e bench (`eval_e2e.sh`) — sumcheck is ~19% of signal so impr
 Keep a change if: **incremental improvement over the previous kept state > 0.20% AND p < 0.05**. Compare each change against the most recent kept commit, not against the fixed session baseline.
 
 ## Target Files (writable)
+- `~/zk-autoresearch/leanMultisig/crates/sub_protocols/src/air_sumcheck.rs` — batched AIR sumcheck (added in #191, likely the new hot path — read this first)
 - `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/prove.rs` — sumcheck prover
 - `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/product_computation.rs` — product computation
 - `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/quotient_computation.rs` — quotient computation
