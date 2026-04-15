@@ -9,9 +9,32 @@
 #   --multisize-isolated Run each size with sleep between baseline+branch (clean p-values)
 #
 # Output: ~/bench_results/ with per-branch logs + final summary
+#
+# ── IMPORTANT: RUSTFLAGS is set explicitly below ─────────────────────────────
+# Without `-C target-cpu=native` cargo builds the bench WITHOUT AVX-512 on
+# an AVX-512 machine and measurements come out ~2× slow across every size.
+# `cargo bench --no-run` happily reuses a stale cached bench binary across
+# RUSTFLAGS changes, so forgetting this produces silently-wrong comparisons
+# that look like huge "regressions" when switching branches. Do NOT remove
+# the export below without understanding this.
+#
+# ── Note on what the origin/main comparison measures ─────────────────────────
+# `origin/main` does NOT include the bench-harness fix
+# (`iter_batched(LargeInput)`) that this PR introduces. When comparing
+# `origin/main` vs the PR branch, Criterion is measuring two *different*
+# regions: on main the timed region includes `messages.clone()` (~1 GB
+# alloc + page faults), on the PR branch the clone is in setup. The apparent
+# "improvement" therefore combines (a) the harness fix moving ~54% of noise
+# out of the measurement window and (b) the ~1-3% compute-side wins. See
+# report.md / pr_description.md for a clean compute-only comparison (PR's
+# bench_fix commit vs its tip).
 
 set -e
 cd ~/zk-autoresearch/Plonky3
+
+# AVX-512 must be enabled at compile time; see header comment above.
+export RUSTFLAGS="-C target-cpu=native"
+echo "RUSTFLAGS=${RUSTFLAGS}"
 
 BENCH_FLAGS="--features p3-dft/parallel --bench fft"
 RESULTS=~/bench_results
@@ -19,7 +42,7 @@ SKIP_MAIN=0
 MULTISIZE=0
 MULTISIZE_ISOLATED=0
 SLEEP_SECS=240  # cool-down between baseline and branch per size
-BRANCH="perf/monty31-addsub-port-pressure"
+BRANCH="perf/exp-cli-monty-bench-fix-pr"
 MEASURE_ISOLATED="--measurement-time 60"
 
 for arg in "$@"; do
