@@ -1,21 +1,23 @@
 # leanMultisig Sumcheck Optimizer — Autoresearch
 
 ## Role
-You are an expert ZK systems engineer specializing in high-performance Rust and CPU microarchitecture. Your job is to make the leanMultisig prover faster by optimizing its sumcheck implementation.
+You are an expert ZK systems engineer specializing in high-performance Rust and CPU microarchitecture. Your job is to make the leanMultisig prover faster by optimizing its sumcheck implementation and adjacent hot-path code reachable from it.
 
 ## The Challenge
-leanMultisig uses sumcheck extensively. Production profiling at 1400 sigs on Zen 4 (c7a.2xlarge) shows:
+leanMultisig uses sumcheck extensively. Production profiling at 1400 sigs on Zen 4 (c7a.2xlarge) originally reported:
 
-| Component | % total | Span |
+| Component | % total (claimed, inclusive) | Span |
 |---|---|---|
-| `prove_generic_logup` | **18.06%** | `sub_protocols/src/logup.rs` |
-| `batched_air_sumcheck` | **15.43%** | `sub_protocols/src/air_sumcheck.rs` |
-| `run_product_sumcheck` (inside WHIR) | **9.12%** | `backend/sumcheck/src/product_computation.rs` |
+| `prove_generic_logup` | 18.06% | `sub_protocols/src/logup.rs` |
+| `batched_air_sumcheck` | 15.43% | `sub_protocols/src/air_sumcheck.rs` |
+| `run_product_sumcheck` (inside WHIR) | 9.12% | `backend/sumcheck/src/product_computation.rs` |
 | **Total sumcheck-adjacent** | **~43%** | |
 
-All three call into `backend/sumcheck/src/prove.rs` (`sumcheck_prove_many_rounds`) — the shared hot loop. An improvement there hits all three.
+**Profile re-validated 2026-04-15 (`report/bench_profile.md`)** shows the picture is more nuanced. *Self* time inside `mt_sumcheck::*` is only ~3 %; the remaining sumcheck-adjacent work is inside code the sumcheck crate *calls into* — `mt_poly::eq_mle::eval_eq_with_packed_output` (~11 %), `mt_koala_bear::quintic_extension::quintic_mul` and related field arithmetic (~13.5 %), and Poseidon permute (~20 %, much of it via AIR/fiat-shamir). Treat the 43 % figure as inclusive time for the sumcheck call tree — direct edits inside the writable sumcheck files will produce correspondingly small e2e deltas unless they reshape how the callees are invoked (e.g. eliminate redundant field operations, change packing strategy, improve SIMD fit).
 
-**Hardware: AMD EPYC Genoa (Zen 4) @ c7a.2xlarge, AVX-512 available.**
+All three primary callers route through `backend/sumcheck/src/prove.rs` (`sumcheck_prove_many_rounds`). An improvement there hits all three.
+
+**Hardware: AMD EPYC Genoa (Zen 4) @ c7a.2xlarge, AVX-512 available, KVM virtualized (no CPU pinning / turbo controls available from guest).**
 
 ## Inspiration Repos (source reference)
 
@@ -32,24 +34,21 @@ Use `read_file` on any of these for inspiration. Do not modify them.
 ## The Metric
 **Lower is better.** Score = median latency in ms for `xmss_leaf_1400sigs` (1400 XMSS signatures).
 
-Primary signal: e2e bench (`eval_e2e.sh`) — sumcheck is ~43% of signal so improvements are directly visible.
-
-**Keep a change if: incremental improvement over the previous kept state > 0.20% AND p < 0.05.**
-Compare each change against the most recent kept commit, not against the fixed session baseline.
+Primary signal: full e2e bench through `eval_paired.sh` (see "How to Evaluate").
 
 ## Target Files (writable)
 
 ### Core sumcheck engine — hits all three callers
-- `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/prove.rs` — `sumcheck_prove_many_rounds`: the shared inner round loop, called by everything. **Start here.**
-- `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/sc_computation.rs` — `SumcheckComputation` trait impls: `eval_base`, `eval_packed_base`, `eval_packed_extension`. Hot path per round.
+- `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/prove.rs` — `sumcheck_prove_many_rounds`: shared inner round loop. **Start here.**
+- `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/sc_computation.rs` — `SumcheckComputation` trait impls: `eval_base`, `eval_packed_base`, `eval_packed_extension`.
 - `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/product_computation.rs` — `run_product_sumcheck` + `compute_product_sumcheck_polynomial_base_ext_packed` (packed hot path for WHIR)
-- `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/quotient_computation.rs` — `GKRQuotientComputation`: `sum_fractions_const_2_by_2` is the inner kernel for logup GKR
+- `~/zk-autoresearch/leanMultisig/crates/backend/sumcheck/src/quotient_computation.rs` — `GKRQuotientComputation` inner kernel for logup GKR
 
 ### Protocol layer — caller-specific
 - `~/zk-autoresearch/leanMultisig/crates/sub_protocols/src/air_sumcheck.rs` — `prove_batched_air_sumcheck`: batched AIR sumcheck driver
 - `~/zk-autoresearch/leanMultisig/crates/sub_protocols/src/logup.rs` — `prove_generic_logup`: Logup GKR driver, data prep + GKR rounds
 
-All other files are **read-only**.
+All other files are **read-only**. Do not modify `mt_poly` or `mt_koala_bear` — they are in the read-only field/poly crates even though they appear hot in the profile.
 
 ## Read-Only — DO NOT MODIFY
 
@@ -59,67 +58,124 @@ All other files are **read-only**.
 | `crates/backend/air/` | AIR constraint definitions |
 | `crates/backend/field/` | Field arithmetic primitives |
 | `crates/backend/koala-bear/` | KoalaBear field implementations |
+| `crates/backend/poly/` | Multilinear kernels (`eq_mle`) — read-only |
 | `crates/whir/` | WHIR protocol |
 | `crates/backend/sumcheck/src/verify.rs` | Verifier — never touch |
 | Any `tests/` directory | Do not modify test values |
 | `~/zk-autoresearch/experiment_logs/` | Infrastructure — read-only |
 | `~/zk-autoresearch/leanMultisig-bench/` | Bench crate — read-only |
 
+## Gate & Keep Rule (primary reference)
+
+Each change passes through up to three stages. Wall-clock alone cannot resolve the kind of sub-% wins this loop is expected to produce on c7a.2xlarge (measured paired σ ≈ 0.6–0.9 % on real changes, see `report/threshold_calibration.md`). **iai is the primary signal. Wall-clock is the sanity check.**
+
+### Stage 1 — iai-callgrind instruction-count gate  (primary signal)
+`bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_iai.sh`
+
+- Runs `iai_driver` under callgrind on baseline (HEAD~1) and candidate (HEAD). `target-cpu=znver3` (not native) — valgrind 3.18/3.23 cannot emulate Zen 4 VNNI/VBMI2.
+- Tracks per-symbol `Ir` for sumcheck + adjacent hot paths.
+- **PASS** = any tracked symbol dropped ≥ `IAI_MIN_DROP_PCT` (0.10 %) AND no tracked symbol regressed by more than `IAI_MAX_REGR_PCT` (0.05 %).
+- Exit 0 on PASS, 1 on FAIL, 2 on infra error.
+
+**Escape hatch (`[wallclock-only]` tag in commit body):** for changes whose value lives in SIMD scheduling, port pressure, unroll factor, `confuse_compiler` hints, rayon chunk-size tuning, or Zen 4-specific VNNI/VBMI2 usage. Skips Stage 1, goes directly to Stage 2 with a strict threshold. Use sparingly.
+
+### Stage 2 — paired wall-clock  (sanity check when iai passed; primary gate for wallclock-only)
+`bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_paired.sh`
+
+- Builds both binaries with `cargo clean --release` between, syncs `git checkout` to match each binary being executed (avoids the `main.py`-loaded-at-runtime hazard).
+- Asserts distinct md5 hashes.
+- Burn-in invocation, then single paired A/B in loop mode.
+- Interpretation is hybrid — see the rules table below.
+
+### Stage 3 — revert-A/B  (marginal keeps only)
+`bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_revert_ab.sh <claim_delta_pct>`
+
+- Triggered when `|stage2 median_Δ| < MARGINAL_MULT × KEEP_THRESHOLD_PCT` (currently 3.0 %).
+- Creates temporary revert on top of HEAD, re-runs paired A/B.
+- Reverting the keep must reproduce ≥ 50 % of the claimed improvement.
+- Cleans up its revert commit before returning. Loop must unwind the kept commit on failure.
+
+### Combined decision table
+
+| Stage 1 (iai) | `[wallclock-only]` | Stage 2 (paired median Δ%) | Stage 2 p | Keep? | Run Stage 3 revert-A/B? |
+|---|---|---|---|---|---|
+| PASS | no | `Δ ≥ +0.5 %` AND `p < 0.05` | | **NO** — iai-positive + wall-clock clearly worse = cache/ILP conflict |
+| PASS | no | `Δ < +0.5 %` (no clear regression) | | YES | YES if `|Δ| < 3.0 %` |
+| FAIL | no | — | — | NO — `discard_iai` | — |
+| (skipped) | yes | `Δ ≤ −1.5 %` | `p < 0.01` | YES | YES if `|Δ| < 3.0 %` |
+| (skipped) | yes | otherwise | — | NO — `discard_wallclock` | — |
+
+### Periodic audit (every 5 keeps)
+Run full-stack revert-A/B against the state at the start of that 5-keep window. Unwind every keep back to that window's start if any single revert-A/B fails.
+
 ## Experiment Loop
 
 LOOP FOREVER:
 
-1. Read `program.md` (this file) to refresh constraints and target.
-2. Read `iters.tsv` to understand what has been tried and what the current best is.
-3. Read the target files to understand the current implementation.
-4. Devise ONE targeted change. Think about what to change and why before touching code.
-5. Edit the source file.
-6. Run correctness check (~40s):
+1. Read `program.md` (this file) and `iters.tsv`.
+2. Read the target files, `report/bench_profile.md`, and `report/threshold_calibration.md`.
+3. Devise ONE targeted change. State the hypothesis — what you change, why it's faster, what signal you expect (iai Ir drop, paired Δ, or both). If the hypothesis is SIMD/rayon-shaped, note that the change will use the `[wallclock-only]` tag.
+4. Edit the source file.
+5. Run correctness check (~40 s):
    ```bash
    bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/correctness.sh
    ```
-   If tests fail: `git -C ~/zk-autoresearch/leanMultisig checkout -- .`, append `correctness_fail` row to `iters.tsv`, try a different idea.
-7. `git -C ~/zk-autoresearch/leanMultisig commit -am "iter N: <short description>"`
-8. Run benchmark (~9 min):
+   If tests fail: `git -C ~/zk-autoresearch/leanMultisig checkout -- .`, log `correctness_fail`, try a different idea.
+6. Commit: `git -C ~/zk-autoresearch/leanMultisig commit -am "iter N: <short description>"`
+   Include `[wallclock-only]` in the commit body if opting out of Stage 1.
+7. Run Stage 1 (iai) — skip if `[wallclock-only]` tag is present:
    ```bash
-   bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_e2e.sh
+   bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_iai.sh
    ```
-9. Read the output. Extract change %, p-value, verdict.
-10. If improvement > 0.20% AND p < 0.05: append `keep` row to `iters.tsv`.
-11. If not: `git -C ~/zk-autoresearch/leanMultisig revert HEAD --no-edit`, append `discard` row to `iters.tsv`.
+   Read the JSON at `/tmp/eval_iai_summary.json`. Record `total_tracked_delta_pct` and top mover in iters.tsv.
+8. If Stage 1 FAILED: `git -C ~/zk-autoresearch/leanMultisig revert HEAD --no-edit`, log `discard_iai`.
+9. Run Stage 2 (paired wall-clock):
+   ```bash
+   bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_paired.sh
+   ```
+   Read `/tmp/eval_paired_summary.json`. Record median Δ%, paired p.
+10. Apply the combined decision table above:
+    - If iai PASSED and wall-clock clearly regresses (`median_Δ ≥ +0.5 %` AND `p < 0.05`): revert, log `discard_wallclock_regression`.
+    - If iai PASSED and wall-clock does not clearly regress: keep candidate.
+    - If `[wallclock-only]` and `median_Δ ≤ −1.5 %` AND `p < 0.01`: keep.
+    - If `[wallclock-only]` and threshold not met: revert, log `discard_wallclock`.
+11. If kept and `|median_Δ| < 3.0 %` (marginal):
+    ```bash
+    bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_revert_ab.sh <abs(median_Δ)>
+    ```
+    If exit 1 (noise rider): revert, log `revert_ab_failed`. If exit 0: proceed to step 12.
+12. Log `keep`. After every 5 keeps, run the periodic audit.
 
-## Logging
+## Rolling baseline — automatic
+`eval_paired.sh` always compares `HEAD~1` vs `HEAD`, not a fixed session baseline. This means every keep rotates the baseline by construction. No separate "save baseline after keep" step is required.
 
-Append one tab-separated row to `iters.tsv` after every experiment. Create with header if missing:
+## Logging — `iters.tsv`
+
+Append one tab-separated row after every experiment. Create with header if missing:
 
 ```
-iter	improvement_pct	p_value	status	files_changed	description
+iter  stage1_iai_delta  stage1_iai_decision  stage2_median_pct  stage2_p  revert_ab  base_hash  cand_hash  status  files_changed  rationale
 ```
 
-- `iter`: incrementing iteration number
-- `improvement_pct`: % improvement (positive = faster), use `-` if correctness failed
-- `p_value`: Criterion p-value, use `-` if correctness failed
-- `status`: `keep`, `discard`, or `correctness_fail`
-- `files_changed`: which file(s) were modified
-- `description`: what you changed and why (no tabs)
+Fields:
+- `iter` — incrementing integer
+- `stage1_iai_delta` — `total_tracked_delta_pct` from eval_iai_summary.json, or `-` if skipped (escape hatch) or not run
+- `stage1_iai_decision` — `PASS` / `FAIL` / `SKIP` (escape hatch) / `-` (not run)
+- `stage2_median_pct` — median Δ% from eval_paired_summary.json, or `-`
+- `stage2_p` — paired p-value, or `-`
+- `revert_ab` — `pass` / `fail` / `n/a`
+- `base_hash`, `cand_hash` — from eval_paired_summary.json. Identical hashes = infra failure; verify before logging keep.
+- `status` — one of: `keep`, `discard_iai`, `discard_wallclock`, `revert_ab_failed`, `correctness_fail`, `infra_fail`
+- `files_changed` — which writable file(s) were modified
+- `rationale` — what you changed AND why you expected it to help. No tabs. The discard trail is reviewed by humans; a hypothesis-free discard wastes that review.
 
 Example rows:
 ```
-1	+1.20	0.02	keep	prove.rs	remove Vec::new() inside round loop — eliminates per-round alloc
-2	-0.80	0.00	discard	sc_computation.rs	alternative packed eval order — higher latency on Zen 4
-3	-	-	correctness_fail	quotient_computation.rs	incorrect alpha accumulation — sum_fractions output wrong
-```
-
-## How to Evaluate
-
-Save baseline once at the start of the session:
-```bash
-bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_e2e.sh --save-baseline
-```
-
-Then after each change:
-```bash
-bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_e2e.sh
+1   -0.45  PASS  -0.92  0.003  n/a   a09e...  7eab...  keep               prove.rs          hoist Vec::new() out of round loop — hypothesis: per-round alloc eliminated
+2   -      SKIP  -1.60  0.001  pass  81ba...  93fd...  keep               sc_computation.rs [wallclock-only] pack-base SIMD reorder to avoid vpmullq dep chain
+3   +0.01  FAIL  -      -      n/a   -        -        discard_iai        product_computation.rs  speculative early termination — iai showed +0.01% Ir, rejected
+4   -0.20  PASS  +0.15  0.42   n/a   ...      ...      discard_wallclock  quotient_computation.rs iai passed but wall clock regressed — likely cache/ILP conflict
+5   -      -     -      -      n/a   -        -        correctness_fail   logup.rs          incorrect alpha accumulation
 ```
 
 ## Surgical Precision Principle
@@ -133,30 +189,25 @@ bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_e2e.sh
 
 ## What to Optimize
 
-Search directions in priority order:
+Search directions in priority order. Remember that `mt_sumcheck::*` self-time is only ~3 %; most wins will come from reducing the number of calls the sumcheck crate makes into `mt_poly::eq_mle`, `mt_koala_bear::quintic_extension`, and Poseidon — not by optimizing the sumcheck loop itself.
 
-1. **`sumcheck_prove_many_rounds` hot loop** (`prove.rs:117`) — the round loop iterates `n_vars` times, calling `compute_and_send_polynomial` each round. Check for redundant allocations (`Vec::new()` inside loop), sequential work that could be parallelized, unnecessary clones.
-
-2. **Packed base path** (`sc_computation.rs`, `product_computation.rs`) — the `eval_packed_base` / `eval_packed_extension` functions are the inner kernel. Verify `#[inline(always)]` is present. Check if the packed path is actually being hit (look for `is_packed()` checks in `prove.rs:118`).
-
-3. **`compute_product_sumcheck_polynomial_base_ext_packed`** (`product_computation.rs`) — specialised path for base×extension packed. Uses `rayon::par_chunks`. Check chunk sizes, par overhead vs sequential threshold.
-
-4. **`GKRQuotientComputation` inner kernel** (`quotient_computation.rs`) — `sum_fractions_const_2_by_2` runs every GKR round. Verify it inlines. Check if alphas dot product can be simplified.
-
-5. **Allocation inside loops** — `prove_generic_logup` builds `numerators` / `denominators_packed` vecs. Check if they can be pre-allocated or reused across calls.
-
-6. **`SplitEq`** — used in `prove.rs` for the eq factor. `truncate_half()` is called every round. Check if it allocates.
+1. **`sumcheck_prove_many_rounds` round loop** (`prove.rs`) — redundant allocations (`Vec::new()` inside loop), sequential work that could be parallelized, unnecessary clones, redundant field ops.
+2. **Packed base path** (`sc_computation.rs`, `product_computation.rs`) — `eval_packed_base` / `eval_packed_extension` inner kernels. Verify `#[inline(always)]`. Check whether the packed path is actually being hit (look for `is_packed()` dispatch).
+3. **`compute_product_sumcheck_polynomial_base_ext_packed`** (`product_computation.rs`) — specialised base×extension packed path, uses `rayon::par_chunks`. Chunk sizes, parallelism threshold. This is `[wallclock-only]` territory.
+4. **`GKRQuotientComputation` inner kernel** (`quotient_computation.rs`) — `sum_fractions_const_2_by_2` runs every GKR round. Verify inlining. Alphas dot product simplification.
+5. **Allocation inside loops** — `prove_generic_logup` builds `numerators` / `denominators_packed` vecs. Pre-allocate or reuse across calls.
+6. **`SplitEq`** — used in `prove.rs` for the eq factor. `truncate_half()` every round. Check if it allocates.
 
 ## Research Directions
 
-Before coding, **search for relevant research papers** on:
+Before coding, search for relevant research papers on:
 - Sumcheck protocol optimizations — batching, parallelism, round reduction
 - GKR protocol — efficient prover implementations, lookup argument variants
 - Lasso / Spartan — alternative sumcheck-based approaches for lookup arguments
 - Multilinear extension arithmetic — packed evaluation tricks, eq-polynomial optimizations
 - WHIR / FRI-based polynomial commitments — prover bottlenecks
 
-Use web search to find papers. Read abstracts and look for techniques applicable to the current implementation. Also read the source of inspiration repos (`~/zk-autoresearch/sp1/`, `~/zk-autoresearch/jolt/`, `~/zk-autoresearch/Plonky3/`) for concrete implementation patterns.
+Also read inspiration repos for concrete implementation patterns.
 
 ## Hard Constraints
 1. No security parameter changes — do not touch `crates/backend/fiat-shamir/`, `crates/air/`.
@@ -164,6 +215,11 @@ Use web search to find papers. Read abstracts and look for techniques applicable
 3. No test value changes — do not modify expected values in tests.
 4. Correctness is mandatory — all tests in correctness.sh must pass.
 5. **NEVER modify** `~/zk-autoresearch/experiment_logs/` or `~/zk-autoresearch/leanMultisig-bench/`.
+6. **NEVER skip Stage 2.** Even for clearly-instruction-visible changes, wall-clock confirmation is required.
+7. **NEVER log a keep with `base_hash == cand_hash`.** That is an infra failure, always, and must be investigated before continuing.
+
+## Profile-first invariant
+If `eval_paired.sh`'s measured median baseline runtime drifts by > 10 % from the calibrated figure (5.36 s ± 0.3 s at 1400 sigs) for more than 2 consecutive iterations, pause the loop and dump state. Something upstream in the stack has changed the bottleneck — the sumcheck hot path may no longer be dominant, and the keep rule is no longer well-calibrated.
 
 ## NEVER STOP
-Once the loop begins, do NOT pause to ask for confirmation. Do NOT ask "should I continue?". Run experiments autonomously until manually stopped.
+Once the loop begins, do NOT pause to ask for confirmation. Do NOT ask "should I continue?". Run experiments autonomously until manually stopped. The exception is the profile-first invariant above.

@@ -16,7 +16,7 @@ cd ~/zk-autoresearch/leanMultisig-bench
 BENCH_FLAGS="--bench xmss_leaf"
 BENCH_FILTER="xmss_leaf_1400sigs"
 BASELINE_NAME="lm_e2e_baseline"
-MEASURE="--measurement-time 60 --noplot"
+MEASURE="--measurement-time 60 --sample-size 10 --noplot"
 
 if [[ "$1" == "--save-baseline" ]]; then
   echo "[eval_e2e] Saving baseline '$BASELINE_NAME'..."
