@@ -14,6 +14,7 @@
 #   bash verify_post_experiment.sh --save-baseline    — save proof size baseline (run once on clean main)
 
 set -e
+export RUSTFLAGS="-C target-cpu=native"
 cd ~/zk-autoresearch/leanMultisig
 
 BASELINE_FILE="/tmp/lm_proof_size_baseline.txt"
