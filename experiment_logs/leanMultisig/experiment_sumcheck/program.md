@@ -48,7 +48,18 @@ Primary signal: full e2e bench through `eval_paired.sh` (see "How to Evaluate").
 - `~/zk-autoresearch/leanMultisig/crates/sub_protocols/src/air_sumcheck.rs` — `prove_batched_air_sumcheck`: batched AIR sumcheck driver
 - `~/zk-autoresearch/leanMultisig/crates/sub_protocols/src/logup.rs` — `prove_generic_logup`: Logup GKR driver, data prep + GKR rounds
 
-All other files are **read-only**. Do not modify `mt_poly` or `mt_koala_bear` — they are in the read-only field/poly crates even though they appear hot in the profile.
+### Multilinear kernel — hit every sumcheck round, also used by WHIR (~3 % self / ~11 % inclusive)
+- `~/zk-autoresearch/leanMultisig/crates/backend/poly/src/eq_mle.rs` — `eval_eq*`, `compute_eval_eq*`, `eval_eq_with_packed_output`
+- `~/zk-autoresearch/leanMultisig/crates/backend/poly/src/next_mle.rs`
+- `~/zk-autoresearch/leanMultisig/crates/backend/poly/src/mle/` (all files) — multilinear-extension containers
+
+### Quintic extension field arithmetic — inner kernel of every sumcheck/WHIR round (~13.5 % self)
+- `~/zk-autoresearch/leanMultisig/crates/backend/koala-bear/src/quintic_extension/extension.rs` — scalar `quintic_mul`, `quintic_square`, `QuinticExtensionField`
+- `~/zk-autoresearch/leanMultisig/crates/backend/koala-bear/src/quintic_extension/packed_extension.rs` — `PackedQuinticExtensionField::mul`, packed operators
+- `~/zk-autoresearch/leanMultisig/crates/backend/koala-bear/src/quintic_extension/packing.rs` — packed representation helpers
+- `~/zk-autoresearch/leanMultisig/crates/backend/koala-bear/src/quintic_extension/mod.rs`
+
+All other files are **read-only**.
 
 ## Read-Only — DO NOT MODIFY
 
@@ -57,8 +68,14 @@ All other files are **read-only**. Do not modify `mt_poly` or `mt_koala_bear` �
 | `crates/backend/fiat-shamir/` | Transcript + challenger — security-critical |
 | `crates/backend/air/` | AIR constraint definitions |
 | `crates/backend/field/` | Field arithmetic primitives |
-| `crates/backend/koala-bear/` | KoalaBear field implementations |
-| `crates/backend/poly/` | Multilinear kernels (`eq_mle`) — read-only |
+| `crates/backend/koala-bear/src/monty_31/` | Montgomery arithmetic — foundational |
+| `crates/backend/koala-bear/src/poseidon*` | Hash primitive — security-critical |
+| `crates/backend/koala-bear/src/koala_bear.rs` | Base field definition |
+| `crates/backend/koala-bear/src/symmetric.rs` | Symmetric primitives |
+| `crates/backend/koala-bear/src/x86_64_avx*/` | AVX packing (base field level) |
+| `crates/backend/koala-bear/src/aarch64_neon/` | ARM packing |
+| `crates/backend/koala-bear/src/quintic_extension/tests.rs` | Property tests — integrity-checked by `correctness.sh` |
+| `crates/backend/poly/src/` (except `eq_mle.rs`, `next_mle.rs`, `mle/`) | Other poly utilities |
 | `crates/whir/` | WHIR protocol |
 | `crates/backend/sumcheck/src/verify.rs` | Verifier — never touch |
 | Any `tests/` directory | Do not modify test values |
@@ -113,38 +130,27 @@ Run full-stack revert-A/B against the state at the start of that 5-keep window. 
 LOOP FOREVER:
 
 1. Read `program.md` (this file) and `iters.tsv`.
-2. Read the target files, `report/bench_profile.md`, and `report/threshold_calibration.md`.
+2. Read the target files to understand the current hot path.
 3. Devise ONE targeted change. State the hypothesis — what you change, why it's faster, what signal you expect (iai Ir drop, paired Δ, or both). If the hypothesis is SIMD/rayon-shaped, note that the change will use the `[wallclock-only]` tag.
 4. Edit the source file.
-5. Run correctness check (~40 s):
+5. Run correctness check (~12 s):
    ```bash
    bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/correctness.sh
    ```
    If tests fail: `git -C ~/zk-autoresearch/leanMultisig checkout -- .`, log `correctness_fail`, try a different idea.
 6. Commit: `git -C ~/zk-autoresearch/leanMultisig commit -am "iter N: <short description>"`
-   Include `[wallclock-only]` in the commit body if opting out of Stage 1.
-7. Run Stage 1 (iai) — skip if `[wallclock-only]` tag is present:
+   Include `[wallclock-only]` in the commit body if opting out of the iai gate.
+7. Run the gate (~7-11 min):
    ```bash
-   bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_iai.sh
+   bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_gate.sh
    ```
-   Read the JSON at `/tmp/eval_iai_summary.json`. Record `total_tracked_delta_pct` and top mover in iters.tsv.
-8. If Stage 1 FAILED: `git -C ~/zk-autoresearch/leanMultisig revert HEAD --no-edit`, log `discard_iai`.
-9. Run Stage 2 (paired wall-clock):
-   ```bash
-   bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_paired.sh
-   ```
-   Read `/tmp/eval_paired_summary.json`. Record median Δ%, paired p.
-10. Apply the combined decision table above:
-    - If iai PASSED and wall-clock clearly regresses (`median_Δ ≥ +0.5 %` AND `p < 0.05`): revert, log `discard_wallclock_regression`.
-    - If iai PASSED and wall-clock does not clearly regress: keep candidate.
-    - If `[wallclock-only]` and `median_Δ ≤ −1.5 %` AND `p < 0.01`: keep.
-    - If `[wallclock-only]` and threshold not met: revert, log `discard_wallclock`.
-11. If kept and `|median_Δ| < 3.0 %` (marginal):
-    ```bash
-    bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_revert_ab.sh <abs(median_Δ)>
-    ```
-    If exit 1 (noise rider): revert, log `revert_ab_failed`. If exit 0: proceed to step 12.
-12. Log `keep`. After every 5 keeps, run the periodic audit.
+   This runs iai → paired → revert-A/B (if marginal) automatically and outputs a single verdict.
+   Read `/tmp/eval_gate_summary.json` for verdict and all iters.tsv fields.
+8. If verdict = `KEEP`: log keep row to `iters.tsv`. After every 5 keeps, run the periodic audit.
+9. If verdict = `DISCARD`: `git -C ~/zk-autoresearch/leanMultisig revert HEAD --no-edit`, log discard row with status from summary.
+
+For debugging or hypothesis-specific runs, individual scripts are available:
+`eval_iai.sh`, `eval_paired.sh`, `eval_revert_ab.sh` (see `shared/README.md`).
 
 ## Rolling baseline — automatic
 `eval_paired.sh` always compares `HEAD~1` vs `HEAD`, not a fixed session baseline. This means every keep rotates the baseline by construction. No separate "save baseline after keep" step is required.
@@ -189,14 +195,28 @@ Example rows:
 
 ## What to Optimize
 
-Search directions in priority order. Remember that `mt_sumcheck::*` self-time is only ~3 %; most wins will come from reducing the number of calls the sumcheck crate makes into `mt_poly::eq_mle`, `mt_koala_bear::quintic_extension`, and Poseidon — not by optimizing the sumcheck loop itself.
+Search directions in priority order. The writable surface now covers the full sumcheck compute graph: orchestration (`mt_sumcheck`), multilinear kernel (`eq_mle`), and field arithmetic (`quintic_extension`). Combined self-time: ~19.5 %.
 
-1. **`sumcheck_prove_many_rounds` round loop** (`prove.rs`) — redundant allocations (`Vec::new()` inside loop), sequential work that could be parallelized, unnecessary clones, redundant field ops.
-2. **Packed base path** (`sc_computation.rs`, `product_computation.rs`) — `eval_packed_base` / `eval_packed_extension` inner kernels. Verify `#[inline(always)]`. Check whether the packed path is actually being hit (look for `is_packed()` dispatch).
-3. **`compute_product_sumcheck_polynomial_base_ext_packed`** (`product_computation.rs`) — specialised base×extension packed path, uses `rayon::par_chunks`. Chunk sizes, parallelism threshold. This is `[wallclock-only]` territory.
-4. **`GKRQuotientComputation` inner kernel** (`quotient_computation.rs`) — `sum_fractions_const_2_by_2` runs every GKR round. Verify inlining. Alphas dot product simplification.
-5. **Allocation inside loops** — `prove_generic_logup` builds `numerators` / `denominators_packed` vecs. Pre-allocate or reuse across calls.
-6. **`SplitEq`** — used in `prove.rs` for the eq factor. `truncate_half()` every round. Check if it allocates.
+### Tier 1 — Highest self-time targets (quintic_extension ~13.5 %)
+1. **`quintic_mul` / `quintic_square`** (`extension.rs`) — scalar quintic multiplication is the inner kernel of every sumcheck and WHIR round. Reduction polynomial is `X^5 + X^2 - 1`. Check for redundant temporaries, sub-optimal Karatsuba-style decomposition, missed constant-folding.
+2. **`PackedQuinticExtensionField::mul`** (`packed_extension.rs`) — packed variant, dispatches through `QuinticExtendableAlgebra`. Check SIMD width utilization, dep-chain structure. `[wallclock-only]` territory for AVX-512 scheduling changes.
+3. **`quintic_mul_packed`** (`packing.rs`) — platform-specific implementations (scalar fallback, AVX2, AVX-512). The AVX-512 path is the hot one on this hardware.
+
+**Assembly verification:** for any change in `packing.rs` or `packed_extension.rs`, inspect compiler output before and after to verify the expected SIMD instructions are emitted:
+```bash
+cargo asm -p mt-koala-bear --release "quintic_mul"
+```
+
+### Tier 2 — Multilinear kernel (eq_mle ~3 % self / ~11 % inclusive)
+4. **`eval_eq_with_packed_output` / `compute_eval_eq_packed`** (`eq_mle.rs`) — dominant multilinear kernel, ~11 % inclusive under sumcheck call tree. Called from `split_eq.rs` every round and from WHIR `open.rs`. Check vectorization, allocation patterns, unnecessary copies.
+5. **`SplitEq`** — used in `prove.rs` for the eq factor. `truncate_half()` every round. Check if it allocates.
+
+### Tier 3 — Sumcheck orchestration (~3 %)
+6. **`sumcheck_prove_many_rounds` round loop** (`prove.rs`) — redundant allocations (`Vec::new()` inside loop), sequential work that could be parallelized, unnecessary clones, redundant field ops.
+7. **Packed base path** (`sc_computation.rs`, `product_computation.rs`) — `eval_packed_base` / `eval_packed_extension` inner kernels. Verify `#[inline(always)]`. Check whether the packed path is actually being hit.
+8. **`compute_product_sumcheck_polynomial_base_ext_packed`** (`product_computation.rs`) — specialised base×extension packed path, uses `rayon::par_chunks`. Chunk sizes, parallelism threshold. `[wallclock-only]` territory.
+9. **`GKRQuotientComputation` inner kernel** (`quotient_computation.rs`) — `sum_fractions_const_2_by_2` runs every GKR round. Verify inlining. Alphas dot product simplification.
+10. **Allocation inside loops** — `prove_generic_logup` builds `numerators` / `denominators_packed` vecs. Pre-allocate or reuse across calls.
 
 ## Research Directions
 
@@ -217,6 +237,7 @@ Also read inspiration repos for concrete implementation patterns.
 5. **NEVER modify** `~/zk-autoresearch/experiment_logs/` or `~/zk-autoresearch/leanMultisig-bench/`.
 6. **NEVER skip Stage 2.** Even for clearly-instruction-visible changes, wall-clock confirmation is required.
 7. **NEVER log a keep with `base_hash == cand_hash`.** That is an infra failure, always, and must be investigated before continuing.
+8. **NEVER modify** `crates/backend/koala-bear/src/quintic_extension/tests.rs` — integrity-checked by `correctness.sh`. Modifying test assertions to make incorrect code pass will be detected and flagged.
 
 ## Profile-first invariant
 If `eval_paired.sh`'s measured median baseline runtime drifts by > 10 % from the calibrated figure (5.36 s ± 0.3 s at 1400 sigs) for more than 2 consecutive iterations, pause the loop and dump state. Something upstream in the stack has changed the bottleneck — the sumcheck hot path may no longer be dominant, and the keep rule is no longer well-calibrated.

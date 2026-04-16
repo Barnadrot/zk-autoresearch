@@ -18,7 +18,7 @@ const LOG_INV_RATE: usize = 1;
 
 // N_SIGS is kept small so callgrind wall time stays tolerable.
 // 50 sigs ≈ 70ms native → a few seconds under callgrind.
-const N_SIGS: usize = 50;
+const N_SIGS: usize = 25;
 
 // Kept as a plain (but non-inlined) Rust function; callgrind matches the
 // mangled symbol via `--toggle-collect=*iai_hot_kernel*` so no_mangle isn't
