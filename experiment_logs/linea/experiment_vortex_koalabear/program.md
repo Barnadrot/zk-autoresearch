@@ -225,22 +225,37 @@ func BenchmarkLinearCombination(b *testing.B) {
 
 ## Open Questions — Friday Call (2026-04-18)
 
-| # | Question | Blocks |
-|---|---|---|
-| 1 | Is FRI migration imminent, or is Vortex optimization still worthwhile? | Gate on entire effort |
-| 2 | Is `limitless-onthefly` MulAccByElement fix landing in `dev-small-fields`? | Starting point for Target 1 |
-| 3 | Confirm field extension degree: k=4 (quartic) or k=5 (quintic)? | Target 2 scope |
-| 4 | Are gnark-crypto contributions in scope? | Target 2 unlocks |
-| 5 | Is there a larger integration test beyond TestVerifier (small params)? | Correctness gate |
-| 6 | Confirm production benchmark sizes (rows/cols for V1-V4)? | Benchmark realism |
-| 7 | Does team have existing bench tooling or noise floor data? | Harness design |
-| 8 | Which hot paths is Srinath NOT touching? (memory/streaming only — confirm) | Overlap risk |
+| # | Question | Blocks | Status |
+|---|---|---|---|
+| 1 | Is FRI migration imminent? | Gate on entire effort | OPEN |
+| 2 | Is `limitless-onthefly` MulAccByElement fix merging? | A1 starting point | OPEN |
+| 3 | ~~Confirm extension degree: k=4 or k=5?~~ | ~~Target 2~~ | **RESOLVED: k=4** |
+| 4 | Are gnark-crypto contributions in scope? | Track B entirely | OPEN — critical |
+| 5 | Larger integration test beyond TestVerifier? | Correctness gate | OPEN |
+| 6 | Production benchmark sizes? | Benchmark realism | OPEN |
+| 7 | Existing bench tooling or noise floor data? | Harness design | OPEN |
+| 8 | ~~Srinath overlap?~~ | ~~Overlap risk~~ | **RESOLVED: clear** |
+| 9 | E2e phase split (commitment vs opening vs recursion)? | Priority calibration | OPEN |
+| 10 | ~~MulAccByElement API in gnark-crypto v0.20.1?~~ | ~~A1~~ | **RESOLVED: exists + AVX-512** |
+
+## Resolved Findings (2026-04-16)
+
+- `extensions.Vector.MulAccByElement` confirmed at gnark-crypto v0.20.1
+  `field/koalabear/extensions/vector.go:311` with `mulAccByElement_avx512` assembly
+- `vectorext.Vector` is alias for `extensions.Vector` (confirmed)
+- Extension degree k=4 (fext.ExtensionDegree=4, E4=F_p^2[v]/v²-u)
+- Full profiling (BenchmarkCompilerWithout/WithSelfRecursion) OOMs on 16GB — deferred
+- Poseidon2 AVX-512 is gather-bound (VPGATHERDD ~12 cyc), 5-15% squeeze room exists
 
 ---
 
 ## Known Dead Ends
 
-*(populated as experiment progresses)*
+- **Full profiling on 16GB:** Both BenchmarkCompilerWithSelfRecursion and
+  BenchmarkCompilerWithoutSelfRecursion OOM on c7a.2xlarge (16GB) even with
+  GOGC=off GOMEMLIMIT=14GiB. Deferred to 64GB instance.
+
+*(more populated as experiment progresses)*
 
 ---
 
