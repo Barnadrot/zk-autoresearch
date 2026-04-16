@@ -29,11 +29,17 @@ INTEGRITY_FILE="$SHARED_DIR/test_integrity.sha256"
 if [[ -f "$INTEGRITY_FILE" ]]; then
   echo "[correctness] Layer 0: Test-file integrity check..."
   # Compute current hashes of tracked test files
-  CURRENT_HASH=$(cd ~/zk-autoresearch/leanMultisig && \
-    sha256sum crates/backend/koala-bear/src/quintic_extension/tests.rs 2>/dev/null | awk '{print $1}' || echo "missing")
+  TEST_FILE="crates/backend/koala-bear/src/quintic_extension/tests.rs"
+  if [[ ! -f ~/zk-autoresearch/leanMultisig/$TEST_FILE ]]; then
+    echo "[correctness] INTEGRITY VIOLATION: $TEST_FILE does not exist!"
+    echo "[correctness] You may be on the wrong branch. Expected: feat/quintic-extension-tests (myfork)."
+    echo "[correctness] Current branch: $(cd ~/zk-autoresearch/leanMultisig && git branch --show-current 2>/dev/null || echo 'detached')"
+    exit 3
+  fi
+  CURRENT_HASH=$(cd ~/zk-autoresearch/leanMultisig && sha256sum "$TEST_FILE" | awk '{print $1}')
   EXPECTED_HASH=$(grep "quintic_extension/tests.rs" "$INTEGRITY_FILE" 2>/dev/null | awk '{print $1}' || echo "none")
   if [[ "$CURRENT_HASH" != "$EXPECTED_HASH" && "$EXPECTED_HASH" != "none" ]]; then
-    echo "[correctness] INTEGRITY VIOLATION: quintic_extension/tests.rs was modified!"
+    echo "[correctness] INTEGRITY VIOLATION: $TEST_FILE was modified!"
     echo "[correctness] expected=$EXPECTED_HASH got=$CURRENT_HASH"
     echo "[correctness] This may indicate the agent changed test assertions to make incorrect code pass."
     exit 3
