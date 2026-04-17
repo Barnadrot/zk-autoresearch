@@ -54,6 +54,7 @@ cat >> ~/.bashrc << 'EOF'
 export RUSTFLAGS="-C target-cpu=native"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 EOF
+source ~/.bashrc
 
 echo "=== Pre-building leanMultisig (release) ==="
 cd ~/zk-autoresearch/leanMultisig
@@ -76,4 +77,13 @@ git config --global user.name "Barnadrot"
 git config --global user.email "kbarna.drot@gmail.com"
 
 echo "=== Done ==="
-echo "Run 'claude login' and 'gh auth login' to authenticate before starting the agent"
+echo ""
+echo "Next steps:"
+echo "  1. claude login"
+echo "  2. gh auth login"
+echo "  3. sudo sysctl -w kernel.perf_event_paranoid=-1"
+echo "  4. source ~/.bashrc   (or open a new shell)"
+echo "  5. claude --version && gh --version   (verify both work)"
+echo ""
+echo "Then start the agent:"
+echo "  cd ~/zk-autoresearch && claude --dangerously-skip-permissions"
