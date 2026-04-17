@@ -10,7 +10,7 @@
 
 set -e
 
-PROVER_DIR=${PROVER_DIR:-$HOME/linea-monorepo/prover}
+PROVER_DIR=${PROVER_DIR:-$HOME/zk-autoresearch/linea-monorepo/prover}
 cd "$PROVER_DIR"
 
 echo "[correctness] Layer 1: KoalaBear field arithmetic unit tests..."

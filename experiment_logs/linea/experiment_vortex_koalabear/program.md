@@ -1,267 +1,173 @@
 # Linea Vortex/KoalaBear Optimizer — Autoresearch
 
 ## Role
-
 You are an expert Go systems programmer specializing in high-performance cryptographic code and
 CPU microarchitecture. Your job is to make the Linea prover faster on the `prover/dev-small-fields`
-branch — specifically the KoalaBear small-field proving path.
+branch — specifically the KoalaBear small-field arithmetic and Vortex commitment path.
 
-**Hardware target:** AMD EPYC 9R14 (Zen 4), AVX-512 available. Server: Plonky3 server (idle).
-**Language:** Pure Go. The prover is Go + gnark framework. No Rust in the prover itself.
+**Hardware:** AMD EPYC 9R14 (Zen 4), AVX-512 available. **Language:** Go.
 
----
+## Inspiration Repos (source reference)
 
-## Codebase Context
+Two repos are cloned under `~/zk-autoresearch/` for reference:
 
-### Repo location
-```
-~/linea-monorepo/          ← clone of Consensys/linea-monorepo
-  prover/                  ← Go prover (cd here for all go commands)
-    crypto/vortex/vortex_koalabear/   ← Vortex PCS, KoalaBear-specific
-    crypto/poseidon2_koalabear/       ← Poseidon2, already AVX-512 optimized
-    maths/field/koalagnark/           ← KoalaBear field arithmetic (circuit API)
-```
+| Repo | Built | Notes |
+|---|---|---|
+| `leanMultisig/` | yes | KoalaBear quintic extension AVX-512 (Rust), structurally similar field arith |
+| `Plonky3/` | yes | monty-31 AVX-512 packing (Rust), same prime field p = 2^31 - 2^24 + 1 |
+| `jolt/` | yes | Read sumcheck/GKR patterns |
+| `sp1/` | source only | Requires CUDA (GPU) + `succinct` custom toolchain — not built on this CPU server. Source readable. |
 
-Branch: `prover/dev-small-fields`
+Use these for optimization patterns. Do not modify them.
 
-### Architecture
-```
-zkEVM / RISC-V traces      ← arithmetization (not our target)
-        ↓
-Wizard constraint system
-        ↓
-Vortex PCS + KoalaBear     ← what we are optimizing
-        ↓
-gnark recursion (BN254)
-```
+## The Metric
+**Lower is better.** Score = benchstat geomean across both tiers.
 
-RISC-V migration only touches arithmetization. Vortex + KoalaBear is unchanged regardless
-of trace source — our optimizations are durable.
+- **Tier-1:** `BenchmarkLinearCombination` — opening phase (~2.5 min)
+- **Tier-2:** `BenchmarkVortexHashPathsByRows` (filtered to rows 128/512/1024) — commitment phase (~2.5 min)
 
----
+Both tiers run with `-benchmem` and report ns/op, B/op, and allocs/op.
 
-## Profiling Results (2026-04-15, BenchmarkVortexHashPathsByRows, dev-small-fields)
+## Gate & Keep Rule
 
-> ⚠️ DRAFT — lightweight commitment-phase benchmark only. Full-scale profile pending
-> (blocked by 16GB RAM on server; BenchmarkCompilerWithSelfRecursion needs 64GB).
-> Treat as directional signal, not final truth.
+Wall-clock is the primary signal. Allocations are the secondary signal. Go has no IAI equivalent —
+all gating is benchstat-based.
 
-| Rank | Function | Self% | Location | Notes |
+### Decision table
+
+| Tier-1 ns/op Δ | Tier-1 p | Tier-2 ns/op Δ | allocs/op Δ | Verdict |
 |---|---|---|---|---|
-| 1 | `poseidon2.permutation16_avx512` | 53% | gnark-crypto | Already AVX-512 — NOT our target |
-| 2 | `fft.difFFT` | 6% | gnark-crypto | RS encoding FFT |
-| 3 | `koalabear.(*Vector).Mul` | 4.65% | gnark-crypto | Field vector multiply |
-| 4 | `montReduce` | 3.52% | gnark-crypto | Montgomery reduction |
-| 5 | `fft.innerDIFWithTwiddlesGeneric` | 3.13% | gnark-crypto | **Generic FFT — no AVX-512. Key gap.** |
-| 6 | `koalabear.mulVec` | 2.45% | gnark-crypto | Field vector multiply |
-| 7 | `ringsis.TransversalHash` | 2.44% | linea-monorepo | SIS hashing |
-| 8 | `(*Regular).Get` | 1.92% | linea-monorepo | Scalar access in LinearCombination loop |
-| 9 | `fft.innerDIFWithTwiddles` | 1.58% | gnark-crypto | Non-generic FFT inner loop |
-| 10 | `sis.(*LimbIterator).NextLimb` | 1.45% | gnark-crypto | SIS limb iteration |
+| ≤ -2.0% | < 0.05 | no regression (< +1.0%) | any | **KEEP** |
+| > -2.0% | any | any | decreased | **KEEP** — alloc reduction compounds at scale |
+| ≤ -2.0% | < 0.05 | regression ≥ +2.0% | any | **DISCARD** — tier-1 win cancelled by tier-2 regression |
+| > -2.0% | ≥ 0.05 | any | unchanged | **DISCARD** — below noise floor |
 
-**Key finding:** All hot functions are in `gnark-crypto` (also Consensys — contributing is in scope).
-LinearCombination itself is thin orchestration; cost is in the field ops it calls.
+For marginal keeps (tier-1 between -2.0% and -4.0%), re-run `eval_bench.sh` once to confirm the signal reproduces.
 
----
+### Noise floor calibration
+σ ≈ 1.0% on BenchmarkLinearCombination with GOGC=off (measured 2026-04-16, 10 identical runs).
+Keep threshold = 2×σ = 2.0%. Tier-2 (VortexHashPathsByRows) is lower noise (~0.5%).
 
-## Hot Path Targets (priority order)
+## Target Files (writable)
 
-### Target 1 — `LinearCombination` MulAccByElement fix
-**File:** `prover/crypto/vortex/prover_common.go`
-**Self%:** ~2% (via `(*Regular).Get` + field ops)
+### linea-monorepo (`~/zk-autoresearch/linea-monorepo/prover/`)
+- `crypto/vortex/prover_common.go` — LinearCombination inner loop
+- `crypto/vortex/vortex_koalabear/commtiment.go` — commit orchestration (filename is a typo in repo)
+- `maths/field/koalagnark/ext.go` — E4 circuit arithmetic
+- `crypto/poseidon2_koalabear/poseidon2.go` — hash wrapper
 
-Current code lifts base field element → extension field, then does ext×ext multiply (9 muls).
-The `limitless-onthefly` branch has already implemented `MulAccByElement` (ext×base = 4 muls)
-but this has NOT been backported to `dev-small-fields`.
+### gnark-crypto (fork locally with `replace` directive in go.mod)
+- `field/koalabear/` — element, vector, AVX-512 dispatch, Montgomery reduction
+- `field/koalabear/extensions/` — E4 vector ops, MulAccByElement
+- `field/koalabear/fft/` — FFT kernels, AVX-512/generic split
 
-**Action:** Port the MulAccByElement optimization from `limitless-onthefly` to `dev-small-fields`.
-This is a logical optimization (mul count reduction), no SIMD required.
+### Read-only — DO NOT MODIFY
 
-⚠️ **FRIDAY QUESTION:** Is this fix planned to merge into `dev-small-fields`? If yes, start on
-top of it. If no, implement it ourselves.
-
-**Expected gain:** Significant on LinearCombination-heavy workloads. Unknown e2e % until full profile.
-
----
-
-### Target 2 — KoalaBear field arithmetic AVX-512 (gnark-crypto)
-**Files:** `github.com/consensys/gnark-crypto` — koalabear package
-**Self%:** ~15% combined (`Vector.Mul`, `montReduce`, `mulVec`, `mulVec`)
-
-KoalaBear is a 31-bit field. Field arithmetic is generic Go with no AVX-512 SIMD.
-Opportunity: pack 2 KoalaBear elements per 64-bit word (both fit in 31 bits), vectorize
-multiplications using AVX-512 instructions via Go assembly (`TEXT` functions in `.s` files).
-
-⚠️ **FRIDAY QUESTION:** Confirm gnark-crypto contributions are in scope. Confirm field
-extension degree — k=4 (quartic) vs k=5 (quintic) affects which operations to optimize.
-
-**Expected gain:** Large. ~15% of proven self-time, no existing SIMD.
-
----
-
-### Target 3 — FFT generic path AVX-512
-**File:** gnark-crypto `fft` package
-**Self%:** `innerDIFWithTwiddlesGeneric` 3.13%
-
-Poseidon2 already closed the AVX-512 gap for hashing. FFT hasn't been done.
-Generic path has no SIMD — same gap that existed in Plonky3 before NTT optimization.
-
-⚠️ **DEPENDENCY:** Confirm FFT is not already being worked on by gnark-crypto team.
-
----
-
-### Target 4 — `(*Regular).Get` access pattern in LinearCombination
-**File:** `prover/crypto/vortex/prover_common.go`
-**Self%:** 1.92%
-
-Scalar element access in the LinearCombination inner loop. May be replaceable with
-packed/batch access to improve cache behavior.
-
----
-
-## Phase 0 — Profile to Validate Hot Paths
-
-**Gate:** Run before any optimization. Confirm hot paths match profiling table above.
-
-```bash
-cd ~/linea-monorepo/prover
-git checkout prover/dev-small-fields
-
-# Lightweight profile (fits in 16GB):
-go test -cpuprofile=cpu.prof \
-    -bench=BenchmarkVortexHashPathsByRows \
-    -benchtime=30s \
-    ./crypto/vortex/vortex_koalabear/...
-go tool pprof -top cpu.prof | head -30
-```
-
-**Stop if:** Hot paths differ significantly from table above. Investigate before optimizing.
-
-⚠️ **FULL PROFILE BLOCKED:** BenchmarkCompilerWithSelfRecursion needs 64GB RAM.
-AWS quota expansion pending (~1 day). Use lightweight benchmark for now.
-Alexandre Belling (Linea team) confirmed GOMEMLIMIT can help; runnable benchmarks provided TBD.
-
----
-
-## Phase 1 — Correctness Gate
-
-Run `bash ~/zk-autoresearch/experiment_logs/linea/shared/correctness.sh` after every change.
-
-### Scope
-- `TestVerifier` — cryptographic round-trip (commit→prove→verify). Primary gate.
-- `TestNoSisTransversalHashMatchesReference` — optimized vs reference hash comparison.
-
-⚠️ **QUESTION (Friday):** Is there a larger integration test? TestVerifier uses small params
-(polySize=1<<10, nbPolys=15) — may not catch production-scale bugs.
-
----
-
-## Phase 2 — Benchmark Harness
-
-### Noise floor (FIRST)
-Run `bash ~/zk-autoresearch/experiment_logs/linea/shared/noise_floor.sh` before any experiment.
-Characterize σ. Set KEEP_THRESHOLD_PCT = 2×σ in config.env.
-
-**Expected σ:** ~1-2% (Go GC, OS scheduling). Higher than Rust/leanMultisig.
-
-⚠️ **QUESTION:** Does the team have existing bench tooling or noise characterization?
-If yes, adopt their approach.
-
-### Missing benchmarks to write
-`BenchmarkLinearCombination` does not exist. Add to `prover/crypto/vortex/prover_common_bench_test.go`:
-
-```go
-func BenchmarkLinearCombination(b *testing.B) {
-    sizes := []struct{ name string; rows, cols int }{
-        {"rows_64_cols_131072", 64, 1 << 17},
-        {"rows_256_cols_524288", 256, 1 << 19},
-    }
-    for _, s := range sizes {
-        // setup polys, randomCoin
-        b.Run(s.name, func(b *testing.B) {
-            b.ReportAllocs()
-            b.ResetTimer()
-            for i := 0; i < b.N; i++ {
-                vortex.LinearCombination(&proof, polys, randomCoin)
-            }
-        })
-    }
-}
-```
-
-⚠️ **QUESTION (Friday):** Confirm production row/column sizes for V1-V4 layers.
-
----
+| Path | Reason |
+|---|---|
+| `prover/protocol/` | Wizard framework — architectural |
+| `prover/zkevm/` | Trace generation — out of scope |
+| All existing `*_test.go` | Test integrity — correctness gate depends on these |
+| `prover/crypto/ringsis/` | SIS hashing — security-critical |
+| gnark-crypto `poseidon2/` assembly | Hash primitive — security-critical |
+| `~/zk-autoresearch/experiment_logs/linea/shared/` | Infrastructure scripts — read-only |
 
 ## Experiment Loop
 
-1. Read this program.md + `iters.tsv`
-2. Pick ONE target, form ONE hypothesis
-3. Edit source
-4. Run correctness.sh — if fail: revert, log `correctness_fail`
-5. Run eval_bench.sh — compare baseline via benchstat
-6. Keep (Δ ≤ -KEEP_THRESHOLD_PCT, p < 0.05) or discard
-7. If keep: `eval_bench.sh --save-baseline`, commit
-8. If discard: `git revert HEAD --no-edit`
-9. Log row to iters.tsv
+LOOP FOREVER:
 
----
+1. Read `program.md` (this file) and `iters.tsv`.
+2. Read the target files to understand the current hot path.
+3. Devise ONE targeted change. State the hypothesis — what you change, why it's faster, what
+   signal you expect (ns/op drop, alloc reduction, or both).
+4. Edit the source file(s).
+5. Run correctness check (~7s):
+   ```bash
+   bash ~/zk-autoresearch/experiment_logs/linea/shared/correctness.sh
+   ```
+   If tests fail: revert changes, log `correctness_fail`, try a different idea.
+6. `git -C ~/zk-autoresearch/linea-monorepo commit -am "iter N: <short description>"`
+7. Run benchmark (~5.5 min):
+   ```bash
+   bash ~/zk-autoresearch/experiment_logs/linea/shared/eval_bench.sh
+   ```
+8. Read the benchstat output. Apply the decision table above.
+9. If KEEP: log keep row to `iters.tsv`, run `eval_bench.sh --save-baseline`.
+10. If DISCARD: `git -C ~/zk-autoresearch/linea-monorepo revert HEAD --no-edit`, log discard row.
 
-## Agent Writable Scope
+### Rolling baseline
+`eval_bench.sh --save-baseline` updates the baseline after every keep. Each change is compared
+against the most recent kept state, not a fixed session baseline. Forgetting to save baseline
+after a keep will compare the next change against stale data — always save.
 
-| Path | Writable |
-|---|---|
-| `prover/crypto/vortex/prover_common.go` | Yes |
-| `prover/crypto/vortex/vortex_koalabear/commtiment.go` | Yes |
-| `prover/maths/field/koalagnark/ext.go` | Yes |
-| `prover/crypto/poseidon2_koalabear/poseidon2.go` | Yes |
-| `prover/crypto/vortex/prover_common_bench_test.go` | Yes (new file, benchmarks only) |
-| gnark-crypto koalabear package (if Friday confirms in scope) | Yes |
-| All existing `*_test.go` | **Read-only** |
-| `prover/protocol/` | **Read-only** |
-| `prover/zkevm/` | **Read-only** |
+## Logging — `iters.tsv`
 
----
+Append one tab-separated row after every experiment. Create with header if missing:
 
-## Open Questions — Friday Call (2026-04-18)
+```
+iter	tier1_delta_pct	tier1_p	tier2_delta_pct	allocs_delta_pct	status	files_changed	rationale
+```
 
-| # | Question | Blocks | Status |
-|---|---|---|---|
-| 1 | Is FRI migration imminent? | Gate on entire effort | OPEN |
-| 2 | Is `limitless-onthefly` MulAccByElement fix merging? | A1 starting point | OPEN |
-| 3 | ~~Confirm extension degree: k=4 or k=5?~~ | ~~Target 2~~ | **RESOLVED: k=4** |
-| 4 | Are gnark-crypto contributions in scope? | Track B entirely | OPEN — critical |
-| 5 | Larger integration test beyond TestVerifier? | Correctness gate | OPEN |
-| 6 | Production benchmark sizes? | Benchmark realism | OPEN |
-| 7 | Existing bench tooling or noise floor data? | Harness design | OPEN |
-| 8 | ~~Srinath overlap?~~ | ~~Overlap risk~~ | **RESOLVED: clear** |
-| 9 | E2e phase split (commitment vs opening vs recursion)? | Priority calibration | OPEN |
-| 10 | ~~MulAccByElement API in gnark-crypto v0.20.1?~~ | ~~A1~~ | **RESOLVED: exists + AVX-512** |
+Fields:
+- `iter` — incrementing integer
+- `tier1_delta_pct` — ns/op geomean Δ% from benchstat tier-1, or `-` if not run
+- `tier1_p` — p-value from benchstat, or `-`
+- `tier2_delta_pct` — ns/op geomean Δ% from benchstat tier-2, or `-`
+- `allocs_delta_pct` — allocs/op geomean Δ% from benchstat, or `-`
+- `status` — one of: `keep`, `discard`, `correctness_fail`
+- `files_changed` — which writable file(s) were modified
+- `rationale` — what you changed AND why you expected it to help. No tabs.
 
-## Resolved Findings (2026-04-16)
+Example rows:
+```
+1	-69.10	0.000	+0.72	+25.00	keep	prover_common.go	MulAccByElement for ext×base — hypothesis: 4 muls vs 9 reduces LC compute by >50%
+2	-0.80	0.15	-0.30	+0.00	discard	prover_common.go	preallocate scratch — hypothesis: reduce allocs, but GC not the bottleneck here
+3	-	-	-	-	correctness_fail	ext.go	wrong Karatsuba decomposition in E4 mul
+```
 
-- `extensions.Vector.MulAccByElement` confirmed at gnark-crypto v0.20.1
-  `field/koalabear/extensions/vector.go:311` with `mulAccByElement_avx512` assembly
-- `vectorext.Vector` is alias for `extensions.Vector` (confirmed)
-- Extension degree k=4 (fext.ExtensionDegree=4, E4=F_p^2[v]/v²-u)
-- Full profiling (BenchmarkCompilerWithout/WithSelfRecursion) OOMs on 16GB — deferred
-- Poseidon2 AVX-512 is gather-bound (VPGATHERDD ~12 cyc), 5-15% squeeze room exists
+## Surgical Precision Principle
 
----
+**Start surgical.** A change is surgical if it touches fewer than ~50 lines and targets a specific
+hot path. Begin with the cheapest hypotheses first — algorithmic improvements (mul count reduction),
+allocation removal, batch API usage, missing SIMD dispatch.
 
-## Known Dead Ends
+**Escalation order when surgical ideas are exhausted (5+ discards in a row with no keeps):**
+1. Profile with `go test -cpuprofile` and `go tool pprof` to find the current actual hot path
+2. Profile with `-benchmem` to find allocation sites
+3. Read inspiration repos (`leanMultisig/`, `Plonky3/`) for KoalaBear optimization patterns
+4. Study gnark-crypto AVX-512 assembly (`e4_amd64.s`, `element_31b_amd64.s`) for port pressure
+5. Non-surgical restructuring — only if motivated by a specific hypothesis and passing correctness
 
-- **Full profiling on 16GB:** Both BenchmarkCompilerWithSelfRecursion and
-  BenchmarkCompilerWithoutSelfRecursion OOM on c7a.2xlarge (16GB) even with
-  GOGC=off GOMEMLIMIT=14GiB. Deferred to 64GB instance.
+## What to Optimize
 
-*(more populated as experiment progresses)*
+Study the KoalaBear field arithmetic, LinearCombination code, and Vortex commitment path.
+Profile to find hot functions and allocation sites. Look for algorithmic improvements,
+unnecessary allocations, missing SIMD paths, and cache-unfriendly access patterns.
 
----
+## Hard Constraints
+1. No security parameter changes.
+2. No interface changes — do not alter public function signatures.
+3. No test value changes — do not modify expected values in tests.
+4. Correctness is mandatory — `correctness.sh` must pass after every change.
+5. Do not modify scripts in `~/zk-autoresearch/experiment_logs/linea/shared/`.
+6. **NEVER log a keep without running `eval_bench.sh --save-baseline`.**
 
-## Srinath Overlap — Confirmed Clear
+## Context
 
-Srinath's branches (`srinath/prover-vortex-opt`, `level2`) focus on **peak memory reduction**:
-streaming commitment, incremental hashing. Original `LinearCombination` and field arithmetic
-are untouched. Zero arithmetic overlap confirmed from branch analysis (2026-04-15).
-His agent loop stalled Apr 2 at 0% wall-clock gain — memory is not the bottleneck.
+- KoalaBear: 31-bit prime field (p = 2^31 - 2^24 + 1). Extension degree k=4 (E4 = F_p^2[v]/v²-u).
+  Karatsuba: E4×E4 = 9 base muls, E4×base = 4 muls.
+- `vectorext.Vector` is alias for `extensions.Vector` in gnark-crypto.
+- gnark-crypto v0.20.1 has `MulAccByElement` with AVX-512 assembly at `extensions/e4_amd64.s`.
+- In Go with GC, reducing allocations can matter as much as reducing compute — GC pressure compounds at scale.
+- Srinath's branches (`srinath/prover-vortex-opt`) focus on memory reduction only — zero arithmetic overlap.
+- `azam/experimental-bench-vortex` branch has timing instrumentation for commitment, LC, column opening phases.
+
+## Profile-first invariant
+If `eval_bench.sh` tier-1 baseline runtime drifts by > 20% from the calibrated figure
+(~440µs geomean at current state) for more than 2 consecutive iterations, pause the loop
+and investigate. Something upstream has changed the bottleneck.
+
+## NEVER STOP
+Once the loop begins, do NOT pause to ask for confirmation. Do NOT ask "should I continue?". Run
+experiments autonomously until manually stopped. If you run out of ideas, follow the escalation
+order in the Surgical Precision Principle above.

@@ -13,7 +13,7 @@ export PATH="$PATH:$HOME/go/bin"
 SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SHARED_DIR/config.env"
 
-PROVER_DIR=${PROVER_DIR:-$HOME/linea-monorepo/prover}
+PROVER_DIR=${PROVER_DIR:-$HOME/zk-autoresearch/linea-monorepo/prover}
 NOISE_DIR="$HOME/linea-bench/noise"
 mkdir -p "$NOISE_DIR"
 
