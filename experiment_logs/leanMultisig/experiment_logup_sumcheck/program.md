@@ -23,63 +23,70 @@ prove_execution.rs
       → AIR constraint evaluation (air/)              ← DOMINANT COST
 ```
 
-91% of sumcheck compute is in AIR constraint evaluation (`ConstraintFolderPacked`).
-Experiments 1+2 optimized everything else. This experiment targets the dominant cost.
+**Profiled 2026-04-18** (perf, 40K samples). Actual e2e breakdown:
+- Merkle hashing (Poseidon1 permute_mut): **21%** — 3 monomorphizations, commitment layer
+- AIR constraint eval (Air::eval + rounds): **14.4%** — Poseidon16::eval 8%, round fns 5%
+- Iterator/closure dispatch: **~6%** — FnMut::call_mut, Drain, Map::fold
+- GKR quotient sumcheck: **4.9%**
+- Eq polynomial: **2.4%**
+- WHIR product sumcheck: **2.2%**
+- Rayon overhead: **1.7%**
+- Field packing: **1.4%**
+- AIR constraint folder (assert_zero): **1.2%** — much smaller than estimated
+- Allocation: **1.1%**
+
+Note: the "91% of sumcheck compute" from experiment 2 was instruction mix within the kernel,
+not e2e. Merkle hashing at 21% was not even on the radar.
 
 ## The Metric
 **Lower is better.** `xmss_leaf_1400sigs` e2e (~5.17s baseline).
 Keep if: wall-clock improvement >= 1.0% with p < 0.01. Revert-A/B for marginal keeps.
 `[wallclock-only]` tag required for sub_protocols/ and air/ changes (not in iai TRACK_REGEX).
 
-## Iteration Surface (priority order)
+## Iteration Surface (priority order — based on profiling)
 
-### 1. AIR constraint evaluation (91% of sumcheck compute — start here)
+### 1. AIR constraint eval (14.4% e2e — largest writable target)
 
-**Alpha power pre-broadcasting** (~0.5-1% e2e) — `assert_zero` broadcasts `alpha_power`
-per constraint per element (`EFPacking::from(alpha_power)` = 5 AVX-512 broadcasts).
-Pre-broadcast all alpha powers once per round, eliminating ~315K broadcasts/round.
+`Poseidon16Precompile::eval` alone is 8%. The constraint expressions themselves dominate,
+not the folder. Study how Poseidon16 Air::eval computes its 77 constraints — the round
+function calls (`eval_2_full_rounds_16` at 3%, `eval_last_2_full_rounds` at 1.9%) are the
+actual hot functions.
 
-**Delayed modular reduction** (~2-5% e2e) — WHIR product sumcheck already accumulates
-in u128/i128 and reduces once per element. Apply the same to AIR constraint evaluation:
-accumulate in wider integers, reduce once per element rather than per constraint.
+**Arity-specific extrapolation** (highest impact, complex) — Jolt evaluates at fewer
+points and extrapolates. For degree-9 Poseidon, evaluate at 5 points, extrapolate to 10 →
+nearly halve constraint evaluations. 200+ line change. Read `~/zk-autoresearch/jolt/`'s
+`mles_product_sum.rs` before attempting.
 
-**Arity-specific extrapolation kernels** (~3-8% e2e) — Jolt evaluates the sumcheck
-polynomial at fewer points and extrapolates. For degree-9 Poseidon constraints, evaluate
-at 5 points, extrapolate to 10 → nearly halve constraint evaluations. Read
-`~/zk-autoresearch/jolt/` for the pattern.
+**Delayed modular reduction** (complex) — accumulate in wider integers, reduce once per
+element. AIR constraints are degree-9 with interleaved ops — needs overflow analysis.
 
-**Constraint expression CSE** — common subexpressions across constraints the compiler misses.
+**Constraint expression CSE** — common subexpressions the compiler misses in Poseidon16::eval.
 
-**Constraint batching** — share intermediate values across multiple constraints.
+### 2. Iterator/closure dispatch (~6% e2e — surprising target)
 
-### 2. Logup data prep (~5-8% e2e)
+`FnMut::call_mut` appears multiple times totaling ~5%. These are compiler-generated thunks
+for closures through generic APIs. May indicate vtable/indirect-call overhead that
+`#[inline(always)]` or monomorphization hints could eliminate.
 
-**finger_print_packed** — inner kernel called per chunk. Horner evaluation, SIMD utilization.
+### 3. GKR quotient sumcheck (4.9% e2e)
 
-**Column read cache locality** — `PFPacking::from_fn(|w| columns[k][base_i + w])` reads
-one element at a time. Batch-read rows? Prefetch?
+`handle_gkr_quotient_with_fold` at 2%, `fold_and_compute_gkr_quotient_split_eq` at 1.7%.
+Partially explored in experiment 2 but alpha fusion and inner loop restructuring both failed.
+Fresh approaches only.
+
+### 4. Logup data prep (~5-8% e2e)
+
+**finger_print_packed** — inner kernel. Horner evaluation, SIMD utilization.
+
+**Column read cache locality** — batch-read rows instead of element-at-a-time.
 
 **Embedding avoidance** — skip base→extension lift when numerator is F::ONE.
 
-**Column stride elimination** — bytecode reads with stride, transpose input layout.
+### 5. Cross-boundary restructuring
 
-**GKR output reuse** — `numerators_value`/`denominators_value` from GKR are discarded
-(line 236), post-GKR section recomputes. Thread them through instead.
+**Padding-aware folding** — fold zeros efficiently in padded polynomials.
 
-### 3. Cross-boundary restructuring
-
-**Padding-aware folding** — when polynomials have trailing zeros, fold smarter. Changes
-both data construction and sumcheck round processing.
-
-**Fused prep+GKR streaming** — stream data instead of materializing full arrays.
-
-**Reduce GKR layers** — structure logup inputs to require fewer GKR rounds.
-
-### 4. Sumcheck internals (low priority — mostly explored)
-
-**eval_packed_base/eval_packed_extension** — verify which paths are actually hit.
-
-**AIR sumcheck batch sharing** — prove_batched_air_sumcheck at 15% e2e, barely explored.
+**Reduce GKR layers** — fewer rounds = less total work.
 
 ## Target Files (writable)
 
@@ -94,7 +101,7 @@ both data construction and sumcheck round processing.
 | Sumcheck | `crates/backend/sumcheck/src/sc_computation.rs` | Compute trait (884 LOC) |
 | Sumcheck | `crates/backend/sumcheck/src/quotient_computation.rs` | GKR quotient (~400 LOC) |
 | Sumcheck | `crates/backend/sumcheck/src/product_computation.rs` | Product sumcheck (~350 LOC) |
-| Benchmark | `~/zk-autoresearch/leanMultisig-bench/` | Add benchmarks here |
+| Benchmark | `~/zk-autoresearch/leanMultisig-bench/` | Writable — add isolated benchmarks if needed |
 
 **Saturated (avoid unless strong hypothesis):**
 quintic_extension/ (inlining exhausted), eq_mle.rs (hardware local optimum), mle/, next_mle.rs
@@ -112,7 +119,8 @@ sumcheck/verify.rs, all tests/
 LOOP FOREVER:
 
 1. Read `program.md` and `iters.tsv`.
-2. **Profile after every keep.** Each kept change shifts the hot path.
+2. **Profile first.** Iter 1 MUST start with `perf record` or `cargo flamegraph` to verify
+   where time actually goes. Profile again after every keep.
 3. Read target files. Understand data flow before hypothesizing.
 3b. *Optional but encouraged:* Search inspiration repos (`jolt/`, `Plonky3/`, `sp1/`) and
     recent papers for patterns that apply. Especially for AIR constraint evaluation and
@@ -145,7 +153,10 @@ iter	stage1_iai_delta	stage1_iai_decision	stage2_median_pct	stage2_p	revert_ab	b
 beats redundant computation on this hardware.
 **GKR quotient alpha fusion:** -0.045% iai, below threshold. LLVM already optimal.
 **GKR quotient inner loop restructuring:** +9% ILP destruction.
-**split_eq BasePacked routing:** monomorphization instability, +11% wall-clock.
+**split_eq BasePacked routing:** monomorphization instability, +11% wall-clock. Note: Rust
+anonymous closure types are position-dependent. Moving a closure into an else branch or
+separate function changes its monomorphization hash, causing iai FAIL even with identical
+logic. Do not route different code paths through separate closures in sc_computation.rs.
 **Parallel AIR sessions:** +8.6% rayon overhead + contention.
 **parallel_sum fold+reduce:** +1.9% loses rayon pipelining.
 
@@ -158,7 +169,7 @@ beats redundant computation on this hardware.
 6. Never skip wall-clock confirmation.
 
 ## Stop Criterion
-20 consecutive discards = pause and report.
+12 consecutive discards = pause and report.
 
 ## NEVER STOP
 Run autonomously until manually stopped or stop criterion hit.
