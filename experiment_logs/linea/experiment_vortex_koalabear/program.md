@@ -144,6 +144,9 @@ Study the KoalaBear field arithmetic, LinearCombination code, and Vortex commitm
 Profile to find hot functions and allocation sites. Look for algorithmic improvements,
 unnecessary allocations, missing SIMD paths, and cache-unfriendly access patterns.
 
+**Re-profile after every KEEP.** Each kept change shifts the hot path. Run `go test -cpuprofile`
+on the new baseline before choosing the next target — do not assume the old profile is still valid.
+
 ## Hard Constraints
 1. No security parameter changes.
 2. No interface changes — do not alter public function signatures.

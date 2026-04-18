@@ -1,1 +1,11 @@
 iter	tier1_delta_pct	tier1_p	tier2_delta_pct	allocs_delta_pct	status	files_changed	rationale
+1	-72.32	0.000	-4.28	-25.00	keep	prover_common.go	MulAccByElement for ext×base in Regular case — 4 base muls vs 9 (Karatsuba), fused multiply-accumulate with AVX-512, eliminates scratch buffer
+2	-1.89	0.008	+0.92	-33.33	keep	prover_common.go	Eliminate localLinComb alloc+copy — accumulate directly into shared linComb slice (disjoint ranges). -50% B/op, -33% allocs/op
+3	+0.50	-	-1.76	-93.86	keep	poseidon2.go	Fix MDHasher.SumElement buffer realloc — index-based consumption preserves backing array. no_sis allocs 16438→62 (-99.6%)
+4	+0.68	-	+0.01	+0.80	discard	commtiment.go	Pre-extract Regular slices in noSisTransversalHash — interface dispatch overhead is negligible vs Poseidon2 compute
+5	-1.21	0.015	+0.66	+0.00	discard	prover_common.go	Defer constant additions + MulByElement (4 vs 9 muls) — mixed case -7.16% but geomean -1.21% (only 1/4 benchmarks has constants)
+6	+1.14	-	-14.00	-40.43	keep	commtiment.go	CompressPoseidon2x16 SIMD for noSisTransversalHash — batch 16 columns at a time. rows_512/no_sis: -72.36%
+7	-0.13	-	-0.13	+2.25	discard	commtiment.go	Pre-extract Regular slices for SIMD transpose — interface dispatch not the bottleneck, cache misses dominate
+8	-0.68	-	-1.60	+0.00	discard	commtiment.go	Swap transpose loop order (row-major) — rows_512 -8.19% but geomean -1.60% below threshold
+9	+0.21	-	-0.77	+2.25	discard	commtiment.go	Combined loop swap + pre-extract — worse than loop swap alone, pre-extract overhead cancels cache benefit
+10	+0.17	-	+1.02	+0.00	discard	gnark-crypto/fft.go	Fuse butterfly+twiddle in FFT generic path — regression, separating allows better instruction pipelining
