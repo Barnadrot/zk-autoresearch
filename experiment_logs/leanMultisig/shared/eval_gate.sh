@@ -99,11 +99,37 @@ fi
 # Stage 2: paired wall-clock
 # -----------------------------------------------------------------------
 log "Stage 2: paired wall-clock..."
+rm -f /tmp/eval_paired_summary.json
 T0=$(date +%s)
+PAIRED_EXIT=0
 bash "$SHARED_DIR/eval_paired.sh" --baseline "$BASELINE_REF" --candidate "$CANDIDATE_REF" --n 1 \
-  > /tmp/eval_gate_paired.log 2>&1 || true
+  > /tmp/eval_gate_paired.log 2>&1 || PAIRED_EXIT=$?
 T1=$(date +%s)
 PAIRED_TIME=$((T1-T0))
+
+if [[ "$PAIRED_EXIT" -eq 2 ]]; then
+  log "VERDICT: DISCARD (eval_paired infra error, exit code 2 — likely identical binaries)"
+  # Try to extract hashes from the log
+  BASE_HASH=$(grep -oP 'hash_base\s*:\s*\K\S+' /tmp/eval_gate_paired.log 2>/dev/null || echo "-")
+  CAND_HASH=$(grep -oP 'hash_cand\s*:\s*\K\S+' /tmp/eval_gate_paired.log 2>/dev/null || echo "-")
+  python3 -c "
+import json
+print(json.dumps({
+  'verdict': 'DISCARD',
+  'status': 'infra_identical_binaries',
+  'stage1_iai_delta': '$IAI_DELTA',
+  'stage1_iai_decision': '$IAI_DECISION',
+  'stage2_median_pct': '-',
+  'stage2_p': '-',
+  'revert_ab': 'n/a',
+  'base_hash': '$BASE_HASH',
+  'cand_hash': '$CAND_HASH',
+  'gate_time_s': $((IAI_TIME + PAIRED_TIME)),
+}, indent=2))
+" > /tmp/eval_gate_summary.json
+  cat /tmp/eval_gate_summary.json
+  exit 1
+fi
 
 PAIRED_DELTA="-"
 PAIRED_P="-"
