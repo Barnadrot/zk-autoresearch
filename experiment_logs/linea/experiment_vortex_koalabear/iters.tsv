@@ -9,3 +9,11 @@ iter	tier1_delta_pct	tier1_p	tier2_delta_pct	allocs_delta_pct	status	files_chang
 8	-0.68	-	-1.60	+0.00	discard	commtiment.go	Swap transpose loop order (row-major) — rows_512 -8.19% but geomean -1.60% below threshold
 9	+0.21	-	-0.77	+2.25	discard	commtiment.go	Combined loop swap + pre-extract — worse than loop swap alone, pre-extract overhead cancels cache benefit
 10	+0.17	-	+1.02	+0.00	discard	gnark-crypto/fft.go	Fuse butterfly+twiddle in FFT generic path — regression, separating allows better instruction pipelining
+11	-0.09	-	-17.00	+0.00	keep	gnark-crypto/fft.go,go.mod	Add kerDIFNP_64/128 + replace directive — unrolled FFT kernels eliminate ~63 recursive calls per 64-element FFT. SIS benchmarks -28%
+12	+0.38	-	-11.20	+0.00	keep	gnark-crypto/fft.go	Inline small-m stages in kerDIFNP_64/kerDITNP_64 — eliminate innerDIFWithTwiddlesGeneric dispatch overhead. SIS -22%
+13	+0.74	-	+0.00	+0.00	discard	gnark-crypto/fft.go,domain.go	Pre-compute cosetTableInvScaled to merge FFTInverse passes — N=64 too small for one-pass merge to matter
+14	+1.30	-	+3.30	+0.00	discard	gnark-crypto/options.go	Cache OnCoset/WithNbTasks closures — regression, cached vars prevent compiler inlining of closures
+15	+1.10	-	+2.17	+0.00	discard	gnark-crypto/fft.go	Direct AVX-512 calls from kernel — regression, Go compiler already constant-folds dispatch check
+16	+1.97	-	+0.02	-63.42	keep	gnark-crypto/fft.go	Inline coset/CardinalityInv scaling for nbTasks<=1 — skip parallel.Execute closure. SIS allocs -85% to -93%, B/op -42%
+17	+0.43	-	-4.59	+0.00	keep	gnark-crypto/fft.go	2x unroll butterfly+twiddle in kerDIFNP_64/kerDITNP_64 for ILP across Montgomery multiply chains. SIS -3% to -5%
+18	-0.68	-	-1.67	+0.00	discard	gnark-crypto/fft.go	Extend 2x unroll to stage 4 (m=2) — diminishing returns, geomean -1.67% below threshold
