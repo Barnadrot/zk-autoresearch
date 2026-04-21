@@ -10,11 +10,15 @@ microarchitecture on Zen 4.
 ## What this experiment is NOT
 
 **Do NOT modify any of the following:**
-- `~/zk-autoresearch/leanMultisig-bench/` — the bench crate is OFF LIMITS
+- `~/zk-autoresearch/leanMultisig-bench/Cargo.toml` — no build profile or dependency changes
+- `~/zk-autoresearch/leanMultisig-bench/benches/xmss_leaf.rs` — do not modify existing benchmarks
 - `Cargo.toml` build profiles (codegen-units, LTO, panic) — already explored
 - Allocator selection (mimalloc, jemalloc) — already explored
 - RUSTFLAGS or PGO — already explored
-- Any file outside `~/zk-autoresearch/leanMultisig/crates/`
+
+**You MAY add new benchmark files** to `leanMultisig-bench/benches/` for diagnostic purposes
+(e.g. `bench_air_eval.rs`, `bench_sumcheck_round.rs`). These are tools to validate hypotheses
+locally before running the e2e gate — not gates themselves.
 
 This experiment targets **source code optimizations only** in the leanMultisig codebase.
 
@@ -34,82 +38,81 @@ prove_execution.rs
       → AIR constraint evaluation (air/)
 ```
 
-## Profiling Breakdown (2026-04-18, perf, 40K samples)
+## Profiling Breakdown (2026-04-21, perf, post-mimalloc baseline)
 
 | Component | % e2e | Explored? | Notes |
 |---|---|---|---|
-| Merkle hashing (Poseidon1 permute_mut) | 21% | Barely | Column count is binding — can't add columns |
-| AIR constraint eval (Air::eval + rounds) | 14.4% | Only inlining (0%) | **Primary target** — no algorithmic work tried |
-| Iterator/closure dispatch (FnMut::call_mut) | ~6% | Never | **Fresh target** |
-| GKR quotient sumcheck | 4.9% | Heavily (8 iters) | ILP bottleneck confirmed |
-| Eq polynomial | 2.4% | Heavily (7 iters) | Hardware local optimum |
-| WHIR product sumcheck | 2.2% | Lightly (2 iters) | **Underexplored** |
-| Field packing (from_ext_slice) | 1.4% | Lightly (1 iter) | **Underexplored** |
-| Rayon overhead | 1.7% | Explored | Nested parallelism hurts |
-| Allocation | 1.1% | Explored | Addressed by mimalloc (bench-side) |
+| Merkle hashing (Poseidon1 permute_mut) | 24.8% | Barely | Column count is binding — can't add columns |
+| Rayon overhead (bridge_producer_consumer) | 6.8% | Explored | Nested parallelism hurts |
+| AIR constraint eval (eval_2_full + eval_last_2 + assert_zero) | 6.7% | Only inlining (0%) | **Dropped from 14.4% pre-mimalloc** |
+| Closure dispatch (Fn::call + FnMut::call_mut) | 4.0% | Never | Verify if real or attribution noise |
+| GKR quotient sumcheck | 4.1% | Heavily (8 iters) | ILP bottleneck confirmed |
+| Eq polynomial | 2.8% | Heavily (7 iters) | Hardware local optimum |
+| Product sumcheck | 2.3% | Lightly (2 iters) | Low ceiling (0.7% e2e max) |
+| Kernel/OS | ~9% | N/A | KVM overhead |
+| memmove | 0.9% | N/A | |
+
+## Baseline
+Branch: `feat/mimalloc-allocator-clean` HEAD (includes mimalloc + codegen-units=1).
+Baseline runtime: ~3.9s on Criterion `xmss_leaf_1400sigs`.
+Profiling breakdown above is current (post-mimalloc). Re-profile after every keep.
 
 ## The Metric
-**Lower is better.** `xmss_leaf_1400sigs` e2e (~5.17s baseline pre-mimalloc).
+**Lower is better.** `xmss_leaf_1400sigs` e2e (~3.9s baseline post-mimalloc).
 Keep if: wall-clock improvement >= 1.0% with p < 0.01.
 `[wallclock-only]` required for sub_protocols/ and air/ changes.
 iai gate works for backend/sumcheck/ changes.
 
 ## Iteration Surface (priority order)
 
-### 1. AIR constraint eval (14.4% e2e — 5 inlining attempts, zero algorithmic)
-
-Previous experiments only tried `#[inline(always)]` on eval functions (0% delta, compiler
-already inlining). The actual hot functions are:
-- `Poseidon16Precompile::eval` — 8.03% self time, 77 constraints, degree 9
-- `eval_2_full_rounds_16` — 3.03%, the Poseidon round function
-- `eval_last_2_full_rounds_16` — 1.86%
-
-**Unexplored directions:**
-- **Constraint expression rewriting** — are there algebraic simplifications in the Poseidon
-  constraint expressions that reduce multiplication count?
-- **Shared subexpressions across constraints** — manual CSE if LLVM misses cross-constraint
-  common terms
-- **Round constant application** — can MDS matrix multiply or S-box application be restructured
-  for better SIMD utilization?
-- **Evaluation order** — does reordering constraint evaluation affect register pressure or
-  cache behavior?
-
-**Binding constraint:** Do NOT add columns. Iter 1 of experiment 3 showed +46% regression
-from 64 extra columns — Merkle hashing cost dominates.
-
-### 2. Iterator/closure dispatch (~6% e2e — zero attempts)
-
-`FnMut::call_mut` appears multiple times in profiling (~5% total). These are compiler-generated
-thunks for closures passed through generic APIs. Possible causes:
-- Virtual dispatch through trait objects where monomorphization would be faster
-- Closure captures that prevent inlining
-- Generic API boundaries that introduce indirect calls
-
-**Directions:**
-- Identify which closures generate the dispatch overhead (perf with call graph)
-- Replace trait object dispatch with monomorphized paths where possible
-- Ensure hot closures are `#[inline(always)]` annotated at the call site
-- Check if `dyn Fn` is used where generics would eliminate vtable
-
-### 3. Product sumcheck (2.2% e2e — 2 trivial attempts)
-
-Only loop interchange and chunk_size tuning tried. The delayed modular reduction pattern
-(`compute_product_sumcheck_polynomial_base_ext_packed`) is already there. Unexplored:
-- Is the delayed reduction optimal? Can the accumulation window be wider?
-- Product tree structure — can the products be arranged for better ILP?
-- Packed field utilization — are all SIMD lanes active?
-
-### 4. Jolt extrapolation pattern (never attempted, ~3-8% estimated)
+### 1. Jolt extrapolation pattern (never attempted, cuts across multiple categories)
 
 Jolt evaluates the sumcheck polynomial at fewer points and uses polynomial extrapolation.
 For degree-9 Poseidon constraints: evaluate at 5 points, extrapolate to 10 → nearly halve
-constraint evaluations. Complex (200+ lines), requires changes to `SumcheckComputation` trait.
-Read `~/zk-autoresearch/jolt/`'s `mles_product_sum.rs` before attempting.
+constraint evaluations. This cuts across AIR eval (6.7%), GKR quotient (4.1%), and product
+sumcheck (2.3%) simultaneously — the compounding effect is why this is #1 despite complexity.
 
-### 5. from_ext_slice (1.4% e2e — 1 attempt)
+Complex (200+ lines), requires changes to `SumcheckComputation` trait.
+Read `~/zk-autoresearch/jolt/`'s `mles_product_sum.rs` thoroughly before attempting.
 
-Packing overhead. Only one inlining attempt (regressed). Study the actual conversion
-pattern — is the data layout causing unnecessary shuffles?
+**This may span 2-3 iterations** (implement, debug, optimize). That's acceptable for a
+protocol-level change of this magnitude — don't try to cram it into one iter.
+
+### 2. Rayon overhead (6.8% e2e — investigate, not add parallelism)
+
+Grew from 1.7% to 6.8% post-mimalloc (now visible without allocation noise).
+`bridge_producer_consumer` appears 5+ times. Previous experiments tried ADDING parallelism
+(nested par_iter, parallel sessions) and all regressed. The unexplored angle is REDUCING
+overhead — task granularity, work distribution, chunk sizing to minimize spawning cost.
+**Spend 1 iter profiling which bridge_producer_consumer instances dominate before optimizing.**
+
+### 3. AIR constraint eval (6.7% e2e — ceiling now ~1-2% e2e)
+
+Dropped from 14.4% pre-mimalloc. Still writable, still unexplored algorithmically. Hot fns:
+- `eval_2_full_rounds_16` — 4.0%
+- `eval_last_2_full_rounds_16` — 1.6%
+- `ConstraintFolderPacked::assert_zero` — 1.1%
+
+**Unexplored directions:**
+- Constraint expression rewriting (algebraic simplifications)
+- Shared subexpressions across constraints (manual CSE)
+- Round constant / MDS restructuring for SIMD
+
+**Binding constraint:** Do NOT add columns (+46% regression from 64 extra columns).
+
+### 4. Closure dispatch (4.0% e2e — verify first)
+
+`Fn::call` (3.0%) + `FnMut::call_mut` (1.0%). May be attribution noise or may overlap with
+AIR eval. **1 iter to verify with call graph before treating as separate target.**
+
+### 5. Product sumcheck (2.3% e2e — low ceiling)
+
+Even 30% local improvement = 0.7% e2e. Only attempt if higher targets exhaust.
+
+### Not targeting
+- **Poseidon permute_mut (24.8%)** — in read-only mt_koala_bear. Largest surface but requires
+  AVX-512 assembly optimization, different class of work. Could open if willing.
+- **from_ext_slice** — dropped below 0.3% threshold post-mimalloc. Not worth an iteration.
 
 ## Target Files (writable)
 
@@ -138,12 +141,24 @@ sumcheck/verify.rs, all tests/
 LOOP FOREVER:
 
 1. Read `program.md` and `iters.tsv`.
-2. **Profile first (iter 1 mandatory).** Use `perf record` or `cargo flamegraph`.
+2. **Profile after every keep.** Profiling breakdown in this file is current. Use:
+   ```bash
+   cd ~/zk-autoresearch/leanMultisig-bench
+   perf record -F 997 -g --call-graph=fp -o /tmp/perf_exp4.data -- \
+       target/release/deps/xmss_leaf-* --bench xmss_leaf_1400sigs --profile-time 20
+   perf report -i /tmp/perf_exp4.data --no-children --sort=symbol --stdio | head -40
+   ```
+   Profile again after every keep.
 3. Read target files. Understand data flow before hypothesizing.
 3b. *When stuck (3+ discards):* Search inspiration repos and papers for patterns.
 4. Devise ONE targeted change. State hypothesis — what, why, expected signal.
+4b. *Optional diagnostic:* Before burning a full e2e gate cycle, validate your hypothesis
+    locally with a targeted microbenchmark (Criterion in leanMultisig-bench or a quick
+    `cargo test --release` timing). If the local improvement is <5% within the target
+    function, it won't clear the 1.0% e2e threshold — skip the gate and try a different idea.
+    **Microbench to aim, e2e gate to decide.**
 5. Edit source files **in `~/zk-autoresearch/leanMultisig/crates/` ONLY**.
-6. Correctness: `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/correctness.sh`
+6. Correctness: `cargo test --release` in leanMultisig, THEN `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/correctness.sh`. Both must pass before committing.
 7. Commit: `git -C ~/zk-autoresearch/leanMultisig commit -am "iter N: <description>"`
 8. Gate: `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_gate.sh`
 9. KEEP → log, save baseline. DISCARD → revert, log.
