@@ -13,7 +13,7 @@ microarchitecture on Zen 4.
 - `~/zk-autoresearch/leanMultisig-bench/Cargo.toml` — no build profile or dependency changes
 - `~/zk-autoresearch/leanMultisig-bench/benches/xmss_leaf.rs` — do not modify existing benchmarks
 - `Cargo.toml` build profiles (codegen-units, LTO, panic) — already explored
-- Allocator selection (mimalloc, jemalloc) — already explored
+- Allocator selection (mimalloc, jemalloc) — already explored, AWS-only win, regresses on bare metal
 - RUSTFLAGS or PGO — already explored
 
 **You MAY add new benchmark files** to `leanMultisig-bench/benches/` for diagnostic purposes
@@ -28,37 +28,41 @@ This experiment targets **source code optimizations only** in the leanMultisig c
 prove_execution.rs
   → prove_generic_logup (logup.rs)                    ← DATA PREP: ~5-8% e2e
       → finger_print_packed (inner kernel, 1000s of calls)
-      → prove_gkr_quotient (quotient_computation.rs)  ← GKR SUMCHECK: ~10-13% e2e
+      → prove_gkr_quotient                             ← GKR SUMCHECK: ~5.9% e2e
+          → quotient_gkr/sumcheck_utils (REFACTORED)
+              → fold_and_compute_round_packed, compute_round_packed
           → sumcheck_prove_many_rounds (prove.rs)
               → SumcheckComputation (sc_computation.rs)
-                  → ConstraintFolderPacked (air/)     ← DOMINANT COST IN SUMCHECK
-                  → FnMut::call_mut closures           ← ~6% DISPATCH OVERHEAD
+                  → ConstraintFolderPacked (air/)
+                  → FnMut::call_mut closures            ← ~6.5% DISPATCH OVERHEAD
       → post-GKR column evaluations
-  → prove_batched_air_sumcheck (air_sumcheck.rs)       ← ~15% e2e
+  → prove_batched_air_sumcheck (air_sumcheck.rs)       ← ~5.5% AIR eval (excl. Poseidon permute)
       → AIR constraint evaluation (air/)
 ```
 
-## Profiling Breakdown (2026-04-21, perf, post-mimalloc baseline)
+## Profiling Breakdown (2026-04-21, perf fp, myfork/main HEAD, 279K samples)
 
 | Component | % e2e | Explored? | Notes |
 |---|---|---|---|
-| Merkle hashing (Poseidon1 permute_mut) | 24.8% | Barely | Column count is binding — can't add columns |
-| Rayon overhead (bridge_producer_consumer) | 6.8% | Explored | Nested parallelism hurts |
-| AIR constraint eval (eval_2_full + eval_last_2 + assert_zero) | 6.7% | Only inlining (0%) | **Dropped from 14.4% pre-mimalloc** |
-| Closure dispatch (Fn::call + FnMut::call_mut) | 4.0% | Never | Verify if real or attribution noise |
-| GKR quotient sumcheck | 4.1% | Heavily (8 iters) | ILP bottleneck confirmed |
-| Eq polynomial | 2.8% | Heavily (7 iters) | Hardware local optimum |
-| Product sumcheck | 2.3% | Lightly (2 iters) | Low ceiling (0.7% e2e max) |
-| Kernel/OS | ~9% | N/A | KVM overhead |
-| memmove | 0.9% | N/A | |
+| Poseidon permute_mut (3 variants) | 25.6% | Barely | Column count is binding — can't add columns |
+| Closure dispatch (FnMut::call_mut) | ~6.5% | Never | Consistent across profiles — confirmed real |
+| GKR quotient sumcheck | ~5.9% | 8 iters on OLD code | Refactored to quotient_gkr/sumcheck_utils — new structure may have different optimization opportunities |
+| AIR constraint eval | ~5.5% | Only inlining (0%) | eval_2_full_rounds 2.55%, Poseidon16::eval 2.04%, eval_last_2 0.95% |
+| Product computation | ~2.8% | Lightly (2 iters) | Low ceiling |
+| Rayon overhead | 2.7% | Explored | Nested parallelism hurts |
+| Eq polynomial | ~2.3% | Heavily (7 iters) | Hardware local optimum |
+| from_ext_slice | 1.23% | Lightly (1 iter) | |
+| Kernel/OS | ~8.7% | N/A | KVM overhead |
+| ConstraintFolderPacked::assert_zero | 0.64% | Explored | |
+| memmove_avx512 | 0.65% | N/A | |
 
 ## Baseline
-Branch: `feat/mimalloc-allocator-clean` HEAD (includes mimalloc + codegen-units=1).
-Baseline runtime: ~3.9s on Criterion `xmss_leaf_1400sigs`.
-Profiling breakdown above is current (post-mimalloc). Re-profile after every keep.
+Branch: `myfork/main` HEAD (no mimalloc — mimalloc regresses on bare metal, AWS-only win).
+Baseline runtime: ~5.17s on Criterion `xmss_leaf_1400sigs`.
+Re-profile after every keep.
 
 ## The Metric
-**Lower is better.** `xmss_leaf_1400sigs` e2e (~3.9s baseline post-mimalloc).
+**Lower is better.** `xmss_leaf_1400sigs` e2e (~5.17s baseline).
 Keep if: wall-clock improvement >= 1.0% with p < 0.01.
 `[wallclock-only]` required for sub_protocols/ and air/ changes.
 iai gate works for backend/sumcheck/ changes.
@@ -69,8 +73,8 @@ iai gate works for backend/sumcheck/ changes.
 
 Jolt evaluates the sumcheck polynomial at fewer points and uses polynomial extrapolation.
 For degree-9 Poseidon constraints: evaluate at 5 points, extrapolate to 10 → nearly halve
-constraint evaluations. This cuts across AIR eval (6.7%), GKR quotient (4.1%), and product
-sumcheck (2.3%) simultaneously — the compounding effect is why this is #1 despite complexity.
+constraint evaluations. This cuts across AIR eval (~5.5%), GKR quotient (~5.9%), and product
+sumcheck (~2.8%) simultaneously — the compounding effect is why this is #1 despite complexity.
 
 Complex (200+ lines), requires changes to `SumcheckComputation` trait.
 Read `~/zk-autoresearch/jolt/`'s `mles_product_sum.rs` thoroughly before attempting.
@@ -78,20 +82,20 @@ Read `~/zk-autoresearch/jolt/`'s `mles_product_sum.rs` thoroughly before attempt
 **This may span 2-3 iterations** (implement, debug, optimize). That's acceptable for a
 protocol-level change of this magnitude — don't try to cram it into one iter.
 
-### 2. Rayon overhead (6.8% e2e — investigate, not add parallelism)
+### 2. Closure dispatch (~6.5% e2e — confirmed real, never attempted)
 
-Grew from 1.7% to 6.8% post-mimalloc (now visible without allocation noise).
-`bridge_producer_consumer` appears 5+ times. Previous experiments tried ADDING parallelism
-(nested par_iter, parallel sessions) and all regressed. The unexplored angle is REDUCING
-overhead — task granularity, work distribution, chunk sizing to minimize spawning cost.
-**Spend 1 iter profiling which bridge_producer_consumer instances dominate before optimizing.**
+`FnMut::call_mut` consistent at ~6.5% across both pre- and post-mimalloc profiles — this is
+real overhead, not attribution noise. Spread across sumcheck/GKR call sites. Investigate
+which closures are the worst offenders and whether monomorphization or inlining can eliminate
+the dispatch. May overlap with AIR eval — establish this with call-graph profiling first.
 
-### 3. AIR constraint eval (6.7% e2e — ceiling now ~1-2% e2e)
+### 3. AIR constraint eval (~5.5% e2e — only inlining tried, zero algorithmic)
 
-Dropped from 14.4% pre-mimalloc. Still writable, still unexplored algorithmically. Hot fns:
-- `eval_2_full_rounds_16` — 4.0%
-- `eval_last_2_full_rounds_16` — 1.6%
-- `ConstraintFolderPacked::assert_zero` — 1.1%
+Hot fns:
+- `eval_2_full_rounds_16` — 2.55%
+- `Poseidon16Precompile::eval` — 2.04%
+- `eval_last_2_full_rounds_16` — 0.95%
+- `ConstraintFolderPacked::assert_zero` — 0.64%
 
 **Unexplored directions:**
 - Constraint expression rewriting (algebraic simplifications)
@@ -100,19 +104,28 @@ Dropped from 14.4% pre-mimalloc. Still writable, still unexplored algorithmicall
 
 **Binding constraint:** Do NOT add columns (+46% regression from 64 extra columns).
 
-### 4. Closure dispatch (4.0% e2e — verify first)
+### 4. GKR quotient (~5.9% e2e — refactored, re-investigate)
 
-`Fn::call` (3.0%) + `FnMut::call_mut` (1.0%). May be attribution noise or may overlap with
-AIR eval. **1 iter to verify with call graph before treating as separate target.**
+Emile refactored quotient code into `quotient_gkr/sumcheck_utils` with new function names
+(`fold_and_compute_round_packed`, `compute_round_packed`). Prior experiments explored the
+old structure (8 iters, 0 keeps). The refactored code may have different optimization
+opportunities — re-read before assuming prior dead ends apply.
 
-### 5. Product sumcheck (2.3% e2e — low ceiling)
+### 5. from_ext_slice (1.23% e2e)
 
-Even 30% local improvement = 0.7% e2e. Only attempt if higher targets exhaust.
+Packing overhead. One inlining attempt regressed. Study the actual conversion pattern.
+
+### 6. Rayon overhead (2.7% e2e — low priority)
+
+Previous experiments tried adding parallelism (all regressed). Reducing overhead (task
+granularity, chunk sizing) is the unexplored angle but ceiling is low at 2.7%.
+
+### 7. Product sumcheck (~2.8% e2e — low ceiling)
+
+Even 30% local improvement = 0.8% e2e. Only attempt if higher targets exhaust.
 
 ### Not targeting
-- **Poseidon permute_mut (24.8%)** — in read-only mt_koala_bear. Largest surface but requires
-  AVX-512 assembly optimization, different class of work. Could open if willing.
-- **from_ext_slice** — dropped below 0.3% threshold post-mimalloc. Not worth an iteration.
+- **Poseidon permute_mut (25.6%)** — in read-only mt_koala_bear. Could open if willing.
 
 ## Target Files (writable)
 
@@ -120,8 +133,9 @@ Even 30% local improvement = 0.7% e2e. Only attempt if higher targets exhaust.
 |---|---|
 | AIR constraints | `crates/backend/air/` — primary target |
 | Logup | `crates/sub_protocols/src/logup.rs`, `air_sumcheck.rs`, `stacked_pcs.rs` |
+| Logup (new) | `crates/sub_protocols/src/quotient_gkr/` — refactored GKR quotient |
 | Caller | `crates/lean_prover/src/prove_execution.rs` |
-| Sumcheck | `crates/backend/sumcheck/src/prove.rs`, `sc_computation.rs`, `quotient_computation.rs`, `product_computation.rs` |
+| Sumcheck | `crates/backend/sumcheck/src/prove.rs`, `sc_computation.rs`, `product_computation.rs` |
 
 **Saturated (avoid unless strong hypothesis):**
 quintic_extension/ (inlining exhausted), eq_mle.rs (hardware local optimum)
@@ -129,7 +143,7 @@ quintic_extension/ (inlining exhausted), eq_mle.rs (hardware local optimum)
 **Read-only:** fiat-shamir/, field/, koala-bear/ (except quintic_extension), whir/,
 sumcheck/verify.rs, all tests/
 
-**OFF LIMITS:** `~/zk-autoresearch/leanMultisig-bench/`, Cargo.toml profiles, allocator config
+**OFF LIMITS:** see "What this experiment is NOT" section above
 
 ## Inspiration Repos
 - `~/zk-autoresearch/jolt/` — extrapolation kernels in `mles_product_sum.rs`
@@ -148,7 +162,6 @@ LOOP FOREVER:
        target/release/deps/xmss_leaf-* --bench xmss_leaf_1400sigs --profile-time 20
    perf report -i /tmp/perf_exp4.data --no-children --sort=symbol --stdio | head -40
    ```
-   Profile again after every keep.
 3. Read target files. Understand data flow before hypothesizing.
 3b. *When stuck (3+ discards):* Search inspiration repos and papers for patterns.
 4. Devise ONE targeted change. State hypothesis — what, why, expected signal.
@@ -179,13 +192,15 @@ iter	stage1_iai_delta	stage1_iai_decision	stage2_median_pct	stage2_p	revert_ab	b
 - GKR quotient alpha fusion: destroys ILP (+9% wall-clock despite -1.9% iai)
 - split_eq BasePacked routing: monomorphization instability (+11%)
 - Degree-9→degree-3 Poseidon split: +46% from column count increase
-- Closure caching as package vars: prevents Go-style inlining
+- Closure caching as package vars: prevents compiler inlining
 - `#[inline(always)]` on AIR eval functions: compiler already inlining (5 attempts, 0%)
 - Monomorphization trap: moving closures near sc_computation.rs changes anonymous type
   hashes, causing iai FAIL. Don't route different paths through separate closures there.
+- Allocator changes (mimalloc, jemalloc): mimalloc -24% on AWS but +3.6% on bare metal
+  Hetzner. Not hardware-agnostic. Separate experiment needed.
 
 ## Scope Rules
-- Source code changes only. No build config, no bench crate.
+- Source code changes only. No build config, no bench crate modifications (except adding new diagnostic benchmarks).
 - Structural changes (50-200 lines) allowed.
 - Protocol-level restructuring in scope if motivated by hypothesis.
 - Research papers valid input. Cross-boundary changes encouraged.
