@@ -146,10 +146,12 @@ sumcheck/verify.rs, all tests/
 
 **OFF LIMITS:** see "What this experiment is NOT" section above
 
-## Inspiration Repos
+## Inspiration Repos & Papers
 - `~/zk-autoresearch/jolt/` — extrapolation kernels in `mles_product_sum.rs`
 - `~/zk-autoresearch/Plonky3/` — sumcheck patterns, monty-31 AVX-512
 - `~/zk-autoresearch/sp1/` — source readable
+- Packed sumcheck (ePrint 2025/719) — 2.78x reported, major protocol restructuring
+- Search for recent papers on sumcheck, GKR, constraint evaluation optimization
 
 ## Experiment Loop
 
@@ -164,7 +166,8 @@ LOOP FOREVER:
    perf report -i /tmp/perf_exp4.data --no-children --sort=symbol --stdio | head -40
    ```
 3. Read target files. Understand data flow before hypothesizing.
-3b. *When stuck (3+ discards):* Search inspiration repos and papers for patterns.
+3b. *Optional but encouraged:* Search inspiration repos (`jolt/`, `Plonky3/`, `sp1/`) and
+    recent papers for patterns that apply. Don't skip this when stuck (3+ consecutive discards).
 4. Devise ONE targeted change. State hypothesis — what, why, expected signal.
 4b. *Optional diagnostic:* Before burning a full e2e gate cycle, validate your hypothesis
     locally with a targeted microbenchmark (Criterion in leanMultisig-bench or a quick
