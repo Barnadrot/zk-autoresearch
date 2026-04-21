@@ -20,7 +20,8 @@ microarchitecture on Zen 4.
 (e.g. `bench_air_eval.rs`, `bench_sumcheck_round.rs`). These are tools to validate hypotheses
 locally before running the e2e gate — not gates themselves.
 
-This experiment targets **source code optimizations only** in the leanMultisig codebase.
+This experiment targets the leanMultisig codebase. Both micro-optimizations and protocol-level
+restructuring are in scope — read inspiration repos and papers before defaulting to profiling.
 
 ## The Call Chain
 
