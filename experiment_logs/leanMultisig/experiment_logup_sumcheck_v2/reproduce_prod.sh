@@ -18,8 +18,8 @@
 set -eo pipefail
 
 LM_REPO="leanMultisig"
-BASELINE_REF="4c6c10f"    # main: pre-experiment 4
-CANDIDATE_REF="exp4_work"  # includes iter 7 keep (degree-split AIR sumcheck)
+BASELINE_REF="1ad5fe2"    # origin/main: latest
+CANDIDATE_REF="exp4_degree_split_clean"  # iter 7 keep rebased on top of 1ad5fe2
 RUNS=${RUNS:-3}  # number of timed runs per variant (median is reported)
 
 export RUSTFLAGS="-C target-cpu=native"
