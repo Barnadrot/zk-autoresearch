@@ -106,13 +106,14 @@ Broad scope — allocation happens across the pipeline. Writable:
 Same two-tier system as exp5, minus the microbenchmark pre-filter (allocation changes
 affect the whole pipeline, not one function):
 
-**Tier 1: Criterion (~5 min)** — `xmss_leaf_1400sigs` via `eval_paired.sh`.
-Keep if >= 1.0%, p < 0.01. Use `[wallclock-only]` commit tag.
+**Tier 1: Criterion (~5 min)** — `xmss_leaf_1400sigs` via shared `eval_paired.sh`.
+Keep if >= 1.0%, p < 0.01.
 
 **Tier 2: Production (~20 min)** — `fancy-aggregation` via `reproduce_prod.sh`.
 Only on keeps. >2% = ship.
 
 No microbenchmark tier — allocation reduction is diffuse, not function-local.
+No iai tier — allocation changes are invisible to single-threaded valgrind (exp4/iter 5 confirmed).
 
 ## Experiment Loop
 
@@ -123,7 +124,6 @@ No microbenchmark tier — allocation reduction is diffuse, not function-local.
 3. Target the heaviest site. Apply fix patterns from DHAT + inspiration survey.
 4. Correctness: `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/correctness.sh`
 5. Gate: `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_paired.sh`
-   with `[wallclock-only]` tag.
 6. Log to `iters.tsv`. Re-profile (DHAT) after every keep — allocation landscape shifts.
 
 ## Logging
