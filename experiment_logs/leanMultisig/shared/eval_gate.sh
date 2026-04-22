@@ -23,7 +23,7 @@ LM_REPO=${LM_REPO:-$HOME/zk-autoresearch/leanMultisig}
 
 # Thresholds (from config.env)
 source "$SHARED_DIR/config.env" 2>/dev/null || true
-KEEP_THRESHOLD_PCT=${KEEP_THRESHOLD_PCT:-1.5}
+KEEP_THRESHOLD_PCT=${KEEP_THRESHOLD_PCT:-1.0}
 MARGINAL_MULT=${MARGINAL_MULT:-2.0}
 WALLCLOCK_REGRESSION_PCT=${WALLCLOCK_REGRESSION_PCT:-0.5}
 
