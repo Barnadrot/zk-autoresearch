@@ -64,5 +64,24 @@ Threshold and sample-size settings sourced by the scripts / loop orchestrator. E
   - `bench_profile.md` — `perf record` profile confirming sumcheck is ≥30 % of inclusive time and no bench-setup artifacts dominate
   - `threshold_calibration.md` — `KEEP_THRESHOLD_PCT` derivation from backtest data
 
+### `eval_poseidon.sh` — Poseidon throughput (legacy)
+Runs the in-crate `benchmark_poseidons::bench_poseidon` ignored test. Prints throughput numbers but has no automated comparison or decision. Superseded by the `poseidon_permute` Criterion bench in `leanMultisig-bench/benches/poseidon_permute.rs` for experiment 5+.
+
+## Experiment-specific overrides
+
+Starting with experiment 5 (`experiment_poseidon_whir/`), experiments may provide their own
+`eval_gate.sh` that replaces the shared version's stage layout. For example, exp5 uses a
+three-tier gate (microbench → Criterion → production) instead of the shared two-stage
+(iai → paired) flow. The experiment-local scripts still delegate to shared `eval_paired.sh`
+and `correctness.sh` for the infrastructure they have in common.
+
+## Criterion microbenchmarks
+
+Diagnostic Criterion benches live in `leanMultisig-bench/benches/`:
+- `xmss_leaf.rs` — e2e proving benchmark (do not modify)
+- `poseidon_permute.rs` — Poseidon permute_mut in isolation (packed SIMD + scalar)
+
+These are registered in `leanMultisig-bench/Cargo.toml` as `[[bench]]` entries.
+
 ## Loop orchestration
-The loop is driven by program.md instructions to the optimizer agent. There is no single orchestrator script — the agent calls these gates in sequence. See `experiment_sumcheck/program.md` "Experiment Loop" section.
+The loop is driven by program.md instructions to the optimizer agent. There is no single orchestrator script — the agent calls these gates in sequence. See each experiment's `program.md` "Experiment Loop" section.

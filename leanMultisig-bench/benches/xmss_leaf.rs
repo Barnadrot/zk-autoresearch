@@ -8,11 +8,6 @@
 // N_SIGS is kept small enough to keep bench time under ~10s per run.
 // Tune it based on throughput on the server (~700-800 XMSS/s → 100 sigs ≈ 130ms).
 
-use mimalloc::MiMalloc;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mt_koala_bear::KoalaBear;
 use rec_aggregation::{init_aggregation_bytecode, xmss_aggregate};

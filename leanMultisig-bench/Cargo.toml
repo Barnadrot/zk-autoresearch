@@ -11,16 +11,25 @@ description = "Criterion benchmarks for leanMultisig autoresearch loop"
 rec_aggregation = { path = "../leanMultisig/crates/rec_aggregation" }
 xmss             = { path = "../leanMultisig/crates/xmss" }
 backend          = { path = "../leanMultisig/crates/backend" }
+sub_protocols    = { path = "../leanMultisig/crates/sub_protocols" }
 mt-koala-bear    = { path = "../leanMultisig/crates/backend/koala-bear" }
 utils            = { path = "../leanMultisig/crates/utils" }
 rayon            = "1"
-mimalloc         = { version = "0.1", default-features = false }
+backtrace        = "0.3"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "xmss_leaf"
+harness = false
+
+[[bench]]
+name = "poseidon_permute"
+harness = false
+
+[[bench]]
+name = "xmss_leaf_glibc"
 harness = false
 
 [profile.release]
