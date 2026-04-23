@@ -2,7 +2,16 @@
 
 ## Role
 Expert Rust systems programmer. Heap allocation profiling, arena patterns,
-Rayon-parallel memory layout, DHAT-guided optimization.
+Rayon-parallel memory layout, allocation-profiled optimization.
+
+> **Profiling tool note (post-experiment):** DHAT was attempted in iter 1 but
+> abandoned — Valgrind serializes all threads into one, hiding the Rayon
+> contention that turned out to be the actual performance mechanism. The
+> experiment migrated to **heaptrack** (LD_PRELOAD, preserves threading) +
+> **custom `GlobalAlloc` wrappers** (`alloc_counter.rs`, `alloc_profiler.rs`)
+> with phase-aware counters, size-class distribution, and per-site atomics
+> sprinkled into the codebase. These tools captured both allocation counts
+> AND the contention signal that DHAT structurally cannot see.
 
 **Hardware:** AMD EPYC Genoa (Zen 4), c7a.2xlarge, 16GB RAM, AVX-512, KVM.
 **Baseline:** `1ad5fe25` (origin/main, 2026-04-22), system malloc (glibc). ~4.49s Criterion.
@@ -23,19 +32,25 @@ low enough that mimalloc doesn't regress on Hetzner).
 
 The -25% Criterion result is amplified (tight-loop re-invocation keeps mimalloc's thread-local
 heaps warm). Production shows -4%. But even -4% from *just swapping malloc* means the proving
-pipeline is doing a lot of allocation work that doesn't need to happen. DHAT profiling will
-show exactly where.
+pipeline is doing a lot of allocation work that doesn't need to happen. Allocation profiling
+will show exactly where.
 
 ## Approach
 
-**Step 1: Profile allocation sites with DHAT.**
+**Step 1: Profile allocation sites.**
+DHAT was attempted but abandoned (Valgrind serializes threads — useless for Rayon workloads).
+Migrated to heaptrack + custom `GlobalAlloc` counters:
 ```bash
 cd ~/zk-autoresearch/leanMultisig-bench
-valgrind --tool=dhat --dhat-out-file=/tmp/dhat.out \
-    target/release/deps/xmss_leaf-* --bench xmss_leaf_1400sigs --profile-time 5
+# heaptrack (preserves multi-threading, LD_PRELOAD-based):
+heaptrack ./target/release/heap_runner
+# Custom counting allocator (phase-aware, size-class distribution):
+cargo run --release --bin alloc_profiler
+# Lightweight alloc count + bytes:
+cargo run --release --bin alloc_counter
 ```
-DHAT reports: allocation count, total bytes, max live bytes, per call site.
-Sort by total bytes allocated — those are the targets.
+heaptrack gives call-site attribution. Custom counters give per-proving-phase breakdowns
+and size-class distributions that heaptrack doesn't surface easily.
 
 **Step 1b: Read inspiration repos for allocation patterns (once, during iter 1).**
 Check how Plonky3, SP1, and Jolt handle allocation in their parallel proving pipelines:
@@ -43,7 +58,7 @@ Check how Plonky3, SP1, and Jolt handle allocation in their parallel proving pip
 - `~/zk-autoresearch/sp1/` — prover memory patterns
 - `~/zk-autoresearch/jolt/` — commitment allocation strategy
 Look for: pre-allocated tree buffers, arena patterns compatible with Rayon, in-place
-Merkle construction. Build a pattern library, then apply DHAT-guided.
+Merkle construction. Build a pattern library, then apply profiling-guided.
 
 **Step 2: Eliminate or reduce the top allocation sites.**
 For each site, one of:
@@ -65,7 +80,7 @@ For each site, one of:
 | exp3/14 | sc_computation.rs, air_sumcheck.rs | Eliminate per-z-point Vec allocs | +13% | air_sumcheck restructuring broke ILP |
 | exp4/5 | sc_computation.rs | Reuse point buffer (Vec→&[IF]) | 0% iai | Not visible in single-threaded valgrind |
 
-**Pattern: all 5 targeted sumcheck inner loops blindly.** None used DHAT to find the actual
+**Pattern: all 5 targeted sumcheck inner loops blindly.** None used allocation profiling to find the actual
 heaviest allocators. The compiler already optimizes `collect()` in tight loops — the real
 allocation pressure is likely elsewhere (Merkle tree building, logup data prep, column
 materialization). **Profile first, then target.**
@@ -83,7 +98,7 @@ prove_execution.rs
     → polynomial evaluations                    ← extension field Vec allocations
 ```
 
-DHAT will tell us which of these dominates. Don't guess.
+Profiling will tell us which of these dominates. Don't guess.
 
 ## Writable Files
 
@@ -118,13 +133,13 @@ No iai tier — allocation changes are invisible to single-threaded valgrind (ex
 ## Experiment Loop
 
 1. Read `program.md` and `iters.tsv`.
-2. **Iter 1 must be DHAT profiling + inspiration repo survey.** Run DHAT, log top-10
+2. **Iter 1 must be allocation profiling + inspiration repo survey.** Run heaptrack/alloc_counter, log top-10
    allocation sites in rationale. Use Explore agents to read Plonky3/SP1/Jolt allocation
    patterns. No code change, `status=profile`.
-3. Target the heaviest site. Apply fix patterns from DHAT + inspiration survey.
+3. Target the heaviest site. Apply fix patterns from profiling + inspiration survey.
 4. Correctness: `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/correctness.sh`
 5. Gate: `bash ~/zk-autoresearch/experiment_logs/leanMultisig/shared/eval_paired.sh`
-6. Log to `iters.tsv`. Re-profile (DHAT) after every keep — allocation landscape shifts.
+6. Log to `iters.tsv`. Re-profile (heaptrack/alloc_counter) after every keep — allocation landscape shifts.
 
 ## Logging
 ```
@@ -135,13 +150,13 @@ Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
 ## Known Dead Ends
 
 **Sumcheck inner-loop alloc reduction:** 5 attempts, 0 keeps. Compiler already optimizes
-`collect()` in tight loops. Don't retry without DHAT evidence showing these are top sites.
+`collect()` in tight loops. Don't retry without profiling evidence showing these are top sites.
 **jemalloc:** +74.8% regression. Worse than glibc for this workload.
 **mimalloc as global allocator:** -25% AWS, +3.6% Hetzner. Not portable. (PR #200 open.)
 **Precompute-and-share patterns:** cache thrashing beats redundant computation on Zen 4.
 
 ## Rules
-- DHAT-guided only. No blind allocation changes.
+- Profiling-guided only (heaptrack/custom counters). No blind allocation changes.
 - Source-code changes only. No allocator swaps, no build config.
 - Correctness mandatory before every gate.
 - 12 consecutive discards → pause and report.
