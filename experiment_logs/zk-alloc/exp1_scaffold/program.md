@@ -16,7 +16,7 @@ branch (`zk-alloc-integration` on myfork).
 
 ```bash
 # Unit tests (zk-alloc crate only)
-cd ~/zk-autoresearch/zk-alloc && cargo test
+cd ~/zk-autoresearch/leanMultisig/zk-alloc && cargo test
 
 # Integration test (leanMultisig with zk-alloc)
 cd ~/zk-autoresearch/leanMultisig && git checkout zk-alloc-integration
