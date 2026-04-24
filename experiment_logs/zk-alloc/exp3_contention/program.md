@@ -10,18 +10,22 @@ profiling, phase-aware memory management.
 Make zk-alloc faster than glibc on leanMultisig by exploiting the phase structure
 of ZK proving. The hypothesis: proving has 4-5 distinct phases with different
 allocation patterns. If dealloc becomes a no-op and memory is reclaimed in bulk
-at phase boundaries, we eliminate the per-dealloc overhead that costs +11% vs glibc.
+at phase boundaries, we eliminate the RSS blowup and TLB pressure that costs +8.6% vs glibc.
 
 No existing allocator does this. This is what makes zk-alloc novel.
 
 ## Prerequisites
 
 exp2 findings (carry forward — do not re-discover):
+- **Starting point: +8.6% vs glibc** (4.15s vs 3.82s approx)
+- RSS blowup: 38.5GB vs glibc's 5.7GB — bump never frees, TLB pressure
+  kills parallelism (8.1x vs glibc's 9.5x on 16 cores)
 - Large allocs (>2MB) must route to System (mmap/munmap per alloc = +42%)
 - WorkerArena struct must stay small (<1 cache line hot path)
-- Per-dealloc ownership checks destroy parallelism (8.1x vs glibc's 9.5x)
+- Per-dealloc ownership checks destroy parallelism
 - Atomic contention batching does not help (exp2 iters 4, 7)
 - System passthrough proves the plumbing works but is not an allocator
+- Routing medium to System: reduces RSS but worse perf (fragmentation)
 
 ## Writable scope
 
@@ -36,7 +40,7 @@ exp2 findings (carry forward — do not re-discover):
 cd ~/zk-autoresearch/leanMultisig
 
 # Criterion paired A/B
-N=10 RUSTFLAGS="-C target-cpu=native" bash ../leanMultisig-bench/eval_paired.sh
+N=10 RUSTFLAGS="-C target-cpu=native" bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
 
 # Correctness
 cargo test --release --features zkalloc
@@ -52,7 +56,10 @@ RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --features zkalloc --target
 **DISCARD:** < 2pp improvement, regression, or p > 0.05.
 
 **EXP3a DONE:** zk-alloc faster than glibc by ≥5%, p < 0.01, with arena
-handling small/medium allocs (not System passthrough).
+handling small/medium allocs (not System passthrough). Majority of
+small/medium allocs must be served from bump/pool, not System fallback.
+
+**STOP:** 12 consecutive discards → pause and report.
 
 ## Context: proving phases
 
@@ -74,7 +81,7 @@ Allocation profile: 70% ≤128B, 20% 128B–64KB, 9% 64KB–4MB, 1% >4MB.
 1. Read `program.md` and `iters.tsv`.
 2. Profile, hypothesize, or implement one change.
 3. Correctness: `cargo test --release --features zkalloc`
-4. Benchmark: `N=10 bash ../leanMultisig-bench/eval_paired.sh`
+4. Benchmark: `N=10 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh`
 5. If touching phase reset logic: run ASan.
 6. **Log to `iters.tsv` after every iteration.**
 
@@ -140,6 +147,19 @@ watch -n1 'grep -E "VmRSS|VmHWM" /proc/$(pgrep -f xmss_leaf)/status'
 sudo cgexec -g memory:bench16g bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
 ```
 
+## Phase boundary placement rules
+
+- **Never place `phase_boundary()` inside a parallel section** — only at
+  sequential join points between pipeline stages (after Rayon joins, between
+  top-level pipeline calls).
+- Start coarse: first boundary between witness gen and trace commitment.
+  Add more only after validating each placement with ASan.
+- Large allocs (>2MB) are exempt — they go through mmap/munmap (System),
+  never touch the arena, survive resets naturally. Cross-phase objects like
+  committed polynomials and Merkle trees are large.
+- The benchmark (`xmss_leaf`) runs the full proving pipeline — if ASan
+  passes on it, every cross-phase reference was safe.
+
 ## What not to do
 
 - Do not retry exp2 dead ends (atomic batching, System passthrough).
@@ -151,4 +171,3 @@ sudo cgexec -g memory:bench16g bash ../experiment_logs/leanMultisig/shared/eval_
 ## NEVER STOP
 
 Run autonomously until stopped or stop criterion hit.
-8 consecutive discards → pause and report.
