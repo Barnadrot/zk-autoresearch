@@ -85,9 +85,47 @@ Profile with heaptrack to find where zk-alloc is slower than glibc:
 
 Expected iterations: 3–5.
 
+## Diagnostic tools
+
+### Performance profiling
+
+```bash
+# perf stat — parallelism ratio is the key metric (target: match glibc's 9.5x)
+perf stat -e instructions,cycles,cache-misses,cache-references,L1-dcache-load-misses \
+  cargo bench --manifest-path ../leanMultisig-bench/Cargo.toml --bench xmss_leaf --features zkalloc -- --sample-size 3
+
+# Compare wall time vs CPU time to measure effective parallelism
+perf stat cargo bench ... --features zkalloc 2>&1 | grep -E "task-clock|wall"
+perf stat cargo bench ... 2>&1 | grep -E "task-clock|wall"  # glibc baseline
+
+# Cache line contention (false sharing)
+perf c2c record cargo bench ...
+perf c2c report
+```
+
+### Allocation profiling
+
+```bash
+# heaptrack — call-site attribution
+heaptrack ./target/release/deps/xmss_leaf-*
+
+# Custom alloc_counter — size-class distribution
+cd ~/zk-autoresearch/leanMultisig-bench && cargo run --release --bin alloc_counter
+```
+
+### Memory safety
+
+```bash
+# ASan — catch use-after-free, buffer overflow
+RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --features zkalloc --target x86_64-unknown-linux-gnu
+
+# TSan — catch data races in cross-thread dealloc
+RUSTFLAGS="-Z sanitizer=thread" cargo +nightly test --features zkalloc --target x86_64-unknown-linux-gnu
+```
+
 ## What not to do
 
 - Do not target specific contention sites. That's exp3.
 - Do not add pressure adaptation. That's exp4.
 - Do not tune for 16GB vs 64GB. Only measure on one config (64GB native).
-- Do not optimize beyond parity. Stop when within ±1%.
+- Do not optimize beyond +5% gate. Exp3 is where we beat glibc.

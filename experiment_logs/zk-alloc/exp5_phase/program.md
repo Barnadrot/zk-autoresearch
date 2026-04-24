@@ -102,8 +102,48 @@ use-after-free. Mitigations:
 - **Large allocs exempt.** Objects >2MB are mmap'd individually and never
   part of the bump region — they survive phase boundaries safely.
 
+## Diagnostic tools
+
+### Phase boundary identification
+
+```bash
+# Tracing — find where allocation patterns shift
+# Add temporary eprintln! at phase transitions in leanMultisig to log timestamps
+# Then correlate with heaptrack timeline
+
+# heaptrack with phase markers
+heaptrack ./target/release/deps/xmss_leaf-*
+heaptrack_print heaptrack.*.zst | head -200
+
+# Custom alloc_counter — per-phase breakdown (already has phase awareness)
+cd ~/zk-autoresearch/leanMultisig-bench && cargo run --release --bin alloc_counter
+```
+
+### Safety verification (critical for phase reset)
+
+```bash
+# ASan — MUST run after every phase_boundary() placement change
+# This is the primary defense against use-after-free from premature reset
+RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --features zkalloc --target x86_64-unknown-linux-gnu
+
+# TSan — verify no races during phase boundary calls
+RUSTFLAGS="-Z sanitizer=thread" cargo +nightly test --features zkalloc --target x86_64-unknown-linux-gnu
+
+# Run full integration tests under ASan (slow but necessary)
+RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --release --features zkalloc --test test_lean_multisig --target x86_64-unknown-linux-gnu
+```
+
+### Arena utilization
+
+```bash
+# Verify bump cursor watermark per phase (are we resetting at the right points?)
+# Verify slab count stays bounded (no unbounded growth)
+# Verify System fallback rate per phase (should be <10% overall, may spike in some phases)
+# These require temporary counters in arena.rs — add/remove per iteration
+```
+
 ## What not to do
 
 - Do not redesign the core arena (exp1-3 already shipped that).
 - Do not change pressure policy (exp4 already shipped that).
-- Do not generalize to other proving systems yet (exp6).
+- Do not generalize to other proving systems yet.

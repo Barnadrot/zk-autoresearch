@@ -103,9 +103,43 @@ retention policy. Iterations tune the policy thresholds and mechanisms:
 
 Expected iterations: 5–8.
 
+## Diagnostic tools
+
+### Pressure profiling
+
+```bash
+# RSS monitoring during proving (both memory conditions)
+watch -n1 'grep -E "VmRSS|VmHWM" /proc/$(pgrep -f xmss_leaf)/status'
+
+# Memory pressure — cgroup stats
+cat /sys/fs/cgroup/bench16g/memory.current
+cat /sys/fs/cgroup/bench16g/memory.stat | grep -E "pgfault|pgmajfault|oom"
+
+# TLB misses (huge page impact)
+perf stat -e dTLB-load-misses,dTLB-store-misses cargo bench ...
+
+# Syscall overhead (mmap/munmap/madvise frequency)
+perf trace -s cargo bench ... 2>&1 | grep -E "mmap|munmap|madvise"
+```
+
+### Performance profiling
+
+```bash
+# Must run on BOTH conditions every iteration
+# 16GB:
+sudo cgexec -g memory:bench16g perf stat cargo bench ...
+# 64GB:
+perf stat cargo bench ...
+```
+
+### Memory safety
+
+```bash
+RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --features zkalloc --target x86_64-unknown-linux-gnu
+```
+
 ## What not to do
 
-- Do not add phase detection (exp5).
 - Do not change the core arena/pool design (that's exp3's job).
 - Do not optimize for a single memory condition. Every change must be tested
   on BOTH 16GB and 64GB.
