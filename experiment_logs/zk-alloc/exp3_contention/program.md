@@ -26,8 +26,9 @@ exp2 findings (carry forward — do not re-discover):
 ## Writable scope
 
 - **`leanMultisig/zk-alloc/`** — the allocator crate
-- **`leanMultisig/src/`** — `phase_boundary()` call sites only (minimal, each
-  placement is its own iteration with a measurable benchmark result)
+- **`leanMultisig/src/`** and **`leanMultisig/crates/`** — `phase_boundary()`
+  call sites. Place them wherever the profiling suggests, no approval needed.
+  The gate (benchmark + ASan) catches bad placements.
 
 ## Benchmark commands
 
