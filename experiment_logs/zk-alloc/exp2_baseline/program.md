@@ -21,7 +21,7 @@ exp1_scaffold PASSED: all 56 workspace tests + 3 e2e proofs correct with zkalloc
 cd ~/zk-autoresearch/leanMultisig
 # baseline: glibc (no feature)
 # candidate: zk-alloc (--features zkalloc)
-N=3 bash ../leanMultisig-bench/eval_paired.sh
+N=3 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
 
 # Production
 bash reproduce_prod.sh  # runs with and without --features zkalloc
@@ -45,7 +45,7 @@ improvement.
 1. Read `program.md` and `iters.tsv`.
 2. Profile or apply one targeted fix.
 3. Run correctness tests: `cd ~/zk-autoresearch/leanMultisig && cargo test --release --features zkalloc`
-4. Run benchmark: `N=3 bash ../leanMultisig-bench/eval_paired.sh`
+4. Run benchmark: `N=3 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh`
 5. **Log to `iters.tsv` after every iteration.**
 
 ## Logging

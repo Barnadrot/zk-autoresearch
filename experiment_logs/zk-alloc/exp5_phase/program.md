@@ -47,7 +47,7 @@ The proving pipeline has these phases (identified from tracing + heaptrack):
 1. Read `program.md` and `iters.tsv`.
 2. Profile or apply one targeted optimization.
 3. Correctness: `cargo test --release --features zkalloc`
-4. Benchmark: `N=3 bash ../leanMultisig-bench/eval_paired.sh`
+4. Benchmark: `N=3 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh`
 5. **Log to `iters.tsv` after every iteration.**
 
 ## Logging

@@ -23,7 +23,7 @@ exp2_baseline PASSED: zk-alloc within ±1% of glibc.
 ```bash
 # Criterion (paired A/B, glibc vs zk-alloc)
 cd ~/zk-autoresearch/leanMultisig
-N=3 bash ../leanMultisig-bench/eval_paired.sh
+N=3 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
 
 # Production
 bash reproduce_prod.sh
@@ -56,7 +56,7 @@ These are the sites where glibc arena locks cause measurable slowdown:
 1. Read `program.md` and `iters.tsv`.
 2. Profile or apply one targeted optimization.
 3. Correctness: `cargo test --release --features zkalloc`
-4. Benchmark: `N=3 bash ../leanMultisig-bench/eval_paired.sh`
+4. Benchmark: `N=3 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh`
 5. **Log to `iters.tsv` after every iteration.**
 
 ## Logging

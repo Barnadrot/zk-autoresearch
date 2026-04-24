@@ -26,10 +26,10 @@ exp3_contention PASSED: zk-alloc >= 5% faster than glibc on 16GB.
 # 16GB memory-limited environment
 sudo cgcreate -g memory:bench16g
 echo 16G | sudo tee /sys/fs/cgroup/bench16g/memory.max
-sudo cgexec -g memory:bench16g bash eval_paired.sh
+sudo cgexec -g memory:bench16g bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
 
 # 64GB native (no cgroup)
-bash eval_paired.sh
+bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
 ```
 
 Same hardware, same CPU, same OS — only RAM available changes.
@@ -54,7 +54,7 @@ Same hardware, same CPU, same OS — only RAM available changes.
 1. Read `program.md` and `iters.tsv`.
 2. Profile or apply one targeted optimization.
 3. Correctness: `cargo test --release --features zkalloc`
-4. Benchmark: run `eval_paired.sh` under BOTH 16GB cgroup and 64GB native.
+4. Benchmark: run `../experiment_logs/leanMultisig/shared/eval_paired.sh` under BOTH 16GB cgroup and 64GB native.
 5. **Log to `iters.tsv` after every iteration.**
 
 ## Logging
