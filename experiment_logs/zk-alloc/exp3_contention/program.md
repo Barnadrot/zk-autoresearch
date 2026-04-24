@@ -51,12 +51,13 @@ RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --features zkalloc --target
 
 ## Gate criteria
 
-**KEEP:** improves over previous best by ≥2 percentage points, p < 0.05.
+**KEEP:** zkalloc ≥2% faster than previous KEEP's zkalloc time, p < 0.05.
+The paired glibc run provides variance control — use its p-value, but
+gate on absolute zkalloc improvement, not the glibc delta.
 
-**DISCARD:** < 2pp improvement, regression, or p > 0.05.
+**DISCARD:** < 2% improvement, regression, or p > 0.05.
 
-**EXP3a DONE:** zk-alloc faster than glibc by ≥5%, p < 0.01, with arena
-handling small/medium allocs (not System passthrough). Majority of
+**EXP3a DONE:** zk-alloc faster than glibc by ≥5%, p < 0.01. Majority of
 small/medium allocs must be served from bump/pool, not System fallback.
 
 **STOP:** 12 consecutive discards → pause and report.
@@ -76,14 +77,25 @@ The proving pipeline has distinct allocation phases. From exp6 profiling:
 Allocation profile: 70% ≤128B, 20% 128B–64KB, 9% 64KB–4MB, 1% >4MB.
 ~50M allocs per proof on origin/main.
 
+## Git workflow
+
+- **Never commit to `main`** in any repo. All work on branches.
+- zk-alloc repo: work on branch `exp3a`. Create if needed: `git checkout -b exp3a`.
+- leanMultisig repo: work on branch `exp3a`. Create if needed: `git checkout -b exp3a`.
+  This is where `phase_boundary()` call sites go.
+- zk-autoresearch repo: work on branch `zk-alloc-exp` (already exists).
+
 ## Experiment loop
 
 1. Read `program.md` and `iters.tsv`.
 2. Profile, hypothesize, or implement one change.
 3. Correctness: `cargo test --release --features zkalloc`
-4. Benchmark: `N=10 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh`
-5. If touching phase reset logic: run ASan.
-6. **Log to `iters.tsv` after every iteration.**
+4. If touching phase reset logic: run ASan.
+5. Commit: `git add` changed files, `git commit` with iter number and rationale.
+6. Benchmark: `N=10 bash ../experiment_logs/leanMultisig/shared/eval_paired.sh`
+7. **Log to `iters.tsv` after every iteration.**
+8. If KEEP: commit iters.tsv update.
+9. If DISCARD: `git revert HEAD` to undo the change. Commit iters.tsv update separately.
 
 ## Logging
 
@@ -91,13 +103,6 @@ Allocation profile: 70% ≤128B, 20% 128B–64KB, 9% 64KB–4MB, 1% >4MB.
 iter	criterion_pct	p	status	files_changed	rationale
 ```
 Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
-
-## Known dead ends (from exp2 — do not retry)
-
-- Atomic contention batching (iters 4, 7 — no improvement)
-- System passthrough (passes gate trivially, not an allocator)
-- mmap/munmap for large allocs (+42% overhead)
-- 36KB WorkerArena struct (cache pollution)
 
 ## Diagnostic tools
 
