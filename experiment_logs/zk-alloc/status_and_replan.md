@@ -1,4 +1,4 @@
-# zk-alloc: Status & Revised Plan
+# zk-alloc: Status & Revised Plan (v2)
 
 ## Where we are (after exp1 + exp2)
 
@@ -17,114 +17,145 @@ Key findings from exp2:
 - **System passthrough matches glibc trivially** (-0.38%) but is not an allocator.
 
 The remaining 11% gap is from thread serialization when accessing thread-local
-arena metadata. The arena hot path (cursor/base/capacity = 24 bytes) shares
-cache lines with cold metadata, and `thread_local!` uses the slow general-dynamic
-TLS model vs glibc's `__thread` (initial-exec, single `fs:` offset).
+arena metadata on every dealloc. The per-dealloc ownership check + TLS access
+is the overhead — not the alloc path.
 
 ## What the original plan got wrong
 
-The waterfall (exp2 → exp3 → exp4 → exp5) assumed each experiment was independent.
-Reality: **the arena can't match glibc without phase-aware design.** Trying to
-out-engineer glibc's 30-year-polished tcache using the same generic patterns
-(bump + free list + size classes) is a losing game. The +11% gap proves it.
+1. **Waterfall was wrong.** exp2→3→4→5 assumed each was independent. Reality:
+   the arena can't match glibc without phase-aware design. The +11% gap from
+   per-dealloc overhead proves generic patterns can't beat glibc's 30 years.
 
-The original exp3 (contention) assumed thread-local arenas automatically beat
-glibc's locked arenas. They don't — glibc's arena locks are rarely contended
-in practice because glibc already uses per-thread arenas (one per core). Our
-overhead isn't lock contention; it's the metadata overhead of a second allocator
-sitting on top of glibc.
+2. **Contention was the wrong target.** glibc already uses per-thread arenas.
+   Our overhead isn't lock contention — it's the cost of a second allocator
+   sitting on top of glibc.
 
-**The novel value of zk-alloc is phase awareness (exp5), not contention
-elimination (exp3).** Reorder accordingly.
+3. **Manual phase_boundary() is the wrong API.** Requiring provers to add
+   explicit calls makes zk-alloc non-portable. Every prover would need custom
+   instrumentation. The allocator should detect phases itself.
 
-## Revised plan
+## The design: autonomous phase detection
 
-### exp2 (finish): Close the gap to +5%
+ZK proving has a distinctive allocation fingerprint:
 
-**Remaining work:** 1-2 iterations.
-- Cache-line-align the hot alloc struct (cursor/base/capacity in its own
-  64-byte padded struct, cold metadata separate)
-- If still >+5%: try `#[thread_local]` (nightly) for the arena pointer to
-  eliminate `__tls_get_addr` overhead
+| Phase | Dominant alloc pattern |
+|-------|----------------------|
+| Witness generation | Many small (32-128B field elements), sustained burst |
+| Trace commitment | Few large (polynomial buffers 1-84MB), Merkle trees |
+| Logup/sumcheck | Medium churn (scratch buffers), rapid alloc/dealloc |
+| WHIR/FRI queries | Medium + large, systematic pattern, eq_mle sweeps |
+| Serialization | Small, postcard encoding, negligible |
 
-**Exit at:** +5% or better with arena active for small/medium allocs.
+These patterns are **structurally different** — you can distinguish them by
+monitoring a rolling window of (alloc_size, alloc_rate, dealloc_rate). When
+the distribution shifts, a phase boundary has occurred.
 
-### exp3 (revised): Phase-aware arena reset
+**Detection mechanism:**
+- Track rolling average of alloc sizes (exponential moving average, ~zero cost)
+- Track alloc/dealloc ratio in a window (bump phases have ratio >> 1, churn
+  phases have ratio ≈ 1)
+- When the size distribution shifts by more than a threshold → phase transition
+- On transition: reset bump cursor, return extra slabs (under pressure), resize
+  arena for the new phase's expected volume
 
-**Was:** Beat glibc via contention elimination.
-**Now:** Implement phase-aware bulk deallocation — the core novelty.
+**Why this is better than manual API:**
+- Zero code changes to the prover — true drop-in `#[global_allocator]`
+- Works on any ZK prover (leanMultisig, Jolt, Plonky3, SP1) without per-prover tuning
+- The allocator learns the workload, not the other way around
+- Config parameters (window size, shift threshold, slab retention policy) are
+  agent-tunable via config.rs
 
-This is the most important experiment. No existing allocator can do this.
-The proving pipeline has clear phase boundaries where all allocations from
-the previous phase are dead. Instead of tracking individual frees (which
-adds overhead that makes us slower than glibc), we reset the bump pointer
-at phase boundaries and reclaim everything at once.
+**Why this is safe:**
+- Only reset slabs that are fully within the previous phase (bump cursor tracking)
+- Large allocs (>2MB) always go through System — never touched by phase reset
+- Conservative: if uncertain whether a phase transition occurred, don't reset
+- Debug mode: epoch tracking on allocations, assert no stale references
 
-**Mechanism:**
-1. `phase_boundary()` call between proving phases resets bump cursor to 0
-2. Small/medium allocs within a phase are bump-only (no free tracking)
-3. `dealloc` for bump-allocated memory is a **true no-op** (not even an
-   ownership check)
-4. Large allocs (>2MB) route to System (survive phase boundaries)
-5. First slab is persistent (twiddle caches allocated during warmup)
+## Revised experiments
 
-**Why this beats glibc:** glibc must track every individual free because it
-doesn't know allocation lifetimes. We know that proving phases are scoped —
-everything allocated in witness generation dies before trace commitment.
-Zero per-dealloc overhead × 50M deallocs = the entire 11% gap eliminated.
+### exp3: Phase detection + no-op dealloc
 
-**Gate:** monotonic, ≥2pp per keep. Done at -5% vs glibc (faster, not just
-matching). Requires `phase_boundary()` calls in leanMultisig (user approves
-each site).
+**The core experiment.** Build the autonomous phase detector and make dealloc
+a true no-op for bump-allocated memory.
 
-**Risk:** Objects that survive phase boundaries (cross-phase references) will
-be use-after-freed. Mitigations: large allocs exempt (System-backed), epoch
-tracking in debug mode, conservative placement of boundaries.
+**Iteration plan:**
+1. **Profile** — instrument alloc/dealloc with size+timestamp logging, run
+   full proving pipeline, visualize the phase pattern. Confirm phases are
+   detectable from allocation patterns alone.
+2. **Build detector** — rolling window of alloc sizes + alloc/dealloc ratio.
+   Add to arena.rs. Triggered check is O(1) — increment counter, compare
+   moving average. No branches on hot path unless threshold crossed.
+3. **No-op dealloc** — once detector is validated, make dealloc_small and
+   dealloc_medium true no-ops (not even an ownership check). All reclamation
+   happens at detected phase boundaries.
+4. **Tune detection parameters** — window size, shift threshold, cooldown
+   period. These go in config.rs for agent tuning.
+5. **Validate safety** — ASan on every change, full integration test suite,
+   verify no use-after-free from premature resets.
 
-### exp4 (revised): Pressure + sizing
+**Gate:** monotonic ≥2pp per keep. Done at -5% vs glibc.
 
-**Was:** Solve 16GB/64GB tradeoff with `/proc/meminfo` polling.
-**Now:** Tune arena sizing and retention for both memory conditions.
+**Key risk:** false positive phase detection → premature reset → use-after-free.
+Mitigation: conservative thresholds, large allocs exempt, ASan mandatory.
 
-Once phase reset works, the pressure question simplifies: under pressure,
-return slabs to OS at phase boundaries via `madvise(MADV_DONTNEED)`.
-With headroom, retain slabs across phases (pre-faulted, zero syscall overhead).
+### exp4: Pressure adaptation + config tuning
 
-Also tune config parameters that the agent can now iterate on:
-- `arena_slab_size` (initial slab per thread)
-- `small_threshold` / `medium_threshold` boundaries
-- Number and timing of phase boundary calls
+Once phase detection works, pressure adaptation becomes simple:
+- **Under pressure (16GB):** return slabs to OS at phase boundaries via
+  `madvise(MADV_DONTNEED)`. Detected phases tell us when memory is reclaimable.
+- **With headroom (64GB):** retain slabs across phases, pre-faulted. Skip
+  the madvise call. Zero syscall overhead.
+
+Also tune all config.rs parameters:
+- `arena_slab_size` per detected phase type
+- `small_threshold` / `medium_threshold` aligned to field element sizes
+- Detection window size and shift threshold
+- Slab retention policy per memory condition
 
 **Gate:** ≥2pp on either 16GB or 64GB without regressing the other.
 Done when: -10% on 16GB AND ±2% on 64GB.
 
-### exp5 (revised): Generalize + polish
+### exp5: Cross-prover validation
 
-**Was:** Phase-aware bulk deallocation.
-**Now:** Cross-prover validation + passive phase detection.
+Test zk-alloc on Jolt and Plonky3 benchmarks. The autonomous phase detector
+should work without any prover-specific tuning — if it doesn't, the design
+is wrong.
 
-Test on Jolt and Plonky3 benchmarks. If phase boundary placement is
-manual and prover-specific, explore passive detection (allocation pattern
-shift → automatic reset). Polish the API for external consumption.
+**Questions to answer:**
+- Does the detector find phase boundaries in Jolt's execution trace?
+- Does Plonky3's DFT/NTT workload have detectable phases?
+- Do the same config.rs parameters work across provers, or do they need
+  per-prover tuning?
 
-## Revised timeline
+**Gate:** no regression on any prover. Improvement on ≥2 of 3.
+
+## Timeline
 
 | Experiment | Scope | Est. iterations |
 |-----------|-------|----------------|
-| exp2 (finish) | Cache-line align + TLS fix | 1-3 |
-| exp3 (phase) | Phase-aware arena reset | 5-10 |
+| exp2 (finish) | Close to +5% with struct layout | 1-3 |
+| exp3 (phase detection) | Autonomous detector + no-op dealloc | 8-12 |
 | exp4 (pressure) | 16GB/64GB tuning | 3-5 |
-| exp5 (generalize) | Jolt/Plonky3 + passive detection | 5-8 |
+| exp5 (cross-prover) | Jolt/Plonky3 validation | 5-8 |
 
-Total: ~15-25 iterations. Weekend with autoresearch agent.
+Total: ~20-30 iterations.
 
 ## The thesis
 
-glibc is a better *general-purpose* allocator than zk-alloc will ever be.
-We don't compete on general-purpose. We compete on **knowing when memory dies.**
+General allocators track every free individually: O(n) overhead for n frees.
+They must — they don't know when memory dies.
 
-Every general allocator pays O(n) overhead tracking n individual frees.
-zk-alloc pays O(1) per phase boundary — one pointer reset reclaims everything.
-For proving workloads with 50M allocs per proof and 4-5 phase boundaries,
-that's 50M × ~10ns = 500ms of overhead eliminated vs O(5) × ~1μs = 5μs.
-The asymptotic advantage is real and unbounded as proof sizes grow.
+zk-alloc detects when memory dies by reading the allocation pattern. Phase
+transitions are visible in the size distribution. At each transition, one
+pointer reset reclaims everything: O(1) per phase.
+
+For proving workloads with 50M allocs and 4-5 phases, that's:
+- glibc: 50M × ~10ns = **500ms** of free-tracking overhead
+- zk-alloc: 5 × ~1μs = **5μs** of phase-boundary overhead
+
+This advantage grows with proof size. No general allocator can match it
+because the information (phase structure) doesn't exist at the allocator
+interface — you have to infer it from behavior.
+
+No one has built this before. Not because it's impossible, but because no
+one looked at allocators from the proving workload's perspective.
