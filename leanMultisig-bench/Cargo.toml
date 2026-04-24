@@ -16,6 +16,10 @@ mt-koala-bear    = { path = "../leanMultisig/crates/backend/koala-bear" }
 utils            = { path = "../leanMultisig/crates/utils" }
 rayon            = "1"
 backtrace        = "0.3"
+zk-alloc         = { path = "../zk-alloc", optional = true }
+
+[features]
+zkalloc = ["dep:zk-alloc"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
