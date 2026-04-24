@@ -22,7 +22,9 @@ sudo apt-get install -y \
     numactl
 
 echo "=== Installing Rust ==="
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+if ! command -v rustup &>/dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+fi
 source "$HOME/.cargo/env"
 rustup toolchain install nightly
 rustup component add rustfmt clippy
@@ -38,42 +40,52 @@ sudo apt-get install -y gh
 
 echo "=== Cloning repos ==="
 cd ~
-git clone https://github.com/Barnadrot/zk-autoresearch
+[ -d ~/zk-autoresearch ] || git clone https://github.com/Barnadrot/zk-autoresearch
 cd ~/zk-autoresearch
 git checkout zk-alloc-exp
-git clone https://github.com/leanEthereum/leanMultisig
-git clone --depth 1 https://github.com/microsoft/mimalloc
-git clone --depth 1 https://github.com/microsoft/snmalloc
+[ -d ~/zk-autoresearch/leanMultisig/.git ] || git clone https://github.com/leanEthereum/leanMultisig
+[ -d ~/zk-autoresearch/mimalloc ] || git clone --depth 1 https://github.com/microsoft/mimalloc
+[ -d ~/zk-autoresearch/snmalloc ] || git clone --depth 1 https://github.com/microsoft/snmalloc
 
 echo "=== Downloading glibc malloc source (reference) ==="
-mkdir -p ~/zk-autoresearch/glibc-malloc
-curl -sL "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=malloc/malloc.c;hb=HEAD" -o ~/zk-autoresearch/glibc-malloc/malloc.c
-curl -sL "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=malloc/arena.c;hb=HEAD" -o ~/zk-autoresearch/glibc-malloc/arena.c
-curl -sL "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=malloc/malloc-internal.h;hb=HEAD" -o ~/zk-autoresearch/glibc-malloc/malloc-internal.h
+if [ ! -f ~/zk-autoresearch/glibc-malloc/malloc.c ]; then
+    mkdir -p ~/zk-autoresearch/glibc-malloc
+    curl -sL "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=malloc/malloc.c;hb=HEAD" -o ~/zk-autoresearch/glibc-malloc/malloc.c
+    curl -sL "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=malloc/arena.c;hb=HEAD" -o ~/zk-autoresearch/glibc-malloc/arena.c
+    curl -sL "https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=malloc/malloc-internal.h;hb=HEAD" -o ~/zk-autoresearch/glibc-malloc/malloc-internal.h
+fi
 
 echo "=== Cloning SP1 (reference: guest bump allocator) ==="
-git clone --depth 1 --filter=blob:none --sparse https://github.com/succinctlabs/sp1.git
-cd ~/zk-autoresearch/sp1
-git sparse-checkout set crates/zkvm/entrypoint/src/allocators
-cd ~/zk-autoresearch
+if [ ! -d ~/zk-autoresearch/sp1 ]; then
+    git clone --depth 1 --filter=blob:none --sparse https://github.com/succinctlabs/sp1.git
+    cd ~/zk-autoresearch/sp1
+    git sparse-checkout set crates/zkvm/entrypoint/src/allocators
+    cd ~/zk-autoresearch
+fi
 
 echo "=== Setting up leanMultisig ==="
 cd ~/zk-autoresearch/leanMultisig
-git remote add myfork https://github.com/Barnadrot/leanMultisig.git
+git remote add myfork https://github.com/Barnadrot/leanMultisig.git 2>/dev/null || true
 git fetch myfork
-git checkout -b zk-alloc-integration myfork/zk-alloc-integration
+git checkout zk-alloc-integration 2>/dev/null || git checkout -b zk-alloc-integration myfork/zk-alloc-integration
 
 echo "=== Cloning zk-alloc ==="
-git clone https://github.com/Barnadrot/zk-alloc.git ~/zk-autoresearch/leanMultisig/zk-alloc
+[ -d ~/zk-autoresearch/leanMultisig/zk-alloc ] || git clone https://github.com/Barnadrot/zk-alloc.git ~/zk-autoresearch/leanMultisig/zk-alloc
 
 echo "=== Setting environment variables ==="
-cat >> ~/.bashrc << 'EOF'
-
+ZK_MARKER="# zk-autoresearch"
+ZK_ENV_BLOCK='
 # zk-autoresearch
 export RUSTFLAGS="-C target-cpu=native"
+export PATH="$HOME/.local/bin:$PATH"
+. "$HOME/.cargo/env" 2>/dev/null || true'
+
+# Add to .profile (login shells) and .bashrc (interactive shells), skip if already present
+grep -qF "$ZK_MARKER" ~/.profile 2>/dev/null || echo "$ZK_ENV_BLOCK" >> ~/.profile
+grep -qF "$ZK_MARKER" ~/.bashrc 2>/dev/null || echo "$ZK_ENV_BLOCK" >> ~/.bashrc
+# Source it now for the remainder of this script
+export RUSTFLAGS="-C target-cpu=native"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-EOF
-source ~/.bashrc
 
 echo "=== Setting git identity ==="
 git config --global user.name "Barnadrot"
@@ -120,10 +132,10 @@ sudo sysctl -w kernel.perf_event_paranoid=-1
 echo ""
 echo "=== Done ==="
 echo ""
-echo "Next steps:"
-echo "  1. claude login"
-echo "  2. gh auth login"
-echo "  3. source ~/.bashrc"
+echo "Next steps (new shell or re-login picks up PATH automatically):"
+echo "  1. Log out and back in (or: source ~/.profile)"
+echo "  2. claude login"
+echo "  3. gh auth login"
 echo ""
 echo "Benchmarking:"
 echo "  # Criterion glibc vs zk-alloc:"

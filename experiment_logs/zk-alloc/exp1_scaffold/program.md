@@ -20,10 +20,10 @@ cd ~/zk-autoresearch/leanMultisig/zk-alloc && cargo test
 
 # Integration test (leanMultisig with zk-alloc)
 cd ~/zk-autoresearch/leanMultisig && git checkout zk-alloc-integration
-cargo test --release --features zk-alloc
+cargo test --release --features zkalloc
 
 # Full workspace test (56 tests, 3 end-to-end proofs)
-cargo test --release --workspace --features zk-alloc
+cargo test --release --workspace --features zkalloc
 ```
 
 ## Known bugs (fix in order)
@@ -86,13 +86,23 @@ the last valid index. `pool_class(2_097_153)` = 12, which overflows the
 **Fix:** Clamp to NUM_SIZE_CLASSES - 1, or route oversized "medium" allocs
 to the large path.
 
-## Iteration strategy
+## Experiment loop
 
-Each iteration fixes one bug or a closely related group. After each fix:
-1. `cargo test` in zk-alloc (7 unit tests must pass)
-2. Add new tests targeting the specific bug
-3. Once all bugs fixed: `cargo test --release --workspace --features zk-alloc`
-   on leanMultisig
+1. Read `program.md` and `iters.tsv`.
+2. Fix one bug (or closely related group). Add tests targeting it.
+3. Run `cargo test` in zk-alloc — all unit tests must pass.
+4. Once all bugs fixed: `cargo test --release --features zkalloc` on leanMultisig.
+5. **Log to `iters.tsv` after every iteration.**
+
+## Logging
+
+Append one row per iteration to `iters.tsv`:
+```
+iter	status	files_changed	rationale
+```
+Status: `pass` (tests pass), `fail` (tests fail, describe why), `infra_fail`
+
+## Iteration strategy
 
 Expected iteration sequence:
 1. Pointer ownership tracking (address-range check on dealloc)
@@ -106,7 +116,7 @@ Expected iteration sequence:
 
 ## Gate criteria
 
-**PASS:** All 56 leanMultisig workspace tests pass with `--features zk-alloc`.
+**PASS:** All 56 leanMultisig workspace tests pass with `--features zkalloc`.
 All 3 end-to-end proofs (test_xmss_signature, test_recursive_aggregation,
 test_aggregation) produce correct results.
 

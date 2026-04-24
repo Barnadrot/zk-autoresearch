@@ -40,6 +40,22 @@ improvement.
 
 **FAIL:** > 1% regression with p < 0.05.
 
+## Experiment loop
+
+1. Read `program.md` and `iters.tsv`.
+2. Profile or apply one targeted fix.
+3. Run correctness tests: `cd ~/zk-autoresearch/leanMultisig && cargo test --release --features zkalloc`
+4. Run benchmark: `N=3 bash ../leanMultisig-bench/eval_paired.sh`
+5. **Log to `iters.tsv` after every iteration.**
+
+## Logging
+
+Append one row per iteration to `iters.tsv`:
+```
+iter	criterion_pct	p	status	files_changed	rationale
+```
+Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
+
 ## Iteration strategy
 
 Profile with heaptrack to find where zk-alloc is slower than glibc:

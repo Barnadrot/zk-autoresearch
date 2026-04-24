@@ -49,6 +49,22 @@ Same hardware, same CPU, same OS — only RAM available changes.
 | 16GB (cgroup) | baseline | -24% | -15% |
 | 64GB (native) | baseline | +3.6% | ±0% |
 
+## Experiment loop
+
+1. Read `program.md` and `iters.tsv`.
+2. Profile or apply one targeted optimization.
+3. Correctness: `cargo test --release --features zkalloc`
+4. Benchmark: run `eval_paired.sh` under BOTH 16GB cgroup and 64GB native.
+5. **Log to `iters.tsv` after every iteration.**
+
+## Logging
+
+Append one row per iteration to `iters.tsv`:
+```
+iter	criterion_16g_pct	criterion_64g_pct	p_16g	p_64g	status	files_changed	rationale
+```
+Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
+
 ## Iteration strategy
 
 The pressure adaptor (`src/pressure.rs`) reads `/proc/meminfo` and adjusts

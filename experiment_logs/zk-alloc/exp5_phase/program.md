@@ -42,6 +42,22 @@ The proving pipeline has these phases (identified from tracing + heaptrack):
    polynomial buffers), systematic access patterns.
 5. **Proof serialization** — small allocs, postcard encoding. Negligible.
 
+## Experiment loop
+
+1. Read `program.md` and `iters.tsv`.
+2. Profile or apply one targeted optimization.
+3. Correctness: `cargo test --release --features zkalloc`
+4. Benchmark: `N=3 bash ../leanMultisig-bench/eval_paired.sh`
+5. **Log to `iters.tsv` after every iteration.**
+
+## Logging
+
+Append one row per iteration to `iters.tsv`:
+```
+iter	criterion_pct	p	status	files_changed	rationale
+```
+Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
+
 ## Iteration strategy
 
 1. **Identify phase boundaries.** Add tracing instrumentation to leanMultisig

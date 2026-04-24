@@ -51,6 +51,22 @@ These are the sites where glibc arena locks cause measurable slowdown:
 3. **Matrix row slices** — 1.62M allocs in Merkle tree construction, all
    parallel.
 
+## Experiment loop
+
+1. Read `program.md` and `iters.tsv`.
+2. Profile or apply one targeted optimization.
+3. Correctness: `cargo test --release --features zkalloc`
+4. Benchmark: `N=3 bash ../leanMultisig-bench/eval_paired.sh`
+5. **Log to `iters.tsv` after every iteration.**
+
+## Logging
+
+Append one row per iteration to `iters.tsv`:
+```
+iter	criterion_pct	p	status	files_changed	rationale
+```
+Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
+
 ## Iteration strategy
 
 1. **Optimize bump allocator hot path.** The bump pointer increment is the
