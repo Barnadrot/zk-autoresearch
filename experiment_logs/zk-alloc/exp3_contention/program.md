@@ -173,6 +173,49 @@ sudo cgexec -g memory:bench16g bash ../experiment_logs/leanMultisig/shared/eval_
 - Do not optimize for 64GB. Only 64GB native this experiment.
 - Do not add complexity that grows the crate beyond ~1500 lines.
 
+## Alternative approaches (if current path stalls)
+
+If mid-proof phase boundaries keep hitting cross-thread reference issues,
+consider these alternatives in order of feasibility:
+
+### E. Between-proof compaction (safest first step)
+Compact arenas at the START of each proof, reclaiming memory from the
+previous proof iteration. Everything from proof N is dead before N+1.
+Pros: trivially safe, zero intra-proof overhead, RSS drops from ~54GB to ~5GB.
+Cons: RSS still peaks at 54GB during each proof, no intra-proof reclamation.
+
+### F. Slab age tracking
+Track when each slab last had a new allocation. At phase boundary,
+MADV_DONTNEED slabs that haven't been touched since the previous phase.
+Pros: O(1) per boundary, no per-alloc overhead, conservative.
+Cons: age is heuristic not guarantee, needs tuning per workload.
+
+### A. Shared arena with atomic bump
+One arena for all threads, bump via fetch_add. No cross-thread problem.
+Pros: eliminates ownership issue, ~5ns per alloc, simple implementation.
+Cons: false sharing on cursor cache line, destroys per-thread locality,
+scales badly at high core counts. exp2 showed atomics didn't help but
+that was contention batching, not simple bump — worth retesting.
+
+### D. Generation-based arenas
+Each phase gets a new arena generation. Old generations become read-only.
+Compact a generation when refcount hits zero.
+Pros: architecturally clean, provably safe, natural fit for ZK phases.
+Cons: per-alloc refcounting has overhead (exp2 showed +4.8% from counting),
+complexity grows fast, risk of becoming a mini GC.
+
+### B. Copy-on-collect
+When Rayon collects worker results, deep-copy into main thread's arena.
+Workers become safely compactable after each parallel section.
+Pros: multiple compaction points per proof, clean lifetime separation.
+Cons: requires modifying leanMultisig code (breaks drop-in goal), fragile
+across codebase changes, must instrument all collect sites.
+
+### C. Escape-aware routing (research-grade)
+Route phase-local allocs to bump, escaping allocs to System. Impossible to
+know at alloc time whether a pointer escapes — would need compiler
+integration or manual annotation. Not feasible for a weekend.
+
 ## NEVER STOP
 
 Run autonomously until stopped or stop criterion hit.
