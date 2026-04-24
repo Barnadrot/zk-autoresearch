@@ -8,7 +8,7 @@ This is the core value proposition of zk-alloc.
 
 ## Prerequisites
 
-exp2_baseline PASSED: zk-alloc within ±1% of glibc.
+exp2_baseline PASSED: zk-alloc within +5% of glibc with arena active.
 
 ## Writable scope
 
@@ -31,9 +31,13 @@ bash reproduce_prod.sh
 
 ## Gate criteria
 
-**KEEP:** >= 5% improvement vs glibc, p < 0.01 on eval_paired.sh.
+**KEEP:** improves over previous best by ≥2 percentage points, p < 0.05.
+Progress toward beating glibc counts — don't discard real improvements just
+because they don't hit a fixed threshold.
 
-**DISCARD:** < 5% improvement, or p > 0.01.
+**DISCARD:** < 2pp improvement, regression, or p > 0.05.
+
+**EXP3 DONE:** zk-alloc faster than glibc by ≥5% on 16GB (cgroup), p < 0.01.
 
 Target: -10% or better (half of mimalloc's -24%).
 

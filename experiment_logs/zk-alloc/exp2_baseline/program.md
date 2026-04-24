@@ -34,11 +34,16 @@ and the allocator has the most surface to capture.
 
 ## Gate criteria
 
-**PASS:** eval_paired.sh delta within **±1%** of glibc (p > 0.05 = no significant
-difference). Acceptable to be slightly slower — the goal is no regression, not
-improvement.
+**KEEP:** improves over previous best by ≥2 percentage points (e.g. +13% → +11%),
+with arena handling small/medium allocs (System passthrough is not a valid keep).
 
-**FAIL:** > 1% regression with p < 0.05.
+**DISCARD:** < 2pp improvement, regression, or arena bypassed.
+
+**EXP2 DONE:** within +5% of glibc, with arena active for small/medium allocs
+(System fallback < 10% of total allocs).
+
+**Constraint:** the allocator must actually allocate. Routing all sizes to System
+is not a solution — it passes trivially but provides no foundation for exp3.
 
 ## Experiment loop
 

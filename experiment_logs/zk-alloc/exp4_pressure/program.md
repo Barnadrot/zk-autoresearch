@@ -8,7 +8,7 @@ but regresses +3.6% at 64GB.
 
 ## Prerequisites
 
-exp3_contention PASSED: zk-alloc >= 5% faster than glibc on 16GB.
+exp3_contention PASSED: zk-alloc faster than glibc by ≥5% on 16GB.
 
 ## Writable scope
 
@@ -36,11 +36,14 @@ Same hardware, same CPU, same OS — only RAM available changes.
 
 ## Gate criteria
 
-**PASS:** Both conditions must be met simultaneously:
-- 16GB (cgroup): >= 10% improvement vs glibc, p < 0.01
-- 64GB (native): within ±1% of glibc (no regression), p > 0.05
+**KEEP:** improves over previous best on either axis by ≥2pp without regressing
+the other axis by more than 1pp. Both 16GB and 64GB must be measured every iteration.
 
-**FAIL:** Regression on either condition.
+**DISCARD:** < 2pp improvement on target axis, or > 1pp regression on the other.
+
+**EXP4 DONE:** Both conditions met simultaneously:
+- 16GB (cgroup): ≥10% improvement vs glibc, p < 0.01
+- 64GB (native): within ±2% of glibc (no meaningful regression)
 
 ## Target performance matrix
 

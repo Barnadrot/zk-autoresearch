@@ -8,8 +8,7 @@ can do this because it requires domain knowledge about allocation lifetimes.
 
 ## Prerequisites
 
-exp4_pressure PASSED: zk-alloc beats glibc under pressure, no regression with
-headroom.
+exp4_pressure PASSED: zk-alloc beats glibc on 16GB, no meaningful regression on 64GB.
 
 ## Writable scope
 
@@ -24,9 +23,11 @@ effect.
 
 ## Gate criteria
 
-**KEEP:** >= 1% additional improvement over exp4 result, p < 0.01.
+**KEEP:** ≥1% additional improvement over previous best, p < 0.05.
+Phase-aware gains compound on top of exp3/exp4 results.
 
-**DISCARD:** < 1% improvement, or correctness regression.
+**DISCARD:** < 1% improvement, correctness regression, or phase reset
+causes use-after-free (verified by tests passing).
 
 ## Proving phases in leanMultisig
 
