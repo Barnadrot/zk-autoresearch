@@ -19,7 +19,8 @@ backtrace        = "0.3"
 zk-alloc         = { path = "../leanMultisig/zk-alloc", optional = true }
 
 [features]
-zkalloc = ["dep:zk-alloc"]
+zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
+zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -34,6 +35,10 @@ harness = false
 
 [[bench]]
 name = "xmss_leaf_glibc"
+harness = false
+
+[[bench]]
+name = "xmss_leaf_preload"
 harness = false
 
 [profile.release]
