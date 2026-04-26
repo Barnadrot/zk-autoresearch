@@ -1,0 +1,8 @@
+iter	change	bench-v2_16c_avg23	bench-v2_8c_avg23	vs_glibc_16c	vs_glibc_8c	notes
+0	baseline v0.1 (4GB slab, no MAP_NORESERVE)	OOM	OOM	—	—	mmap(64GB) rejected by overcommit_memory=0 on 61GB machine
+1	MAP_NORESERVE + 6GB slab	2.469s	—	-21.4%	—	root cause was MAP_NORESERVE not slab size
+1b	MAP_NORESERVE + 4GB slab	2.753s	—	-12.3%	—	4GB works but overflow to glibc costs ~10pp
+1c	MAP_NORESERVE + 8GB slab	2.290s	2.360s	-27.1%	-29.1%	no further gain at 10GB. 8GB captures full workload
+1d	MAP_NORESERVE + 10GB slab	2.270s	—	-27.7%	—	within noise of 8GB, confirming saturation
+—	glibc baseline	3.140s	3.328s	—	—	bench-v2 codebase, 64GB unconstrained
+—	mimalloc baseline	3.049s	3.313s	-2.9%	-0.5%	bench-v2 codebase, 64GB unconstrained
