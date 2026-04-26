@@ -19,8 +19,10 @@ backtrace        = "0.3"
 zk-alloc         = { path = "../leanMultisig/zk-alloc", optional = true }
 
 [features]
-zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
-zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
+# These features require leanMultisig branches that have zkalloc support.
+# Comment out when benchmarking against upstream branches (bench-v1, bench-v2).
+# zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
+# zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

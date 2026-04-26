@@ -1,0 +1,13 @@
+{
+    "run_id": "20260426_184146_glibc_64gb_16c_production_3x_current",
+    "timestamp": "20260426_184146",
+    "allocator": "glibc",
+    "memory_limit_gb": 64,
+    "core_count": 16,
+    "workload": "production_3x",
+    "commit_tag": "current",
+    "machine": "Ubuntu-noble-latest-amd64-base",
+    "cpu": "AMD Ryzen 7 PRO 8700GE w/ Radeon 780M Graphics",
+    "total_ram_gb": 61,
+    "kernel": "6.8.0-100-generic"
+}

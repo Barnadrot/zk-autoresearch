@@ -1,0 +1,6 @@
+prove_loop: no zk_alloc FFI — running without phase boundaries
+prove_loop: 3 proofs, 1400 sigs, log_inv_rate=1
+setup: 3423ms, rss: 523MB
+proof 1/3: 3.130s, rss: 1196MB
+proof 2/3: 3.249s, rss: 1137MB
+proof 3/3: 3.166s, rss: 1282MB
