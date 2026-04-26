@@ -1,0 +1,6 @@
+prove_loop: zk_alloc FFI detected — phase boundaries enabled
+prove_loop: 3 proofs, 1400 sigs, log_inv_rate=1
+setup: 3604ms, rss: 953MB
+memory allocation of 2004800 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+./run.sh: line 11: 1247943 Aborted                 "$@"
