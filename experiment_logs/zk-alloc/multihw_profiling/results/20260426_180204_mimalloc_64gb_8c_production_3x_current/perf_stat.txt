@@ -1,0 +1,22 @@
+prove_loop: no zk_alloc FFI — running without phase boundaries
+prove_loop: 1 proofs, 1400 sigs, log_inv_rate=1
+setup: 3420ms, rss: 518MB
+proof 1/1: 3.937s, rss: 1629MB
+
+ Performance counter stats for '/home/ubuntu/zk-autoresearch/leanMultisig-bench/target/release/prove_loop 1':
+
+         25,771.25 msec task-clock                       #    3.437 CPUs utilized             
+   113,990,303,866      cycles                           #    4.423 GHz                       
+   172,285,353,516      instructions                     #    1.51  insn per cycle            
+     7,638,000,325      cache-references                 #  296.377 M/sec                     
+       272,940,879      cache-misses                     #    3.57% of all cache refs         
+         2,574,520      page-faults                      #   99.899 K/sec                     
+       454,004,877      branch-misses                                                         
+            12,856      context-switches                 #  498.850 /sec                      
+
+       7.497807621 seconds time elapsed
+
+      20.682939000 seconds user
+       5.215428000 seconds sys
+
+

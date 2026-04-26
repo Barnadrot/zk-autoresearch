@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DRY_RUN="${DRY_RUN:-0}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
 BENCH_DIR="$HOME/zk-autoresearch/leanMultisig-bench"
 ZKALLOC_DIR="$HOME/zk-autoresearch/leanMultisig/zk-alloc"
+
+run_cmd() {
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "  DRY-RUN: $*"
+        return 0
+    fi
+    "$@"
+}
 
 # --- Configuration (override via env or edit) ---
 ALLOCATORS="${ALLOCATORS:-glibc zkalloc mimalloc}"
@@ -19,10 +29,15 @@ preflight() {
     echo "=== Pre-flight checks ==="
 
     if swapon --show | grep -q .; then
-        echo "FAIL: Swap is on. Run: sudo swapoff -a"
-        exit 1
+        if [ "$DRY_RUN" = "1" ] || [ "$SKIP_SWAP_CHECK" = "1" ]; then
+            echo "  WARN: Swap is on — memory-limited runs may be inaccurate"
+        else
+            echo "FAIL: Swap is on. Run: sudo swapoff -a (or SKIP_SWAP_CHECK=1 for unconstrained runs)"
+            exit 1
+        fi
+    else
+        echo "  swap: off"
     fi
-    echo "  swap: off"
 
     if ! command -v perf &>/dev/null; then
         echo "WARN: perf not found — perf_stat collection will be skipped"
@@ -112,23 +127,27 @@ METAEOF
 
     local preload
     preload="$(preload_for "$alloc")"
-    local preload_env=""
-    [ -n "$preload" ] && preload_env="LD_PRELOAD=$preload"
 
-    local taskset_cmd=""
-    if [ "$cores" -lt "$(nproc)" ]; then
-        local max_cpu=$((cores - 1))
-        taskset_cmd="taskset -c 0-${max_cpu}"
+    local -a cmd_prefix=()
+    local mem_bytes=$((mem_gb * 1024 * 1024 * 1024))
+    local total_ram_gb
+    total_ram_gb=$(free -g | awk '/Mem:/{print $2}')
+    if [ "$mem_gb" -lt "$total_ram_gb" ]; then
+        cmd_prefix+=(sudo systemd-run --scope -p "MemoryMax=${mem_bytes}" --quiet --)
     fi
 
-    local mem_bytes=$((mem_gb * 1024 * 1024 * 1024))
+    if [ "$cores" -lt "$(nproc)" ]; then
+        local max_cpu=$((cores - 1))
+        cmd_prefix+=(taskset -c "0-${max_cpu}")
+    fi
+
+    if [ -n "$preload" ]; then
+        cmd_prefix+=(env "LD_PRELOAD=$preload")
+    fi
 
     if [ "$workload" = "production_3x" ]; then
-        # prove_loop with systemd-run memory limit
         echo "  Running prove_loop ${PROOFS} proofs..."
-        sudo systemd-run --scope -p MemoryMax=${mem_bytes} --quiet \
-            env $preload_env \
-            $taskset_cmd \
+        run_cmd "${cmd_prefix[@]}" \
             "$BENCH_DIR/target/release/prove_loop" "$PROOFS" \
             > "$run_dir/prove_loop.csv" \
             2> "$run_dir/prove_loop.log" || {
@@ -136,13 +155,10 @@ METAEOF
                 return 0
             }
 
-        # perf stat run (separate, 1 proof for perf data)
         if command -v perf &>/dev/null; then
             echo "  Running perf stat (1 proof)..."
-            sudo systemd-run --scope -p MemoryMax=${mem_bytes} --quiet \
+            run_cmd "${cmd_prefix[@]}" \
                 perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,page-faults,branch-misses,context-switches \
-                env $preload_env \
-                $taskset_cmd \
                 "$BENCH_DIR/target/release/prove_loop" 1 \
                 > /dev/null \
                 2> "$run_dir/perf_stat.txt" || true
@@ -150,9 +166,7 @@ METAEOF
 
     elif [ "$workload" = "criterion_1400" ]; then
         echo "  Running Criterion (sample_size=$SAMPLE_SIZE)..."
-        sudo systemd-run --scope -p MemoryMax=${mem_bytes} --quiet \
-            env $preload_env \
-            $taskset_cmd \
+        run_cmd "${cmd_prefix[@]}" \
             cargo bench --manifest-path "$BENCH_DIR/Cargo.toml" \
                 --bench xmss_leaf_glibc \
                 -- --sample-size "$SAMPLE_SIZE" --output-format verbose \
