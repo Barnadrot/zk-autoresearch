@@ -41,6 +41,10 @@ harness = false
 name = "xmss_leaf_preload"
 harness = false
 
+[[bin]]
+name = "prove_loop"
+path = "src/bin/prove_loop.rs"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
