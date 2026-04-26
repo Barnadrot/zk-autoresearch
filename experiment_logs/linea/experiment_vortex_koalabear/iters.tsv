@@ -17,3 +17,11 @@ iter	tier1_delta_pct	tier1_p	tier2_delta_pct	allocs_delta_pct	status	files_chang
 16	+1.97	-	+0.02	-63.42	keep	gnark-crypto/fft.go	Inline coset/CardinalityInv scaling for nbTasks<=1 — skip parallel.Execute closure. SIS allocs -85% to -93%, B/op -42%
 17	+0.43	-	-4.59	+0.00	keep	gnark-crypto/fft.go	2x unroll butterfly+twiddle in kerDIFNP_64/kerDITNP_64 for ILP across Montgomery multiply chains. SIS -3% to -5%
 18	-0.68	-	-1.67	+0.00	discard	gnark-crypto/fft.go	Extend 2x unroll to stage 4 (m=2) — diminishing returns, geomean -1.67% below threshold
+19	-0.63	-	+7.09	+0.00	discard	gnark-crypto/fft.go	Fuse stages 4+5 in kerDIFNP_64 — regression (+7% geomean, no_sis benchmarks drifted 20%, likely system noise + bad codegen)
+20	-0.33	-	-0.53	+0.00	discard	gnark-crypto/fft.go	Direct kernel dispatch from Domain.FFT for n=64/128 — below threshold, difFFT dispatch already fast
+21	+0.35	-	-0.39	+0.00	discard	gnark-crypto/fft.go	Preload twiddles into locals + fully unroll multiply — Go compiler already eliminates bounds checks
+22	+0.13	-	-2.25	-18.33	keep	gnark-crypto/sis/sis.go	Eliminate function pointer in LimbIterator.NextLimb — branch on limbSize instead. SIS -4%, allocs -33%, B/op -7%
+23	+0.38	-	-0.38	+0.00	discard	gnark-crypto/sis/sis.go,element.go	Skip byte buffer in LimbIterator via ToRegularUint32+bitshift — montReduce dominates, byte overhead is small
+24	+0.04	-	-0.77	+0.00	discard	gnark-crypto/sis/sis.go	Pool k buffer in SIS Hash via sync.Pool — SIS B/op -36% but ns/op geomean -0.77% (below threshold), allocs unchanged
+25	+0.25	-	-3.33	-29.25	keep	gnark-crypto/sis/sis.go	Embed vector in LimbIterator — eliminate interface+heap escape. SIS -6 to -8%, allocs -50%, B/op -5%
+26	+0.55	-	+5.28	+0.00	discard	gnark-crypto/sis/sis.go,vector*.go	Fused MulAddAssign in SIS InnerHash — regression, Go scalar loop loses to separate AVX-512 Mul+Add
