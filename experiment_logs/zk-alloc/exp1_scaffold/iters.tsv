@@ -1,0 +1,9 @@
+iter	status	files_changed	rationale
+1	kept	arena.rs	Bug 1: Added pointer ownership tracking via address-range checks on dealloc; System-allocated pointers now forwarded to System.dealloc
+2	kept	arena.rs	Bug 3: Implemented arena slab chaining with fixed-size array [Slab; 32]; slabs double in size (16MB→32MB→64MB…)
+3	kept	arena.rs	Bug 2: Cross-thread dealloc safety via global SlabRegistry; foreign pointers forwarded to System.dealloc
+4	kept	phase.rs	Bug 4: Removed bump reset from phase_boundary; only compact_pools + update_policy remain
+5	kept	arena.rs,lib.rs	Bug 5: Clamped pool_class to num_pool_classes-1; fixed realloc to always reallocate when new_size > old_size
+6	kept	arena.rs,lib.rs,reentrant.rs	Fixed SIGSEGV: replaced Vec/thread_local! with fixed arrays + raw pthread TLS to eliminate recursive allocation during init; added reentrancy guard falling back to System
+7	kept	arena.rs	Disabled pool free-list to fix use-after-free; alloc_pool always bump-allocates, dealloc is no-op (correct but leaky — appropriate for correctness-only exp1)
+8	pass	correctness.rs	Final verification: 12/12 zk-alloc tests, 3/3 leanMultisig end-to-end proofs pass with --features zkalloc

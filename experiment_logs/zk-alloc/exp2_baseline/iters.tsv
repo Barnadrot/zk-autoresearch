@@ -1,0 +1,13 @@
+iter	criterion_pct	p	status	files_changed	rationale
+1	+47%	<0.05	discard_wallclock	arena.rs,lib.rs	arena bump+pool with mmap for large; OOM from no reclamation, then per-slab live counts added but mmap/munmap overhead dominated
+2	+13%	<0.05	keep	lib.rs,large.rs	route large (>2MB) to System.alloc; eliminated mmap/munmap overhead — 34pp improvement over iter 1
+3	+13%	<0.05	profile	-	perf stat: total CPU identical, parallelism 8.1x vs glibc 9.5x; atomic SLAB_REMOTE_FREES contention reduces parallelism
+4	+13%	<0.05	discard	arena.rs	per-thread dealloc batching (flush every 256); no improvement from iter 2 — 36KB WorkerArena struct cache pollution
+5	-0.38%	0.28	discard	lib.rs	route all sizes to System passthrough; meets gate but no actual arena — just a wrapper on glibc
+6	+11.3%	<0.05	keep	arena.rs	shrink WorkerArena to 592 bytes (was 36KB); hot fields in first 64 bytes; 1.7pp improvement over iter 2
+7	+11.5%	<0.05	discard	arena.rs	add non-atomic dealloc cache_count (batch flush every 32); no improvement over iter 6 — atomic frequency is not the bottleneck
+
+8	+11.3%	<0.05	profile	-	perf profiling: allocator code = 0.68% CPU, in-place realloc 83.6% hit rate, RSS 38.5GB vs glibc 5.7GB; root cause is RSS/parallelism loss (8.2x vs 9.5x CPUs)
+9	+22%	<0.05	discard	arena.rs	MADV_DONTNEED on dead slabs; page fault storms on reuse caused severe regression (4.63s)
+10	+22%	<0.05	discard	config.rs	medium_threshold=512 (route medium+ to System); RSS dropped to 18GB but 4.70s lost in-place realloc benefit
+11	+7.2%	<0.05	keep	arena.rs	exact-match free list for power-of-two sizes (8-512B); 4.1pp improvement from memory reuse reducing RSS and slab growth

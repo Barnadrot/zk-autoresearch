@@ -1,0 +1,146 @@
+# exp4_pressure: solve the mimalloc 16GB/64GB tradeoff
+
+## Objective
+
+Make zk-alloc work well under BOTH memory pressure (16GB) and headroom (64GB).
+This is the problem no existing allocator solves — mimalloc gives -24% at 16GB
+but regresses +3.6% at 64GB.
+
+## Prerequisites
+
+exp3_contention PASSED: zk-alloc faster than glibc by ≥5% on 16GB.
+
+## Writable scope
+
+**Only files under `leanMultisig/zk-alloc/`**.
+
+## Commit point
+
+**origin/main** (pre-exp6).
+
+## Hardware requirement
+
+**Hetzner AX42-U bare metal** (64GB DDR5). Use cgroups to simulate 16GB:
+
+```bash
+# 16GB memory-limited environment
+sudo cgcreate -g memory:bench16g
+echo 16G | sudo tee /sys/fs/cgroup/bench16g/memory.max
+sudo cgexec -g memory:bench16g bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
+
+# 64GB native (no cgroup)
+bash ../experiment_logs/leanMultisig/shared/eval_paired.sh
+```
+
+Same hardware, same CPU, same OS — only RAM available changes.
+
+## Gate criteria
+
+**KEEP:** improves over previous best on either axis by ≥2pp without regressing
+the other axis by more than 1pp. Both 16GB and 64GB must be measured every iteration.
+
+**DISCARD:** < 2pp improvement on target axis, or > 1pp regression on the other.
+
+**EXP4 DONE:** Both conditions met simultaneously:
+- 16GB (cgroup): ≥10% improvement vs glibc, p < 0.01
+- 64GB (native): within ±2% of glibc (no meaningful regression)
+
+## Target performance matrix
+
+| Condition | glibc | mimalloc | zk-alloc target |
+|-----------|-------|----------|-----------------|
+| 16GB (cgroup) | baseline | -24% | -15% |
+| 64GB (native) | baseline | +3.6% | ±0% |
+
+## Experiment loop
+
+1. Read `program.md` and `iters.tsv`.
+2. Profile or apply one targeted optimization.
+3. Correctness: `cargo test --release --features zkalloc`
+4. Benchmark: run `../experiment_logs/leanMultisig/shared/eval_paired.sh` under BOTH 16GB cgroup and 64GB native.
+5. **Log to `iters.tsv` after every iteration.**
+
+## Logging
+
+Append one row per iteration to `iters.tsv`:
+```
+iter	criterion_16g_pct	criterion_64g_pct	p_16g	p_64g	status	files_changed	rationale
+```
+Status: `keep`, `discard_wallclock`, `profile`, `infra_fail`
+
+## Iteration strategy
+
+The pressure adaptor (`src/pressure.rs`) reads `/proc/meminfo` and adjusts
+retention policy. Iterations tune the policy thresholds and mechanisms:
+
+1. **Retention policy thresholds.** Current: Eager (<50%), Moderate (50-80%),
+   Aggressive (>80%). These may not be right. Profile actual RSS/MemAvailable
+   ratio during proving on both 16GB and 64GB.
+
+2. **Page return strategy under Eager.** When RSS is low relative to available
+   RAM, return pages aggressively:
+   - `madvise(MADV_DONTNEED)` — lazy, kernel reclaims on demand
+   - `munmap` + re-mmap — immediate, but syscall overhead
+   - `madvise(MADV_FREE)` — lazy, kernel reclaims under pressure only
+   Profile which minimizes cache waste without syscall overhead.
+
+3. **Page retention under Aggressive.** When RSS is high:
+   - Keep arena slabs allocated across phase boundaries
+   - Use `madvise(MADV_WILLNEED)` to pre-fault pages
+   - Prefer `MAP_POPULATE` for new large allocs
+   This is what mimalloc does well — replicate it.
+
+4. **Poll frequency.** How often to re-read `/proc/meminfo`?
+   - Every phase boundary (cheapest, but may miss pressure spikes)
+   - Every N large allocs (amortized)
+   - Never (detect at startup, cache the result)
+   Start with startup-only detection (simplest). If the workload's RSS changes
+   significantly during a proof, add periodic polling.
+
+5. **Huge page policy.** THP via `madvise(MADV_HUGEPAGE)` may help under
+   pressure (fewer TLB misses for large buffers) but hurt with headroom
+   (huge page allocation can stall). Make it pressure-dependent.
+
+Expected iterations: 5–8.
+
+## Diagnostic tools
+
+### Pressure profiling
+
+```bash
+# RSS monitoring during proving (both memory conditions)
+watch -n1 'grep -E "VmRSS|VmHWM" /proc/$(pgrep -f xmss_leaf)/status'
+
+# Memory pressure — cgroup stats
+cat /sys/fs/cgroup/bench16g/memory.current
+cat /sys/fs/cgroup/bench16g/memory.stat | grep -E "pgfault|pgmajfault|oom"
+
+# TLB misses (huge page impact)
+perf stat -e dTLB-load-misses,dTLB-store-misses cargo bench ...
+
+# Syscall overhead (mmap/munmap/madvise frequency)
+perf trace -s cargo bench ... 2>&1 | grep -E "mmap|munmap|madvise"
+```
+
+### Performance profiling
+
+```bash
+# Must run on BOTH conditions every iteration
+# 16GB:
+sudo cgexec -g memory:bench16g perf stat cargo bench ...
+# 64GB:
+perf stat cargo bench ...
+```
+
+### Memory safety
+
+```bash
+RUSTFLAGS="-Z sanitizer=address" cargo +nightly test --features zkalloc --target x86_64-unknown-linux-gnu
+```
+
+## What not to do
+
+- Do not change the core arena/pool design (that's exp3's job).
+- Do not optimize for a single memory condition. Every change must be tested
+  on BOTH 16GB and 64GB.
+- Do not modify leanMultisig source code.
