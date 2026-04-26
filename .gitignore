@@ -33,3 +33,11 @@ sp1/
 
 # Build artifacts
 leanMultisig-bench/target/
+
+# Profiling data (large, ephemeral)
+leanMultisig-bench/perf*.data*
+leanMultisig-bench/heaptrack.*
+leanMultisig-bench/dhat.*
+
+# External repo clones
+jolt/
