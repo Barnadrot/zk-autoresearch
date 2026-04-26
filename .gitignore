@@ -1,5 +1,6 @@
-# Target repo — clone separately, add to gitignore before pushing
+# Target repos — clone separately, gitignore
 /Plonky3/
+/leanMultisig/
 
 # Python
 .venv/
@@ -23,3 +24,12 @@ STOP
 
 # Internal analysis — all report/ dirs are private
 experiment_logs/**/report/
+
+# Reference repos (cloned locally for study)
+glibc-malloc/
+mimalloc/
+snmalloc/
+sp1/
+
+# Build artifacts
+leanMultisig-bench/target/
