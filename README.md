@@ -4,24 +4,13 @@ Automated ZK prover optimization research. Profile-guided experiments across mul
 
 **Method:** For each target, an agent receives a focused program (constraints, eval gates, writable scope), proposes one change per iteration, and keeps it only if it passes correctness + performance gates. All iterations are logged.
 
-**Hardware:** Hetzner AX42-U (AMD Ryzen 7 PRO 8700GE, 8C/16T, 64GB DDR5) and Hetzner CCX33 (AMD EPYC, 8C, AVX512).
+**Hardware:** Hetzner AX42-U (AMD Ryzen 7 PRO 8700GE, 8C/16T, 64GB DDR5), Hetzner CCX33 (AMD EPYC, 8C, AVX512), and AWS c7a.2xlarge (AMD EPYC Genoa, 8 vCPU, AVX512).
 
 ---
 
 ## Results
 
-### leanMultisig
-
-Target: [leanMultisig](https://github.com/maceip/leanMultisig) — XMSS signature aggregation prover (Plonky3/WHIR-based, BabyBear field).
-
-| Experiment | Optimization | Result | Status |
-|-----------|-------------|--------|--------|
-| zk-alloc | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | PR open, under review |
-| sumcheck_deep | Sumcheck inner loop optimizations | 10 iterations, no kept improvements | Completed |
-| logup_sumcheck | LogUp + sumcheck optimizations | Multiple iterations | Completed |
-| logup_sumcheck_v2 | LogUp v2 refined approach | Multiple iterations | Completed |
-| poseidon_whir | Poseidon/WHIR optimization | Multiple iterations | Completed |
-| poseidon | Poseidon permutation optimization | Multiple iterations | Completed |
+*The tables below report optimization gains measured and merged in upstream repos. If you believe any measurement methodology could be improved, please [open an issue](../../issues) with a suggested adjustment.*
 
 ### Plonky3
 
@@ -29,18 +18,20 @@ Target: [Plonky3](https://github.com/Plonky3/Plonky3) — ZK proving framework. 
 
 | Experiment | Optimization | Result | Status |
 |-----------|-------------|--------|--------|
-| Round 1 (experiment_1) | AVX512 butterfly loop optimizations | **+2.1% to +10.4%** across sizes | 6 improvements in 74 iterations |
-| Round 2 (experiment_2_monty) | Montgomery field arithmetic (AVX512) | Multiple iterations | Completed |
+| [NTT butterfly (PR #1492)](https://github.com/Plonky3/Plonky3/pull/1492) | Butterfly micro-optimizations for Radix2DitParallel | **2.1%–10.4%** across sizes | **Merged** |
+| [Bench fix (PR #1575)](https://github.com/Plonky3/Plonky3/pull/1575) | `iter_batched` to exclude clone cost from DFT measurement | 42% of measured time was `Vec::clone`, not FFT | **Merged** |
+| [AVX-512 Montgomery + butterfly (PR #1555)](https://github.com/Plonky3/Plonky3/pull/1555) | `vpminud` reduction, drop `confuse_compiler`, manual unroll | **~3.3%** faster `coset_lde_batch` on Zen 4 | *Pending* |
 
-**Round 1 detail:**
+### leanMultisig
 
-| Transform Size | Baseline | Optimized | Gain |
-|----------------|----------|-----------|------|
-| 2^14 (~16K) | 58.7ms | 51.9ms | +10.4% |
-| 2^16 (~64K) | 177.2ms | 173.5ms | +2.5% |
-| 2^18 (~256K) | 691.8ms | 677.7ms | +2.1% |
-| 2^20 (~1M) | 2756ms | 2699ms | +2.1% |
-| 2^22 (~4M) | 11925ms | 11021ms | +8.2% |
+Target: [leanMultisig](https://github.com/maceip/leanMultisig) — XMSS signature aggregation prover (Plonky3/WHIR-based, BabyBear field).
+
+| Experiment | Optimization | Result | Status |
+|-----------|-------------|--------|--------|
+| [Inline quintic extension (PR #197)](https://github.com/leanEthereum/leanMultisig/pull/197) | `#[inline(always)]` on quintic field arithmetic | **-3.6%** on `xmss_leaf_1400sigs` | **Merged** |
+| [Degree-split AIR sumcheck (PR #202)](https://github.com/leanEthereum/leanMultisig/pull/202) | Skip partial-round constraints at high z-points | **-7.64%** on `fancy-aggregation` (Hetzner AX42-U) | **Merged** |
+| [Alloc contention + STIR tiling (PR #203)](https://github.com/leanEthereum/leanMultisig/pull/203) | Eliminate alloc contention, L2-tiled STIR equality | **-10.3%** on `fancy-aggregation` (3/4 changes merged as independent commits) | **Merged** |
+| [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanMultisig/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | *Pending* |
 
 ### Vortex / gnark-crypto
 
@@ -48,7 +39,10 @@ Target: [Linea Vortex prover](https://github.com/Consensys/linea-monorepo) (Koal
 
 | Experiment | Optimization | Result | Status |
 |-----------|-------------|--------|--------|
-| vortex_koalabear | Vortex prover optimizations | In progress | Active |
+| [LinearCombination + commitment hashing (PR #2898)](https://github.com/Consensys/linea-monorepo/pull/2898) | MulAccByElement, eliminate copy, MDHasher buffer reuse, Compressx16 SIMD | **-72%** LinearCombination, **-17%** commitment hashing, **-99.9%** allocs | **Merged** |
+| [FFT kernels + SIS LimbIterator (gnark-crypto PR #834)](https://github.com/Consensys/gnark-crypto/pull/834) | Unrolled FFT64/128 kernels, inline small-m stages, LimbIterator devirtualization | **-56%** SIS ns/op, **-98%** SIS allocs | *Pending* |
+
+*Vortex results are microbenchmark measurements on AWS c7a.2xlarge (8 vCPU, 16GB). Production infrastructure operates at significantly larger scale and was not available for end-to-end benchmarking; actual production impact may differ.*
 
 ---
 
