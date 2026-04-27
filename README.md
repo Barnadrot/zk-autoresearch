@@ -24,7 +24,7 @@ Target: [Plonky3](https://github.com/Plonky3/Plonky3) — ZK proving framework. 
 
 ### leanMultisig
 
-Target: [leanMultisig](https://github.com/maceip/leanMultisig) — XMSS signature aggregation prover (Plonky3/WHIR-based, BabyBear field).
+Target: [leanMultisig](https://github.com/leanEthereum/leanMultisig) — XMSS signature aggregation prover (Plonky3/WHIR-based, BabyBear field).
 
 | Experiment | Optimization | Result | Status |
 |-----------|-------------|--------|--------|
@@ -83,11 +83,13 @@ zk-autoresearch/
 | Directory | Repo | Role |
 |-----------|------|------|
 | `plonky3/` | Plonky3/Plonky3 | Optimization target |
-| `leanMultisig/` | maceip/leanMultisig | Optimization target |
+| `leanMultisig/` | leanEthereum/leanMultisig | Optimization target |
+| `linea-monorepo/` | Consensys/linea-monorepo | Optimization target |
+| `gnark-crypto/` | Consensys/gnark-crypto | Optimization target (upstream dependency) |
 | `jolt/` | a16z/jolt | Benchmarked (zk-alloc null result) |
 | `zk-alloc/` | Barnadrot/zk-alloc | Standalone arena allocator crate |
 | `mimalloc/`, `snmalloc/`, `glibc-malloc/` | Reference allocators | Study material |
-| `sp1/` | succinctlabs/sp1 | Future target |
+| `sp1/` | succinctlabs/sp1 | Study material |
 
 ---
 
@@ -103,7 +105,8 @@ Experiments run via Claude Code CLI in a tmux session. Each experiment has:
 tmux new-session -s autoresearch
 
 # Run Claude Code with the experiment program
-claude --prompt-file experiment_logs/<project>/<experiment>/program.md
+claude --dangerously-skip-permissions \
+  -p "Read experiment_logs/<project>/<experiment>/program.md and start the experiment"
 ```
 
 Monitor from another terminal:
@@ -122,4 +125,4 @@ git config core.hooksPath .githooks
 
 ### Critical: RUSTFLAGS for benchmarking
 
-Always set `RUSTFLAGS="-C target-cpu=native"` when benchmarking. Without it, no AVX-512 — measurements are silently 2x slower.
+Always set `RUSTFLAGS="-C target-cpu=native"` *(or your equivalent `-C target-cpu=` value)* when benchmarking. Without it, no AVX-512 — measurements are silently 2x slower.
