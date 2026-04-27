@@ -37,7 +37,7 @@ jobs:
           toolchain: "1.94.0"
 
       - name: Clone leanMultisig
-        run: git clone --depth 1 https://github.com/maceip/leanMultisig.git leanMultisig
+        run: git clone --depth 1 https://github.com/leanEthereum/leanMultisig.git leanMultisig
 
       - name: Check bench crate compiles
         run: cargo check --release
