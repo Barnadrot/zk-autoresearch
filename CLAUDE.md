@@ -39,8 +39,7 @@ scripts/
 └── watch.py                      Live experiment monitor (reads iters.tsv or experiments.jsonl)
 
 .github/workflows/
-├── ci.yml                        Build all harness crates on push/PR
-└── leanmultisig-bench.yml        prove_loop regression gate (self-hosted runner)
+└── ci.yml                        Build all harness crates on push/PR
 ```
 
 ## External Repos (gitignored, cloned locally)

@@ -20,8 +20,12 @@ jobs:
         run: git clone --depth 1 https://github.com/Plonky3/Plonky3.git plonky3
 
       - name: Build correctness checker
-        run: cargo build --profile bench
+        run: cargo check --profile bench
         working-directory: harness/plonky3/correctness
+
+      - name: Check bench crate compiles
+        run: cargo check --release
+        working-directory: harness/plonky3/bench
 
   build-leanmultisig-harness:
     runs-on: ubuntu-latest
