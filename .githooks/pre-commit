@@ -4,18 +4,18 @@
 
 set -euo pipefail
 
-CHECKER_DIR="$(git rev-parse --show-toplevel)/correctness-checker"
+CHECKER_DIR="$(git rev-parse --show-toplevel)/harness/plonky3/correctness"
 
 # Only run if checker source or Cargo.toml changed
-CHANGED=$(git diff --cached --name-only -- "correctness-checker/")
+CHANGED=$(git diff --cached --name-only -- "harness/plonky3/correctness/")
 if [ -z "$CHANGED" ]; then
     exit 0
 fi
 
 echo "[pre-commit] correctness-checker files changed — verifying build..."
 
-if [ ! -d "$(git rev-parse --show-toplevel)/Plonky3" ]; then
-    echo "[pre-commit] WARNING: Plonky3/ not found, skipping checker build check."
+if [ ! -d "$(git rev-parse --show-toplevel)/plonky3" ]; then
+    echo "[pre-commit] WARNING: plonky3/ not found, skipping checker build check."
     echo "[pre-commit] CI will catch build errors."
     exit 0
 fi

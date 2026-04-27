@@ -1,19 +1,23 @@
-# Target repos — clone separately, gitignore
+# Target repos ��� clone separately per setup scripts
 /Plonky3/
+/plonky3/
 /leanMultisig/
+/jolt/
+/sp1/
+
+# Standalone crates (separate git repos)
+/zk-alloc/
+/plonky3-bench/
+
+# Reference allocator repos (cloned for study)
+/glibc-malloc/
+/mimalloc/
+/snmalloc/
 
 # Python
 .venv/
 __pycache__/
 *.pyc
-
-# Added post round 2
-changelog.md
-changelog_target.md
-improvement_ideas.md
-agent_context.md
-tests_guidance.md
-
 
 # Runtime files
 experiments.jsonl
@@ -22,22 +26,21 @@ run_provenance.json
 bench_debug.txt
 STOP
 
+# Legacy agent context files
+changelog.md
+changelog_target.md
+improvement_ideas.md
+agent_context.md
+tests_guidance.md
+
 # Internal analysis — all report/ dirs are private
 experiment_logs/**/report/
 
-# Reference repos (cloned locally for study)
-glibc-malloc/
-mimalloc/
-snmalloc/
-sp1/
-
 # Build artifacts
-leanMultisig-bench/target/
+harness/*/bench/target/
+harness/*/correctness/target/
 
 # Profiling data (large, ephemeral)
-leanMultisig-bench/perf*.data*
-leanMultisig-bench/heaptrack.*
-leanMultisig-bench/dhat.*
-
-# External repo clones
-jolt/
+harness/leanmultisig/bench/perf*.data*
+harness/leanmultisig/bench/heaptrack.*
+harness/leanmultisig/bench/dhat.*

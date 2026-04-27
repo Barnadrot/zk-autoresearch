@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-plonky3-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.0"
+
+      - name: Clone Plonky3
+        run: git clone --depth 1 https://github.com/Plonky3/Plonky3.git plonky3
+
+      - name: Clone zk-alloc
+        run: git clone --depth 1 https://github.com/Barnadrot/zk-alloc.git zk-alloc
+
+      - name: Build correctness checker
+        run: cargo check --profile bench
+        working-directory: harness/plonky3/correctness
+
+      - name: Check bench crate compiles
+        run: cargo check --release
+        working-directory: harness/plonky3/bench
+
+  build-leanmultisig-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.0"
+
+      - name: Clone leanMultisig
+        run: git clone --depth 1 https://github.com/leanEthereum/leanMultisig.git leanMultisig
+
+      - name: Clone zk-alloc
+        run: git clone --depth 1 https://github.com/Barnadrot/zk-alloc.git zk-alloc
+
+      - name: Check bench crate compiles
+        run: cargo check --release
+        working-directory: harness/leanmultisig/bench
