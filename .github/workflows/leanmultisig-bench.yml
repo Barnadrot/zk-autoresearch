@@ -1,0 +1,42 @@
+name: leanMultisig Benchmark Gate
+
+# Runs on self-hosted runner (Hetzner AX42-U, 64GB RAM required).
+# Triggers on PRs that touch the bench harness or leanMultisig integration.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'harness/leanmultisig/**'
+
+jobs:
+  regression-gate:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify leanMultisig clone exists
+        run: |
+          if [ ! -d "leanMultisig" ]; then
+            echo "ERROR: leanMultisig must be cloned locally on the runner"
+            exit 1
+          fi
+
+      - name: Build prove_loop
+        run: cargo build --release --bin prove_loop
+        working-directory: harness/leanmultisig/bench
+        env:
+          RUSTFLAGS: "-C target-cpu=native"
+
+      - name: Run regression gate (3 proofs)
+        run: |
+          ./target/release/prove_loop --repeat 3 2>&1 | tee benchmark_output.txt
+        working-directory: harness/leanmultisig/bench
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: harness/leanmultisig/bench/benchmark_output.txt

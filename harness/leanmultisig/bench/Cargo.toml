@@ -5,18 +5,18 @@ edition = "2021"
 description = "Criterion benchmarks for leanMultisig autoresearch loop"
 
 # Assumes leanMultisig is cloned at ~/zk-autoresearch/leanMultisig
-# i.e. a sibling of this workspace under ~/zk-autoresearch/
+# and zk-alloc at ~/zk-autoresearch/zk-alloc
 
 [dependencies]
-rec_aggregation = { path = "../leanMultisig/crates/rec_aggregation" }
-xmss             = { path = "../leanMultisig/crates/xmss" }
-backend          = { path = "../leanMultisig/crates/backend" }
-sub_protocols    = { path = "../leanMultisig/crates/sub_protocols" }
-mt-koala-bear    = { path = "../leanMultisig/crates/backend/koala-bear" }
-utils            = { path = "../leanMultisig/crates/utils" }
+rec_aggregation = { path = "../../../leanMultisig/crates/rec_aggregation" }
+xmss             = { path = "../../../leanMultisig/crates/xmss" }
+backend          = { path = "../../../leanMultisig/crates/backend" }
+sub_protocols    = { path = "../../../leanMultisig/crates/sub_protocols" }
+mt-koala-bear    = { path = "../../../leanMultisig/crates/backend/koala-bear" }
+utils            = { path = "../../../leanMultisig/crates/utils" }
 rayon            = "1"
 backtrace        = "0.3"
-zk-alloc         = { path = "../leanMultisig/zk-alloc", optional = true }
+zk-alloc         = { path = "../../../zk-alloc", optional = true }
 
 [features]
 # These features require leanMultisig branches that have zkalloc support.

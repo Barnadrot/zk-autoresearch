@@ -1,86 +1,106 @@
-# Autoresearch Agent — Plonky3 DFT Optimizer
+# zk-autoresearch
 
-## Role
-You are an expert Rust systems programmer. Your job is to make the Plonky3 DFT/NTT
-implementation faster — specifically `coset_lde_batch` on BabyBear at 2^20 × 256 columns
-using `Radix2DitParallel`.
+Automated ZK prover optimization research across multiple proving systems.
 
-## Tools Available
-
-- `read_file` — read source files
-- `write_file` — write changes (only monty-31/src/x86_64_avx512/)
-- `list_dir` — list directory contents
-- `read_experiment_diff` — read the full diff from a previous iteration
-- `get_assembly` — get x86-64 assembly for a function (e.g. `get_assembly("dit_layer_rev_last2_flat")`). **Use this before submitting any change that relies on compiler behavior** — verify the assembly before and after to confirm your optimization isn't redundant. Call it at most once or twice per iteration — it is slow and token-expensive.
-
-## Current Codebase State
-The codebase includes all kept improvements from Rounds 1, 2, and 3. The benchmark baseline
-reflects this. You are optimizing on top of these already-applied changes — do not re-implement
-or re-verify them, focus on what remains unexplored.
-
-## Hard Constraints (never violate)
-
-1. **No security parameter changes** — do not touch FRI query count, blowup factor,
-   proof-of-work bits, or anything in `fri/`, `uni-stark/`, or `batch-stark/`.
-2. **No interface changes** — do not alter the `TwoAdicSubgroupDft` trait or any public API.
-3. **No test value changes** — do not modify expected values in tests to make them pass.
-4. **No out-of-scope files** — only edit files under `monty-31/src/x86_64_avx512/` this round.
-5. **Correctness is mandatory** — the DFT output must be bitwise-identical to `Radix2Dit`
-   for identical inputs. The test suite enforces this.
-
-## Repository Structure
+## Repo Map
 
 ```
-dft/src/                      ← read-only this round
-  radix_2_dit_parallel.rs  — main DIT parallel FFT (first_half, second_half, dit_layer*)
-  butterflies.rs            — butterfly implementations (DitButterfly, ScaledDitButterfly, TwiddleFreeButterfly)
-  radix_2_dit.rs            — reference implementation (read-only, do not modify)
-  lib.rs                    — trait definitions (read-only)
+harness/                          Benchmark + correctness tooling (per target repo)
+├── plonky3/
+│   ├── bench/                    Rust crate: Poseidon1, Poseidon2, Keccak benchmark bins
+│   ├── correctness/              Rust crate: bitwise-identical DFT validator
+│   └── scripts/                  eval.sh, correctness.sh
+├── leanmultisig/
+│   ├── bench/                    Rust crate: prove_loop binary + Criterion benchmarks
+│   ├── correctness/              correctness.sh, test_integrity.sha256
+│   └── scripts/                  eval_paired.sh, eval_gate.sh, eval_iai.sh, config.env
+├── vortex/
+│   ├── correctness/              correctness.sh
+│   └── scripts/                  eval_bench.sh, noise_floor.sh, config.env
+└── gnark-crypto/                 Placeholder (benchmarked indirectly via Vortex)
 
-baby-bear/src/                ← read-only this round
-  baby_bear.rs              — BabyBear field definition and Montgomery arithmetic
-  lib.rs                    — public exports (read-only)
-  x86_64_avx512/
-    packing.rs              — 37 lines: type alias + BabyBear constants (entry point; follow to monty-31 for arithmetic)
-    mod.rs                  — exposes packing, poseidon1, poseidon2
-  x86_64_avx2/             — AVX2 fallback
-  aarch64_neon/            — ARM NEON fallback
+experiment_logs/                  Audit trail — append-only
+├── Plonky3/NTT/                  NTT/DFT butterfly + Montgomery arithmetic experiments
+│   ├── active/CLAUDE.md          Current agent instructions for Plonky3 experiments
+│   └── experiment_*/             Completed experiment data
+├── leanMultisig/                 Sumcheck, Poseidon, LogUp, allocator experiments
+├── linea/                        Vortex/KoalaBear experiments
+└── zk-alloc/                     Arena allocator research (cross-prover)
+    ├── multi-prover-bench/       Results: Plonky3, leanMultisig, Jolt
+    └── report/                   Analysis docs (future_optimum.md, multiprover-sunday.md)
 
-dft/benches/fft.rs          — Criterion benchmark definitions (read-only)
+scripts/
+├── setup/                        Server provisioning scripts
+│   ├── server.sh                 Base: Rust, build tools, Claude CLI
+│   ├── zk_alloc.sh              zk-alloc experiments: cgroups, reference repos
+│   ├── leanmultisig.sh          leanMultisig: clone, build, bench crate
+│   └── linea.sh                 Linea/Vortex: clone, Go toolchain
+├── run_benchmark.sh              Cross-branch Criterion comparison (CRITICAL: uses -C target-cpu=native)
+└── watch.py                      Live experiment monitor (reads iters.tsv or experiments.jsonl)
 
-monty-31/src/x86_64_avx512/   ← writable
-  packing.rs              — 1672 lines: PackedMontyField31AVX512 full arithmetic (mul at line 524)
-  utils.rs                — halve_avx512, mul_neg_2exp_neg_N helpers
+.github/workflows/
+├── ci.yml                        Build all harness crates on push/PR
+└── leanmultisig-bench.yml        prove_loop regression gate (self-hosted runner)
 ```
 
-## Optimization Target
+## External Repos (gitignored, cloned locally)
 
-**Target: `monty-31/src/x86_64_avx512/packing.rs` and `monty-31/src/x86_64_avx512/utils.rs`**
+These are the target repos being optimized. They are NOT part of this repo — clone them per setup scripts.
 
-Montgomery field arithmetic (`mul`, `add`, `sub`, reductions) is in every butterfly operation —
-any gain here multiplies across the entire NTT. Use `get_assembly` to understand current
-codegen before making changes. Key functions: `mul` (line 524), `add` (line 111), `sub` (line 125),
-`partial_monty_red_unsigned_to_signed` (line 402), `partial_monty_red_signed_to_signed` (line 422).
+| Directory | Repo | Purpose |
+|-----------|------|---------|
+| `plonky3/` | Plonky3/Plonky3 | ZK proving framework (BabyBear, FRI) |
+| `leanMultisig/` | maceip/leanMultisig | XMSS aggregation prover (Plonky3/WHIR) |
+| `jolt/` | a16z/jolt | Jolt zkVM (sumcheck/Dory, BN254) |
+| `zk-alloc/` | Barnadrot/zk-alloc | Bump+reset arena allocator crate |
+| `mimalloc/`, `snmalloc/`, `glibc-malloc/` | — | Reference allocator source for study |
+| `sp1/` | succinctlabs/sp1 | SP1 zkVM (future target) |
 
+## Experiment Structure
 
-## AVX512 Arithmetic Reference
+Each experiment lives under `experiment_logs/<project>/<experiment_name>/` and contains:
 
-- `packing.rs` — `mul` (line 524): 6.5 cyc/vec, 21 cyc latency. Uses `confuse_compiler` to avoid `vpmullq`, underflow check to relieve port 0 pressure.
-- `packing.rs` — `add` (line 111), `sub` (line 125), `neg` (line 872)
-- `packing.rs` — `partial_monty_red_unsigned_to_signed` (line 402), `partial_monty_red_signed_to_signed` (line 422)
-- `utils.rs` — `halve_avx512` (2 cyc/vec), `mul_neg_2exp_neg_n_avx512` (3 cyc/vec, 9 cyc latency), `mul_neg_2exp_neg_two_adicity_avx512` (3 cyc/vec, 5 cyc latency)
+- **`program.md`** — Agent instructions: role, hardware, baseline, target files, writable scope, constraints, eval gates. This is the prompt fed to Claude Code.
+- **`iters.tsv`** — Tab-separated iteration log: iter number, delta %, decision (keep/discard), commit hash, rationale. Append-only.
+- **Experiment-specific scripts** — e.g., `reproduce_prod.sh`, `reproduce_iter18.sh`. These stay with the experiment.
 
-Use `get_assembly` to verify actual codegen before assuming what the compiler emits.
+Shared eval scripts (correctness gates, benchmark gates, config) live in `harness/<project>/scripts/`.
 
-## Known False Dead End
+## Running an Experiment
 
-**Iter 1 diff shows −1.68% for add/sub mask-based approach — this result is NOT valid.**
-The agent ran out of tokens before writing `packing.rs`. Only `utils.rs` was modified (adding
-`add_avx512`/`sub_avx512` as dead code never called from the hot path). The regression is pure
-session variance on unchanged code. The idea of replacing `vpminud` with `vpcmpgeud`/`vpcmpltud`
-in `Add`/`Sub` to reduce port 0 pressure **has not been tested** and remains a valid candidate.
+```bash
+# 1. Set up server (run once)
+bash scripts/setup/server.sh
+bash scripts/setup/<project>.sh
 
-## Surgical Precision Principle
+# 2. Start tmux session
+tmux new-session -s autoresearch
 
-**A change is surgical if it touches fewer than ~50 lines and targets a specific hot path.**
-If your idea requires a full-file rewrite, find the minimal targeted version first.
+# 3. Run Claude Code with the experiment program
+claude --prompt-file experiment_logs/<project>/<experiment>/program.md
+
+# 4. Monitor from another terminal
+python3 scripts/watch.py experiment_logs/<project>/<experiment>/iters.tsv
+```
+
+## Eval Gate Convention
+
+Every experiment defines correctness and performance gates:
+
+1. **Correctness gate** — Must pass before any benchmark runs. Binary: pass or discard.
+   - Plonky3: `harness/plonky3/correctness/` (Rust crate, bitwise comparison)
+   - leanMultisig: `harness/leanmultisig/correctness/correctness.sh`
+   - Vortex: `harness/vortex/correctness/correctness.sh`
+
+2. **Performance gate** — Paired A/B wall-clock or IAI (instruction count) comparison.
+   - Config thresholds in `harness/<project>/scripts/config.env`
+   - `eval_paired.sh` for wall-clock, `eval_iai.sh` for instruction count
+   - Two-tier gating: fast tier every iteration, slow tier on keeps only
+
+## Key Conventions
+
+- **RUSTFLAGS:** Always `RUSTFLAGS="-C target-cpu=native"` when benchmarking. Without it, no AVX-512 — measurements silently 2x slower.
+- **cargo nextest** for Jolt (never cargo test). Standard cargo test for Plonky3 and leanMultisig.
+- **Experiment logs are append-only.** Never delete or modify past experiment data.
+- **One change per iteration.** Agent proposes one targeted change, eval gates decide keep/discard.
+- **Reports stay local.** `report/` folders are gitignored — saved to Nextcloud manually, never committed.
