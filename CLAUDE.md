@@ -99,6 +99,14 @@ Every experiment defines correctness and performance gates:
 
 ## Key Conventions
 
+- **Commit-eval-decide loop.** Every iteration follows the same discipline:
+  1. Make one targeted change
+  2. Commit it (clean hash in the audit trail)
+  3. Run correctness gate, then performance gate
+  4. If both pass: keep. Otherwise: `git revert` (not reset — the revert is also in the log)
+  
+  This produces a linear, reviewable history where every commit is either a kept improvement or a reverted attempt. No uncommitted experiments, no squash-and-pray.
+
 - **RUSTFLAGS:** Always `RUSTFLAGS="-C target-cpu=native"` when benchmarking. Without it, no AVX-512 — measurements silently 2x slower.
 - **cargo nextest** for Jolt (never cargo test). Standard cargo test for Plonky3 and leanMultisig.
 - **Experiment logs are append-only.** Never delete or modify past experiment data.
