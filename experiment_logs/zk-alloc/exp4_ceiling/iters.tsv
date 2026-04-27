@@ -1,0 +1,7 @@
+iter	direction	change	warm_avg23_16c	vs_v02_baseline	verdict	notes
+—	baseline	v0.2 LD_PRELOAD (8GB MAP_NORESERVE)	2.31s	—	—	bench-v2, 64GB/16c
+B1	B: size-segregated	two-slab: small 2GB ≤256B / large 6GB	2.52s	+9% REGRESSION	NO SIGNAL	branch in hot path + broken spatial locality
+D1	D: kernel hints	MADV_DONTNEED at reset	3.20s	+38% REGRESSION	NO SIGNAL	re-faults entire 6GB per proof. Confirms page reuse IS the mechanism.
+D2	D: kernel hints	MADV_NOHUGEPAGE (force 4KB pages)	2.32s	0%	NO SIGNAL	THP makes no difference for sequential bump pattern
+D2b	D: kernel hints	no madvise at all (remove MADV_HUGEPAGE)	2.30s	0%	NO SIGNAL	MADV_HUGEPAGE is a no-op for this workload
+A1	A: delivery	#[global_allocator] Rust ZkAllocator (no LD_PRELOAD)	2.29s	0%	SIGNAL	NO parallelism gap! exp3a finding was codebase-specific. Pure Rust delivery viable.

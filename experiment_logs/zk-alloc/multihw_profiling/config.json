@@ -1,0 +1,73 @@
+{
+  "description": "Multi-hardware profiling matrix for zk-alloc signal search",
+
+  "allocators": {
+    "glibc": {
+      "type": "baseline",
+      "description": "System default, no LD_PRELOAD"
+    },
+    "zkalloc": {
+      "type": "preload",
+      "so": "libpreload_arena.so",
+      "build": "cd leanMultisig/zk-alloc && gcc -O2 -shared -fPIC -o libpreload_arena.so preload_arena.c -ldl",
+      "description": "Bump+reset arena, exp3a iter 9"
+    },
+    "mimalloc": {
+      "type": "preload",
+      "so": "libmimalloc.so",
+      "build": "cd mimalloc && mkdir -p out/release && cd out/release && cmake ../.. -DMI_BUILD_SHARED=ON -DMI_BUILD_STATIC=OFF && make -j$(nproc)",
+      "description": "Microsoft mimalloc, default config"
+    }
+  },
+
+  "memory_limits_gb": [16, 32, 64],
+
+  "core_counts": [8, 16],
+
+  "workloads": {
+    "criterion_1400": {
+      "tool": "criterion",
+      "binary": "xmss_leaf_glibc",
+      "sigs": 1400,
+      "log_inv_rate": 1,
+      "sample_size": 20,
+      "description": "Criterion bench, comparable to exp1-3a data"
+    },
+    "production_3x": {
+      "tool": "prove_loop",
+      "proofs": 3,
+      "sigs": 1400,
+      "log_inv_rate": 1,
+      "description": "Production-like: 3 sequential proofs, no Criterion overhead"
+    }
+  },
+
+  "commits": {
+    "bench-v1-post-avx-fix": {
+      "ref": "28c1451f",
+      "branch": "myfork/zk-alloc/bench-v1-post-avx-fix",
+      "description": "AVX512 packing_width bug fixed, pre-alloc-removal PRs"
+    },
+    "bench-v2-current": {
+      "ref": "1ca8b836",
+      "branch": "myfork/zk-alloc/bench-v2-current",
+      "description": "All upstream optimizations including batch stir + BTreeMap removal"
+    }
+  },
+
+  "bench_params": {
+    "warmup_time_s": 5,
+    "perf_stat_events": "task-clock,cycles,instructions,cache-references,cache-misses,page-faults,branch-misses,context-switches",
+    "rss_sample_interval_ms": 100
+  },
+
+  "safety": {
+    "swap_must_be_off": true,
+    "use_systemd_run": true,
+    "pre_flight_checks": ["swap is off", "cgroup v2 available", "perf accessible"]
+  },
+
+  "known_failures": {
+    "zkalloc_16gb": "Expected OOM: 4GB×16 slabs = 64GB virtual. Record failure mode, don't retry."
+  }
+}

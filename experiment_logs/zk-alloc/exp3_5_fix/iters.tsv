@@ -1,0 +1,11 @@
+iter	change	64gb_16c	64gb_8c	32gb_16c	32gb_8c	16gb_16c	16gb_8c	notes
+0	baseline v0.1 (4GB slab, no MAP_NORESERVE)	OOM	OOM	OOM	OOM	OOM	OOM	mmap rejected by overcommit_memory=0
+1	MAP_NORESERVE + 6GB slab	-21.4%	—	—	—	—	—	root cause was MAP_NORESERVE
+1b	MAP_NORESERVE + 4GB slab	-12.3%	—	—	—	—	—	overflow to glibc costs ~10pp
+1c	MAP_NORESERVE + 8GB slab (v0.2)	-26.4%	-29.1%	-24.8%	-29.2%	-27.5%	-28.1%	WORKS AT ALL CONFIGS. Full matrix.
+2	MAP_POPULATE on mmap	KILLED	—	—	—	—	—	128GB prefault exceeds physical RAM. OOM-killed.
+3	per-thread 8GB prefault in check_reset	KILLED	—	—	—	—	—	16 threads × 8GB = 128GB simultaneous faults
+4	per-thread 1GB prefault	cold 3.44s	—	—	—	—	—	survived but cold WORSE (+300ms loop overhead), warm unchanged 2.29s, RSS 24GB
+5	reframe: cold=3.17 vs glibc cold=3.19	NO PENALTY	—	—	—	—	—	cold proof is same speed as glibc. The "penalty" is just absence of warm advantage.
+—	glibc baseline	3.140s	3.328s	3.066s	3.364s	3.175s	3.319s	bench-v2 codebase
+—	mimalloc baseline	3.049s	3.312s	3.460s	3.317s	3.088s	3.316s	bench-v2 codebase

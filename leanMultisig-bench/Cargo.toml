@@ -19,8 +19,11 @@ backtrace        = "0.3"
 zk-alloc         = { path = "../leanMultisig/zk-alloc", optional = true }
 
 [features]
-zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
-zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
+# These features require leanMultisig branches that have zkalloc support.
+# Comment out when benchmarking against upstream branches (bench-v1, bench-v2).
+# zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
+# zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
+zkalloc_global = ["dep:zk-alloc"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -40,6 +43,10 @@ harness = false
 [[bench]]
 name = "xmss_leaf_preload"
 harness = false
+
+[[bin]]
+name = "prove_loop"
+path = "src/bin/prove_loop.rs"
 
 [profile.release]
 lto = "fat"
