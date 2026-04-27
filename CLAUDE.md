@@ -56,6 +56,19 @@ These are the target repos being optimized. They are NOT part of this repo — c
 | `mimalloc/`, `snmalloc/`, `glibc-malloc/` | — | Reference allocator source for study |
 | `sp1/` | succinctlabs/sp1 | SP1 zkVM (future target) |
 
+## Agentic ZK Development Principles
+
+1. **Commit-eval-decide.** Make one change, commit it, run correctness then performance gates, keep or revert. Every commit is either a kept improvement or a reverted attempt — no uncommitted experiments.
+2. **Profile before optimizing.** Every assumption skipped profiling on was wrong.
+3. **Negative results are results.** A null result on the right system validates the theory as much as a positive result.
+4. **Cross-system validation.** Test the same idea on multiple provers. One prover is an anecdote, three is a pattern.
+5. **The bottleneck determines the approach.** Memory-bound vs compute-bound dictates everything. Identify which before choosing a strategy.
+6. **Measure, don't assume.** Every received wisdom gets a benchmark.
+7. **One change per iteration.** Isolation is critical for attribution.
+8. **Correctness is non-negotiable.** Always verify proofs cryptographically.
+9. **Ship incrementally.** Feature flag first, default later.
+10. **Don't chase convergence.** If optimizing X makes your system look like Y, you're rebuilding Y poorly. Find the local optimum for your architecture.
+
 ## Experiment Structure
 
 Each experiment lives under `experiment_logs/<project>/<experiment_name>/` and contains:
