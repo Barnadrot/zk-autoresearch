@@ -1,6 +1,6 @@
-# zk-autoresearch
+# zk-autoresearch — Autonomous ZK prover research
 
-Automated ZK prover optimization research. Profile-guided experiments across multiple proving systems, using Claude as the optimization agent.
+Profile-guided experiments across multiple proving systems, using Claude as the optimization agent.
 
 **Method:** For each target, an agent receives a focused program (constraints, eval gates, writable scope), proposes one change per iteration, and keeps it only if it passes correctness + performance gates. All iterations are logged.
 
@@ -37,12 +37,12 @@ Target: [leanMultisig](https://github.com/leanEthereum/leanMultisig) — XMSS si
 
 Target: [Linea Vortex prover](https://github.com/Consensys/linea-monorepo) (KoalaBear field) and [gnark-crypto](https://github.com/Consensys/gnark-crypto) (Go, upstream dependency).
 
-| Experiment | Optimization | Result | Status |
+| Experiment | Optimization | Result (microbench, c7a.2xlarge) | Status |
 |-----------|-------------|--------|--------|
 | [LinearCombination + commitment hashing (PR #2898)](https://github.com/Consensys/linea-monorepo/pull/2898) | MulAccByElement, eliminate copy, MDHasher buffer reuse, Compressx16 SIMD | **-72%** LinearCombination, **-17%** commitment hashing, **-99.9%** allocs | **Merged** |
 | [FFT kernels + SIS LimbIterator (gnark-crypto PR #834)](https://github.com/Consensys/gnark-crypto/pull/834) | Unrolled FFT64/128 kernels, inline small-m stages, LimbIterator devirtualization | **-56%** SIS ns/op, **-98%** SIS allocs | *Pending* |
 
-*Vortex results are microbenchmark measurements on AWS c7a.2xlarge (8 vCPU, 16GB). Production infrastructure operates at significantly larger scale and was not available for end-to-end benchmarking; actual production impact may differ.*
+*Production infrastructure operates at significantly larger scale and was not available for end-to-end benchmarking.*
 
 ---
 
