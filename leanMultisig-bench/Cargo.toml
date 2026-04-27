@@ -23,6 +23,7 @@ zk-alloc         = { path = "../leanMultisig/zk-alloc", optional = true }
 # Comment out when benchmarking against upstream branches (bench-v1, bench-v2).
 # zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
 # zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
+zkalloc_global = ["dep:zk-alloc"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
