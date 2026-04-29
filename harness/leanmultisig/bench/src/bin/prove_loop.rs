@@ -74,7 +74,7 @@ fn main() {
 
     // First phase_boundary is warmup — initializes arena without activating
     #[cfg(feature = "zkalloc_global")]
-    zk_alloc::phase_boundary();
+    zk_alloc::begin_phase();
     #[cfg(not(feature = "zkalloc_global"))]
     if let Some(pb) = phase_boundary {
         unsafe { pb(); }
@@ -82,7 +82,7 @@ fn main() {
 
     for i in 0..n_proofs {
         #[cfg(feature = "zkalloc_global")]
-        zk_alloc::phase_boundary();
+        zk_alloc::begin_phase();
         #[cfg(not(feature = "zkalloc_global"))]
         if let Some(pb) = phase_boundary {
             unsafe { pb(); }
@@ -92,7 +92,7 @@ fn main() {
         let (pub_keys, proof) = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
         let secs = start.elapsed().as_secs_f64();
         #[cfg(feature = "zkalloc_global")]
-        zk_alloc::deactivate_arena();
+        zk_alloc::end_phase();
         #[cfg(not(feature = "zkalloc_global"))]
         if let Some(da) = deactivate {
             unsafe { da(); }

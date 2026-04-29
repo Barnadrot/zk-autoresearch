@@ -42,9 +42,6 @@ jobs:
       - name: Clone leanMultisig
         run: git clone --depth 1 https://github.com/leanEthereum/leanMultisig.git leanMultisig
 
-      - name: Clone zk-alloc
-        run: git clone --depth 1 https://github.com/Barnadrot/zk-alloc.git zk-alloc
-
       - name: Check bench crate compiles
         run: cargo check --release
         working-directory: harness/leanmultisig/bench
