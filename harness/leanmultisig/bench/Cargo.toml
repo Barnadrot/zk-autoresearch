@@ -5,7 +5,6 @@ edition = "2021"
 description = "Criterion benchmarks for leanMultisig autoresearch loop"
 
 # Assumes leanMultisig is cloned at ~/zk-autoresearch/leanMultisig
-# and zk-alloc at ~/zk-autoresearch/zk-alloc
 
 [dependencies]
 rec_aggregation = { path = "../../../leanMultisig/crates/rec_aggregation" }
@@ -16,7 +15,7 @@ mt-koala-bear    = { path = "../../../leanMultisig/crates/backend/koala-bear" }
 utils            = { path = "../../../leanMultisig/crates/utils" }
 rayon            = "1"
 backtrace        = "0.3"
-zk-alloc         = { path = "../../../zk-alloc", optional = true }
+zk-alloc         = { path = "../../../leanMultisig/crates/backend/zk-alloc", optional = true }
 
 [features]
 # These features require leanMultisig branches that have zkalloc support.
