@@ -91,7 +91,7 @@ fn main() {
     #[cfg(feature = "zkalloc")]
     {
         eprintln!("allocator: zk-alloc (bump+reset arena)");
-        zk_alloc::phase_boundary();
+        zk_alloc::begin_phase();
     }
     #[cfg(all(feature = "jemalloc", not(feature = "zkalloc")))]
     eprintln!("allocator: jemalloc");
@@ -100,7 +100,7 @@ fn main() {
 
     for i in 0..cli.repeat {
         #[cfg(feature = "zkalloc")]
-        zk_alloc::phase_boundary();
+        zk_alloc::begin_phase();
 
         let t = Instant::now();
 
@@ -126,7 +126,7 @@ fn main() {
                 eprintln!("  proof {}/{}: {:.3}s{v}  (no overflow)", i + 1, cli.repeat, elapsed);
             }
             zk_alloc::reset_overflow_stats();
-            zk_alloc::deactivate_arena();
+            zk_alloc::end_phase();
         }
         #[cfg(not(feature = "zkalloc"))]
         eprintln!("  proof {}/{}: {:.3}s{}", i + 1, cli.repeat, elapsed,
