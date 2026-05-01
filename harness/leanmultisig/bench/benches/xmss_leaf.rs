@@ -8,7 +8,7 @@
 // N_SIGS is kept small enough to keep bench time under ~10s per run.
 // Tune it based on throughput on the server (~700-800 XMSS/s → 100 sigs ≈ 130ms).
 
-#[cfg(feature = "zkalloc")]
+#[cfg(feature = "zkalloc_global")]
 #[global_allocator]
 static GLOBAL: zk_alloc::ZkAllocator = zk_alloc::ZkAllocator;
 
@@ -26,13 +26,25 @@ fn bench_xmss_leaf(c: &mut Criterion) {
     precompute_dft_twiddles::<KoalaBear>(1 << 24);
     init_aggregation_bytecode();
 
+    #[cfg(feature = "zkalloc_global")]
+    zk_alloc::init();
+
     let raw_xmss: Vec<_> = get_benchmark_signatures()[..N_SIGS].to_vec();
     let message = message_for_benchmark();
 
     c.bench_function(&format!("xmss_leaf_{N_SIGS}sigs"), |b| {
         b.iter_batched(
-            || raw_xmss.clone(),
-            |data| xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE),
+            || {
+                #[cfg(feature = "zkalloc_global")]
+                zk_alloc::begin_phase();
+                raw_xmss.clone()
+            },
+            |data| {
+                let result = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+                #[cfg(feature = "zkalloc_global")]
+                zk_alloc::end_phase();
+                result
+            },
             BatchSize::LargeInput,
         );
     });
