@@ -9,6 +9,9 @@
 /zk-alloc/
 /plonky3-bench/
 
+# Methodology / spec docs (private)
+/ar-methodology/
+
 # Reference allocator repos (cloned for study)
 /glibc-malloc/
 /mimalloc/
