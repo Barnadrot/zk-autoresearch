@@ -15,14 +15,14 @@ mt-koala-bear    = { path = "../../../leanMultisig/crates/backend/koala-bear" }
 utils            = { path = "../../../leanMultisig/crates/utils" }
 rayon            = "1"
 backtrace        = "0.3"
-# zk-alloc         = { path = "../../../leanMultisig/crates/backend/zk-alloc", optional = true }
+zk-alloc         = { path = "../../../leanMultisig/crates/backend/zk-alloc", optional = true }
 
 [features]
 # These features require leanMultisig branches that have zkalloc support.
 # Comment out when benchmarking against upstream branches (bench-v1, bench-v2).
 # zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
 # zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
-# zkalloc_global = ["dep:zk-alloc"]
+zkalloc_global = ["dep:zk-alloc"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

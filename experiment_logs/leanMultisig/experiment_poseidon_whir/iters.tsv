@@ -1,2 +1,1 @@
 iter	tier1_micro	tier2_criterion_pct	tier2_p	tier3_prod_pct	status	files_changed	rationale
-1	-5.97%	-0.82%	0.00	-	keep	poseidon1_koalabear_16.rs,packing.rs	cross-round batched rank-1 update via dot_product_2; defers rank-1 across 2 partial rounds, shares Montgomery reductions (8 vpmuludq/2 products vs 12); n=3 median -0.82% e2e, -6% micro
