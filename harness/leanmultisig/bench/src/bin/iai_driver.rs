@@ -27,7 +27,7 @@ const N_SIGS: usize = 25;
 pub fn iai_hot_kernel() {
     let raw_xmss: Vec<_> = get_benchmark_signatures()[..N_SIGS].to_vec();
     let message = message_for_benchmark();
-    let _ = xmss_aggregate(&[], raw_xmss, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+    let _ = xmss_aggregate(&[], raw_xmss, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
 }
 
 fn main() {

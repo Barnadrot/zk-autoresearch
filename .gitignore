@@ -9,6 +9,12 @@
 /zk-alloc/
 /plonky3-bench/
 
+# Methodology / spec docs (private)
+/ar-methodology/
+
+# Brain state (private, copied manually to brain agent)
+/brain/status.md
+
 # Reference allocator repos (cloned for study)
 /glibc-malloc/
 /mimalloc/

@@ -76,7 +76,7 @@ fn main() {
 
     // Warmup
     let data = raw_xmss.clone();
-    let _ = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+    let _ = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     eprintln!("--- warmup done ---");
 
     // Measured run
@@ -85,7 +85,7 @@ fn main() {
     let s = snapshot();
     let t = Instant::now();
     let data = raw_xmss.clone();
-    let _ = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+    let _ = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed = t.elapsed().as_millis();
     report("FULL xmss_aggregate", s, elapsed);
 }

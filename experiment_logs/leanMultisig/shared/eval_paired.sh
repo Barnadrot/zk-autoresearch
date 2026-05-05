@@ -1,0 +1,1 @@
+../../../harness/leanmultisig/scripts/eval_paired.sh

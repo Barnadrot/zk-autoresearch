@@ -31,7 +31,7 @@ Target: [leanMultisig](https://github.com/leanEthereum/leanMultisig) — XMSS si
 | [Inline quintic extension (PR #197)](https://github.com/leanEthereum/leanMultisig/pull/197) | `#[inline(always)]` on quintic field arithmetic | **-3.6%** on `xmss_leaf_1400sigs` | **Merged** |
 | [Degree-split AIR sumcheck (PR #202)](https://github.com/leanEthereum/leanMultisig/pull/202) | Skip partial-round constraints at high z-points | **-7.64%** on `fancy-aggregation` (Hetzner AX42-U) | **Merged** |
 | [Alloc contention + STIR tiling (PR #203)](https://github.com/leanEthereum/leanMultisig/pull/203) | Eliminate alloc contention, L2-tiled STIR equality | **-10.3%** on `fancy-aggregation` (3/4 changes merged as independent commits) | **Merged** |
-| [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanMultisig/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | *Pending* |
+| [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanMultisig/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | **Merged** |
 
 ### Vortex / gnark-crypto
 
@@ -40,7 +40,7 @@ Target: [Linea Vortex prover](https://github.com/Consensys/linea-monorepo) (Koal
 | Experiment | Optimization | Result (microbench, c7a.2xlarge) | Status |
 |-----------|-------------|--------|--------|
 | [LinearCombination + commitment hashing (PR #2898)](https://github.com/Consensys/linea-monorepo/pull/2898) | MulAccByElement, eliminate copy, MDHasher buffer reuse, Compressx16 SIMD | **-72%** LinearCombination, **-17%** commitment hashing, **-99.9%** allocs | **Merged** |
-| [FFT kernels + SIS LimbIterator (gnark-crypto PR #834)](https://github.com/Consensys/gnark-crypto/pull/834) | Unrolled FFT64/128 kernels, inline small-m stages, LimbIterator devirtualization | **-56%** SIS ns/op, **-98%** SIS allocs | *Pending* |
+| [FFT kernels + SIS LimbIterator (gnark-crypto PR #834)](https://github.com/Consensys/gnark-crypto/pull/834) | Unrolled FFT64/128 kernels, inline small-m stages, LimbIterator devirtualization | **-56%** SIS ns/op, **-98%** SIS allocs | **Merged** |
 
 *Production infrastructure operates at significantly larger scale and was not available for end-to-end benchmarking.*
 
@@ -126,3 +126,13 @@ git config core.hooksPath .githooks
 ### Critical: RUSTFLAGS for benchmarking
 
 Always set `RUSTFLAGS="-C target-cpu=native"` *(or your equivalent `-C target-cpu=` value)* when benchmarking. Without it, no AVX-512 — measurements are silently 2x slower.
+
+---
+
+## Prior Art
+
+- Karpathy's autoresearch pattern: LLM + benchmark feedback loop for nanoGPT kernel optimization
+- Gassmann et al. (2025): autotuned LLVM flags for SP1/RISC Zero → ~17% improvement
+- **Gap this fills:** source-level autoresearch on a production ZK prover (first known application)
+
+*Inspired by Karpathy's autoresearch pattern. First known application to a production ZK prover.*

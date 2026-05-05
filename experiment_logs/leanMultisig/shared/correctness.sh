@@ -1,0 +1,1 @@
+../../../harness/leanmultisig/correctness/correctness.sh

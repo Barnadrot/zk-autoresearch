@@ -20,7 +20,7 @@ fn main() {
 
     for i in 0..n_iters {
         let data = raw_xmss.clone();
-        let _proof = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+        let _proof = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
         eprintln!("iter {}/{} done", i + 1, n_iters);
     }
 }
