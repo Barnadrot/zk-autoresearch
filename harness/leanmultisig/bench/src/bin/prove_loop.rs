@@ -89,7 +89,7 @@ fn main() {
         }
         let data = raw_xmss.clone();
         let start = Instant::now();
-        let (pub_keys, proof) = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+        let (pub_keys, proof) = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).expect("prove failed");
         let secs = start.elapsed().as_secs_f64();
         #[cfg(feature = "zkalloc_global")]
         zk_alloc::end_phase();

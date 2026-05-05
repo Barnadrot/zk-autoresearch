@@ -20,7 +20,7 @@ fn bench_xmss_leaf(c: &mut Criterion) {
     c.bench_function(&format!("xmss_leaf_{N_SIGS}sigs"), |b| {
         b.iter_batched(
             || raw_xmss.clone(),
-            |data| xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE),
+            |data| xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap(),
             BatchSize::LargeInput,
         );
     });

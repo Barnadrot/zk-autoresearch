@@ -205,7 +205,7 @@ fn main() {
     }
     let t1 = Instant::now();
     let data = raw_xmss.clone();
-    let proof1 = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+    let proof1 = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed1 = t1.elapsed();
     TIMELINE_ENABLED.store(false, Relaxed);
 
@@ -240,7 +240,7 @@ fn main() {
     eprintln!("--- starting proof 2 ---");
     let t2 = Instant::now();
     let data = raw_xmss.clone();
-    let proof2 = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+    let proof2 = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed2 = t2.elapsed();
 
     let after_proof2 = COUNTERS.snapshot();

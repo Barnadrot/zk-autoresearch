@@ -14,6 +14,6 @@ fn main() {
     let message = message_for_benchmark();
 
     let data = raw_xmss.clone();
-    let _proof = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+    let _proof = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     eprintln!("done");
 }

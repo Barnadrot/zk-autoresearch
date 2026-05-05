@@ -40,7 +40,7 @@ fn bench_xmss_leaf(c: &mut Criterion) {
                 raw_xmss.clone()
             },
             |data| {
-                let result = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE);
+                let result = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
                 #[cfg(feature = "zkalloc_global")]
                 zk_alloc::end_phase();
                 result
