@@ -1,1 +1,7 @@
 iter	tier1_micro	tier2_criterion_pct	tier2_p	tier3_prod_pct	status	files_changed	rationale
+1	n/a	+0.17	0.36	n/a	discard_wallclock	merkle.rs	direct-indexed leaf hashing bypassing Chain/Vec iterator overhead; +0.17% noise (p=0.36)
+2	n/a	+0.43	0.12	n/a	discard_wallclock	merkle.rs	with_min_len(64) on all 3 Merkle par_chunks_exact_mut sites; revert-A/B confirmed no signal (+0.08% p=0.8)
+3	n/a	+0.31	0.11	n/a	discard_wallclock	sponge.rs,merkle.rs,verifier.rs	bare-permutation sponge (no Davies-Meyer feedforward) to reduce AVX-512 register pressure; +0.31% noise (p=0.11), revert-A/B +0.38% p=0.22
+4	n/a	-0.44	0.02	n/a	discard_wallclock	poseidon1_koalabear_16.rs	eliminate InternalLayer16 copy in permute_simd partial rounds; work directly on state[0..16] instead of copy to/from stack struct; -0.44% real but below 1% gate (p=0.02)
+5	n/a	+1.86	0.00	n/a	discard_wallclock	permutation.rs,poseidon1_koalabear_16.rs	#[inline(always)] on compress_mut and permute_mut trait impls; I-cache pressure from inlined permutation code caused +1.86% regression (p=0.0)
+6	n/a	+0.33	0.16	n/a	keep	utils.rs	increase PARALLEL_THRESHOLD from 512 to 1024; +0.33% noise (p=0.16), revert-A/B confirmed no signal
