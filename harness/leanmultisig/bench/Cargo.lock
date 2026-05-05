@@ -651,6 +651,7 @@ dependencies = [
  "sub_protocols",
  "utils",
  "xmss",
+ "zk-alloc",
 ]
 
 [[package]]
@@ -772,6 +773,7 @@ dependencies = [
  "rand",
  "rayon",
  "serde",
+ "system-info",
 ]
 
 [[package]]
@@ -816,6 +818,7 @@ dependencies = [
  "mt-utils",
  "rand",
  "rayon",
+ "system-info",
  "tracing",
 ]
 
@@ -1087,6 +1090,7 @@ dependencies = [
  "tracing",
  "utils",
  "xmss",
+ "zk-alloc",
 ]
 
 [[package]]
@@ -1280,6 +1284,10 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "system-info"
+version = "0.1.0"
 
 [[package]]
 name = "thiserror"
@@ -1734,6 +1742,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zk-alloc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "system-info",
 ]
 
 [[package]]

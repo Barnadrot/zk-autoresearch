@@ -4,4 +4,10 @@ iter	tier1_micro	tier2_criterion_pct	tier2_p	tier3_prod_pct	status	files_changed
 3	n/a	+0.31	0.11	n/a	discard_wallclock	sponge.rs,merkle.rs,verifier.rs	bare-permutation sponge (no Davies-Meyer feedforward) to reduce AVX-512 register pressure; +0.31% noise (p=0.11), revert-A/B +0.38% p=0.22
 4	n/a	-0.44	0.02	n/a	discard_wallclock	poseidon1_koalabear_16.rs	eliminate InternalLayer16 copy in permute_simd partial rounds; work directly on state[0..16] instead of copy to/from stack struct; -0.44% real but below 1% gate (p=0.02)
 5	n/a	+1.86	0.00	n/a	discard_wallclock	permutation.rs,poseidon1_koalabear_16.rs	#[inline(always)] on compress_mut and permute_mut trait impls; I-cache pressure from inlined permutation code caused +1.86% regression (p=0.0)
-6	n/a	+0.33	0.16	n/a	keep	utils.rs	increase PARALLEL_THRESHOLD from 512 to 1024; +0.33% noise (p=0.16), revert-A/B confirmed no signal
+6	n/a	+0.33	0.16	n/a	discard_wallclock	utils.rs	increase PARALLEL_THRESHOLD from 512 to 1024; +0.33% noise (p=0.16), revert-A/B confirmed no signal
+7	+0.56	n/a	0.01	n/a	discard_micro	permutation.rs	#[inline] on Compression::compress_mut (not #[inline(always)]); thin LTO already handles cross-crate inlining, +0.56% micro regression (p=0.01)
+8	+5.51	n/a	0.00	n/a	discard_micro	merkle.rs(whir)	direct column indexing in leaf hashing (bypass iterator chain); +5.51% micro regression — added code size via thin LTO disrupted permutation codegen
+9	n/a	+0.11	0.62	n/a	discard_wallclock	poseidon1_koalabear_16.rs	rate-only feedforward in compress_in_place (copy+add only first 8 elements); +0.11% noise (p=0.62) — OOO execution hides copy/add overhead entirely
+10	+8.25	n/a	0.00	n/a	discard_micro	poseidon1_koalabear_16.rs	replace FFT MDS with Karatsuba convolution (standard Montgomery muls) in permute_simd; +8.25% micro regression — 72 muls (432 vpmuludq) vs FFT's 50 muls (300 vpmuludq), confirms mul-count cost model
+11	n/a	+0.46	0.00	n/a	discard_wallclock	utils.rs(poly)	increase PARALLEL_THRESHOLD from 1024 to 2048; +0.46% regression (p=0.0) — some poly operations in 1024-2048 range benefit from rayon parallelism
+12	+5.27	n/a	0.00	n/a	discard_micro	poseidon1_koalabear_16.rs	remove conditional branch in partial round loop (pad round_constants with trailing zero); +5.27% micro regression — 64-byte struct layout shift disrupted LTO codegen
