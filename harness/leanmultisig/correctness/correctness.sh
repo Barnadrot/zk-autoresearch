@@ -20,6 +20,12 @@ REPEAT=${CORRECTNESS_REPEAT:-1}
 SHARED_DIR="$(dirname "$0")"
 
 # -----------------------------------------------------------------------
+# Inject vendored test files (quintic extension tests, etc.)
+# These live in zk-autoresearch so they don't need cherry-picking per branch.
+# -----------------------------------------------------------------------
+bash "$SHARED_DIR/test_sources/inject_tests.sh"
+
+# -----------------------------------------------------------------------
 # Layer 0: Test-file integrity check
 # Ensure the agent hasn't modified test expectations in writable crates.
 # Hash file is stored in experiment_logs (read-only for the agent).
@@ -48,11 +54,11 @@ if [[ -f "$INTEGRITY_FILE" ]]; then
 fi
 
 # -----------------------------------------------------------------------
-# Layer 1: Field arithmetic unit tests (~10s)
+# Layer 1: Field arithmetic + backend primitive tests (~15s)
 # -----------------------------------------------------------------------
 echo ""
-echo "[correctness] Layer 1: KoalaBear field arithmetic unit tests (~10s)..."
-cargo test -p mt-koala-bear --release 2>&1
+echo "[correctness] Layer 1: KoalaBear field + backend primitive tests (~15s)..."
+cargo test -p mt-koala-bear -p mt-field -p mt-sumcheck -p mt-symetric --release 2>&1
 
 # -----------------------------------------------------------------------
 # Layer 2: Full WHIR proof integration test (~30s)
