@@ -41,6 +41,7 @@ tests_guidance.md
 
 # Internal analysis — all report/ dirs are private
 experiment_logs/**/report/
+brain/report/
 
 # Build artifacts
 harness/*/bench/target/
