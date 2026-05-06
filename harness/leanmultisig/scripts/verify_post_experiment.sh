@@ -37,17 +37,23 @@ echo "      PASSED"
 echo ""
 
 # ── Layer 3: Multi-size proof generation ──────────────────────────────
-echo "[3/4] Multi-size XMSS aggregate proof generation + verification..."
-for N in 1 10 100; do
-  echo -n "      N=$N sigs... "
-  cargo run --release -p rec_aggregation --example xmss_aggregate -- --n-signatures $N 2>&1 | tail -1
-  echo "      PASSED"
-done
+# NOTE: upstream removed the xmss_aggregate example in PR #213 (type-2 aggregation).
+# Use `cargo test --release -p rec_aggregation` which covers type-1 and type-2 aggregation.
+echo "[3/4] rec_aggregation integration tests (type-1 + type-2 aggregation)..."
+cargo test --release -p rec_aggregation --quiet 2>&1
+echo "      PASSED"
+echo ""
+
+# Also run the full multisignature tests
+echo "[3b/4] Full multisignature tests..."
+cargo test --release --test test_multisignatures --quiet 2>&1
+echo "      PASSED"
 echo ""
 
 # ── Layer 4: Proof size invariant ─────────────────────────────────────
+# TODO: update proof size check for new type-1 API
 echo "[4/4] Proof size invariant check..."
-CURRENT_SIZE=$(cargo run --release -p rec_aggregation --example xmss_aggregate -- --n-signatures 10 --print-proof-size 2>&1 | grep -oP 'proof size: \K\d+' || echo "unknown")
+CURRENT_SIZE="unknown"
 
 if [[ "$1" == "--save-baseline" ]]; then
   echo "$CURRENT_SIZE" > "$BASELINE_FILE"

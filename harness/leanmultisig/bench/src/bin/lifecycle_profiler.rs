@@ -145,11 +145,11 @@ unsafe impl GlobalAlloc for TrackingAlloc {
 static A: TrackingAlloc = TrackingAlloc;
 
 use mt_koala_bear::KoalaBear;
-use rec_aggregation::{init_aggregation_bytecode, xmss_aggregate};
+use rec_aggregation::{init_aggregation_bytecode, aggregate_type_1};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
-const N_SIGS: usize = 1400;
+const N_SIGS: usize = 1550;
 const LOG_INV_RATE: usize = 1;
 
 fn print_snapshot(label: &str, snap: &BucketSnapshot) {
@@ -205,7 +205,7 @@ fn main() {
     }
     let t1 = Instant::now();
     let data = raw_xmss.clone();
-    let proof1 = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+    let proof1 = aggregate_type_1(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed1 = t1.elapsed();
     TIMELINE_ENABLED.store(false, Relaxed);
 
@@ -240,7 +240,7 @@ fn main() {
     eprintln!("--- starting proof 2 ---");
     let t2 = Instant::now();
     let data = raw_xmss.clone();
-    let proof2 = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+    let proof2 = aggregate_type_1(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed2 = t2.elapsed();
 
     let after_proof2 = COUNTERS.snapshot();

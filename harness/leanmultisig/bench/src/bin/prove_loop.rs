@@ -1,6 +1,6 @@
 use std::time::Instant;
 use mt_koala_bear::KoalaBear;
-use rec_aggregation::{init_aggregation_bytecode, xmss_aggregate, xmss_verify_aggregation};
+use rec_aggregation::{init_aggregation_bytecode, aggregate_type_1, verify_type_1};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
@@ -8,7 +8,7 @@ use backend::precompute_dft_twiddles;
 #[global_allocator]
 static ALLOC: zk_alloc::ZkAllocator = zk_alloc::ZkAllocator;
 
-const N_SIGS: usize = 1400;
+const N_SIGS: usize = 1550;
 const LOG_INV_RATE: usize = 1;
 
 type PhaseBoundaryFn = unsafe extern "C" fn();
@@ -89,7 +89,7 @@ fn main() {
         }
         let data = raw_xmss.clone();
         let start = Instant::now();
-        let (pub_keys, proof) = xmss_aggregate(&[], data, &message, BENCHMARK_SLOT, LOG_INV_RATE).expect("prove failed");
+        let sig = aggregate_type_1(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).expect("prove failed");
         let secs = start.elapsed().as_secs_f64();
         #[cfg(feature = "zkalloc_global")]
         zk_alloc::end_phase();
@@ -100,7 +100,7 @@ fn main() {
         let verify = std::env::var("VERIFY").is_ok();
         if verify {
             let vstart = Instant::now();
-            match xmss_verify_aggregation(&pub_keys, &proof, &message, BENCHMARK_SLOT) {
+            match verify_type_1(&sig) {
                 Ok(_) => eprintln!("  verify OK ({:.3}s)", vstart.elapsed().as_secs_f64()),
                 Err(e) => {
                     eprintln!("  VERIFY FAILED: {:?}", e);
