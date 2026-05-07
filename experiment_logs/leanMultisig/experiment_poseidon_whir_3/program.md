@@ -98,6 +98,7 @@ Learn from these. Do not repeat them.
 | `rs_domain_initial_reduction_factor` ≥ 8 | Security cost catches up (more queries, more PoW) | exp5 iter 19 |
 | `max_num_variables_to_send_coeffs` = 12 | Drops to 1 round but security tightens enough to overwhelm savings | exp5 iters 16, 27 |
 | Subsequent folding factor ≠ 5 | Both 4 and 6 tested, neither helps. 5 is the local optimum | exp5 iters 20-21 |
+| Batch Poseidon1 interleaving (`permute_simd_x2`) | Width-16 state uses all 32 ZMM registers; interleaving 2 states causes 9 spill loads that offset ILP gains. Best result was -0.34% (below gate). Compress_layer pairing regressed +0.51%. Combined approach netted ~0%. The dependency chain stalls (IPC=1.13) are real but unfillable without more registers. | exp6 iters 1-5 |
 
 ## Prior Experiments — What Worked
 
@@ -107,17 +108,26 @@ Learn from these. Do not repeat them.
 | 4MB chunking for large stacking segments | -0.30% | Splits 16MB monoliths across rayon workers without excessive spawn overhead |
 | `pow_bits` 18 → 16 | ~0.5% | Shifts security budget from PoW grinding (Poseidon-heavy) toward more queries |
 
-## Experiment _2 Result
+## Experiment _2 Result: Batch Interleaving Failed
 
-Experiment `poseidon_whir_2` tested batch Poseidon1 interleaving (processing 2 states
-simultaneously to fill pipeline stalls from Montgomery multiply latency chains).
+Experiment `poseidon_whir_2` tested batch Poseidon1 interleaving — processing 2 states
+simultaneously to fill pipeline stalls from Montgomery multiply latency chains.
 
-**Read the _2 iters.tsv before starting:**
-```bash
-cat ~/zk-autoresearch/experiment_logs/leanMultisig/experiment_poseidon_whir_2/iters.tsv
-```
-If _2 succeeded: you are building on those gains. If _2 failed: the iters.tsv will tell
-you exactly why batch interleaving didn't work on this codebase — incorporate that finding.
+**Result: hypothesis disproven in 5 iterations, 0 keeps.**
+
+The core problem: Poseidon1 with width-16 state already uses all 32 ZMM registers on Zen 4.
+Interleaving 2 states requires 2×16 = 32 data registers + MDS constants → 9 spill loads.
+The spill penalty offsets the ILP gain from filling dependency chain stalls.
+
+- Iter 3: compress_layer pairing → +0.51% regression (spills dominate)
+- Iter 4: first_digest_layer sponge pairing → -0.34% (best, but below 1.0% gate)
+- Iter 5: combined both → net ~0% vs baseline
+
+**Implication:** Within-core ILP for Poseidon1 is a dead end on this architecture.
+The 29.9% Poseidon cost and IPC=1.13 are real, but the fix isn't interleaving — it's
+either reducing total permutation count (structural) or finding wins elsewhere.
+
+Full data: `cat ~/zk-autoresearch/experiment_logs/leanMultisig/experiment_poseidon_whir_2/iters.tsv`
 
 ## Target Files (writable)
 

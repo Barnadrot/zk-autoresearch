@@ -1,1 +1,6 @@
 iter	tier2_criterion_pct	tier2_p	proof_kib	status	files_changed	rationale
+1	NA	NA	NA	notes-only	none	precondition validation: backend_stalls=50% slots, 3 monomorphizations confirmed; FP register file 26% stall risk
+2	NA	NA	NA	keep-no-perf	crates/backend/koala-bear/src/poseidon1_koalabear_16.rs	implemented permute_simd_x2; 32 ZMMs (= max), 9 spill loads, equivalence test passes; later reverted as part of cleanup
+3	+0.5106	0.00	NA	discard	crates/backend/symetric/src/{compression,merkle,permutation}.rs	paired compress_layer chunks via compress_x2 — regressed 0.51%, reverted
+4	-0.3360	0.05	NA	discard	crates/{backend/symetric/src/{permutation,sponge}.rs,whir/src/merkle.rs}	paired sponges in first_digest_layer (the 19.46% hot path) — improved 0.34% but below 1.0% gate, reverted
+5	+0.3667	0.01	NA	discard	{symetric,whir}::merkle.rs	combined x2 in both first_digest_layer and compress_layer (vs iter 4 baseline) — regressed 0.37% (so net improvement vs baseline ~0%), reverted
