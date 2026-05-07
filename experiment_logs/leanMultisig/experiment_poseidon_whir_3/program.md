@@ -166,26 +166,73 @@ Threshold: -0.5% with p < 0.05. Revert-A/B confirmation for keeps.
 
 ## Iteration Loop
 
-1. **Profile first.** Before your first optimization attempt, run a fresh profile on your
-   starting branch. Don't assume the snapshot above is current — _2 may have changed the
-   distribution. Update your mental model with real numbers.
+### Phase 0: Profile
 
-2. **Form a hypothesis.** State explicitly: what you expect to improve, by how much, and why.
-   Reference profiling data or code structure analysis. "Try X and see what happens" is not
-   a hypothesis.
+Before your first optimization attempt, run a fresh profile on your starting branch.
+Don't assume the snapshot above is current. Update your mental model with real numbers.
 
-3. **Implement one change.** One logical change, as small as possible.
+### Phase 1: Hypothesize
 
-4. `git commit`: `pw3-<iter>: <description>`
+State explicitly:
+1. **What** you expect to change (function, data structure, algorithm, call pattern).
+2. **Predicted magnitude** — classify before implementing:
+   - **Micro** (< 1%): tuning constants, inline hints, reordering operations within a function.
+   - **Medium** (1–5%): algorithmic change within a subsystem, layout restructuring, caching.
+   - **Structural** (> 5%): cross-subsystem redesign, new data structures, protocol-level changes.
+3. **Why** — reference profiling data, code structure analysis, or cross-system comparison.
+   "Try X and see" is not a hypothesis.
+4. **Expected scale** — how many files and LoC will this touch? Micro changes are 1–20 LoC.
+   Medium changes are 20–200 LoC. Structural changes are 100–500+ LoC across multiple files.
 
-5. Run correctness gate. FAIL → `git revert HEAD`, log, next iter.
+**Magnitude prediction is mandatory.** Log it in iters.tsv before running any gate. If your
+prediction was wrong by > 3×, analyze why in the rationale — the calibration error is more
+interesting than the result.
 
-6. Run performance gate. `RUSTFLAGS="-C target-cpu=native"` always.
-   - Gate passes → log as `keep`. Re-profile to update your model.
-   - Gate fails → `git revert HEAD`, log as `discard`.
+### Phase 2: Implement
 
-7. **Adapt.** After each result (especially discards), update your understanding. 3+
-   consecutive discards → step back, re-profile, reconsider your mental model.
+**Single-iteration changes:** One logical change, commit, gate, keep/discard. This is the
+default for micro and medium changes.
+
+**Multi-iteration arcs:** Structural changes may require multiple commits before they can be
+measured. This is allowed under these rules:
+- Log each intermediate commit as `status=wip` in iters.tsv. WIP iterations run the
+  correctness gate only (no performance gate — incomplete structural changes produce
+  meaningless benchmarks).
+- The arc MUST have a defined end state declared in the first WIP iteration's rationale.
+  "I'll know it's done when [specific condition]."
+- Maximum arc length: 5 WIP iterations. If the change isn't measurable after 5, stop,
+  measure what you have, and decide whether to continue or revert the entire arc.
+- When the arc completes, run the performance gate against the pre-arc baseline (not
+  the previous WIP commit). Log the final measurement as a normal keep/discard.
+- If discarded, `git revert` all commits in the arc.
+
+### Phase 3: Gate
+
+`git commit`: `pw3-<iter>: <description>`
+
+Run correctness gate. FAIL → `git revert HEAD`, log, next iter.
+
+Run performance gate (skip for WIP iterations). `RUSTFLAGS="-C target-cpu=native"` always.
+- Gate passes → log as `keep`. Proceed to Phase 4.
+- Gate fails → `git revert HEAD`, log as `discard`.
+
+### Phase 4: Pivot After Keeps
+
+After a **keep**, you MUST:
+1. Re-profile the full prover. The performance distribution has shifted.
+2. Identify the new top bottleneck from the fresh profile.
+3. Your next hypothesis MUST target a different function/subsystem than the one you just
+   optimized. Do not continue tuning the same lever — diminishing returns set in immediately.
+   (Exception: if re-profiling shows the same function is STILL the #1 bottleneck AND your
+   keep moved it by < 20% of its share, you may continue. Log the justification.)
+
+After a **discard**, reflect on why the prediction was wrong:
+- Was the magnitude prediction off? (Profiling model incomplete)
+- Was the direction wrong? (Hypothesis falsified)
+- Was it below the gate? (Real but small — note for bundling)
+
+After 3 consecutive micro-discards targeting the same subsystem, you MUST switch to a
+different subsystem or escalate to a medium/structural approach.
 
 **Commit discipline:** Every change and revert gets its own commit. `git revert`, not reset.
 
@@ -198,34 +245,52 @@ Append to `~/zk-autoresearch/experiment_logs/leanMultisig/experiment_poseidon_wh
 iter	tier2_criterion_pct	tier2_p	proof_kib	status	files_changed	rationale
 ```
 
-## Research Strategy Guidance
+Status values: `keep`, `discard`, `wip` (mid-arc, correctness only).
 
-Some directions worth considering (NOT a task list — form your own judgment):
+Include predicted magnitude class (micro/medium/structural) and predicted Δ% in the
+rationale field for every iteration.
 
-- **Compiler caching.** Is `compile_to_low_level_bytecode` (5.2%) called once or per-proof?
-  If per-proof, caching the bytecode compilation is a free win.
+## Research Principles
 
-- **Sumcheck optimization.** `fold_and_compute_product_sumcheck` is 3.1%. Three
-  monomorphizations suggests it runs for different polynomial types — can the inner loop
-  be vectorized better? Can evaluation domains be reused?
+You are a researcher, not a task executor. These principles guide hypothesis formation:
 
-- **Memory layout / allocation patterns.** 1.4% in malloc/cfree. The proving pipeline
-  allocates and frees large temporary buffers. Can these be arena-allocated or pooled?
-  (zk-alloc is available in the workspace but has known issues — investigate before adopting.)
+1. **Profile-driven, not suggestion-driven.** Your hypotheses come from profiling data and
+   code analysis. There is no task list. If you find yourself pattern-matching against the
+   "Dead Ends" table to find something NOT on it, you're anchored — step back and profile.
 
-- **Rayon scheduling.** If within-core wins plateau, investigate whether custom threading
-  for the Merkle pipeline (pipeline parallelism vs rayon's data parallelism) yields gains.
-  The 2.9× utilization may have headroom beyond Amdahl's law.
+2. **Match ambition to opportunity.** A 30% hotspot warrants structural investigation, not
+   constant tuning. If the top bottleneck is large, your first hypothesis should be medium
+   or structural scale. Micro-optimizations are for 1-3% targets where the constant factor
+   is the bottleneck.
 
-- **DFT/FFT in the commitment pipeline.** `reorder_and_dft()` prepares evaluations before
-  each Merkle commitment. Is it significant? Can batching or caching eliminate redundant FFTs?
+3. **Cross-system investigation is work.** Reading how Plonky3, Jolt, or SP1 solve an
+   equivalent problem is a valid iteration. Log it as `status=wip` with what you learned.
+   A structural insight from another system can unlock changes impossible to discover by
+   staring at the current codebase.
 
-- **Cross-system inspiration.** Study how Plonky3, Jolt, and SP1 handle the same bottlenecks.
-  A structural insight from another system may transfer.
+4. **Negative results compound.** Each discard narrows the search space. But the value is
+   in the WHY, not the WHAT. "Tried X, didn't work" teaches nothing. "Tried X, failed
+   because [constraint Y] which also rules out [approaches Z1, Z2]" teaches a lot.
+
+5. **Sub-threshold improvements can bundle.** If you find multiple real-but-small improvements
+   (confirmed Δ < gate, p < 0.01), you may bundle up to 3 into a single commit and re-gate
+   the bundle. Log each individually first, then log the bundle as its own iteration.
 
 ## Stop Criterion
 
-12 consecutive discards → pause and report findings so far.
+The stop criterion tracks consecutive discards, but distinguishes change scale:
+
+- **Micro-discards** (< 20 LoC, single function): count 1 toward the stop counter.
+- **Medium-discards** (20-200 LoC, subsystem-level): count 0.5 toward the stop counter.
+- **Structural-discards** (100+ LoC, multi-file): count 0 toward the stop counter
+  (structural attempts are expected to fail; their value is in what they reveal).
+- **WIP iterations** don't count toward stop criterion.
+
+**Stop at 12 points.** Pause and write a report covering: what was tried, what was learned,
+confirmed-well-tuned areas, and unexplored structural directions for the next agent.
+
+This means: 12 micro-tweaks in a row will stop you, but a mix of structural investigation
+and micro-tuning gives much more runway — which is the point.
 
 ## NEVER STOP
 Run autonomously until stopped or stop criterion hit. Every iteration teaches something —
