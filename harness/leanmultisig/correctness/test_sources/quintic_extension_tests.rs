@@ -13,7 +13,7 @@ mod tests {
     use crate::KoalaBear;
     use crate::quintic_extension::extension::QuinticExtensionField;
     use crate::quintic_extension::packed_extension::PackedQuinticExtensionField;
-    use field::{Field, PackedFieldExtension, PrimeCharacteristicRing};
+    use field::{Field, PackedFieldExtension, PackedValue, PrimeCharacteristicRing};
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
@@ -151,7 +151,7 @@ mod tests {
     // Packed ↔ scalar consistency
     // ---------------------------------------------------------------
 
-    const WIDTH: usize = 16; // AVX-512 packing width for KoalaBear
+    const WIDTH: usize = <<KoalaBear as Field>::Packing as PackedValue>::WIDTH;
 
     fn make_packed(elems: &[QEF]) -> PQEF {
         assert_eq!(elems.len(), WIDTH);

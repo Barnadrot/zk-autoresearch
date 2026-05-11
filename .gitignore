@@ -12,8 +12,11 @@
 # Methodology / spec docs (private)
 /ar-methodology/
 
-# Brain state (private, copied manually to brain agent)
-/brain/status.md
+# Brain operational tree — entire folder is private (session UUIDs, RC URLs,
+# executor SSH targets, persona layout, ad-hoc analyses — all attack surface
+# if Claude Code is ever exploited for prompt injection). Public template
+# scaffolding lives at brain_example/.
+/brain/
 
 # Reference allocator repos (cloned for study)
 /glibc-malloc/
@@ -39,9 +42,21 @@ improvement_ideas.md
 agent_context.md
 tests_guidance.md
 
-# Internal analysis — all report/ dirs are private
+# Internal analysis — experiment_logs/**/report/ stays private even though
+# the rest of experiment_logs/ is public scientific record. brain/report/
+# is covered above by /brain/.
 experiment_logs/**/report/
-brain/report/
+
+# Coordinator working directory — long-lived Sonnet session, has its own UUID
+# and pulls in any state files coordinator writes.
+coordinator/
+
+# Workspace-level Claude Code config — persona files reference live infra
+# layout and would aid an attacker in mapping the system.
+.claude/
+
+# Synthetic test artifacts (kept locally for the audit but not for shipping)
+experiment_logs/test/
 
 # Build artifacts
 harness/*/bench/target/

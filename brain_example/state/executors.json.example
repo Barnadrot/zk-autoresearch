@@ -1,0 +1,32 @@
+{
+  "_comment": "Per-machine capacity table. Copy to brain/state/executors.json and fill with your real SSH hosts. Coordinator reads this every dispatch cycle.",
+
+  "executors": {
+    "<executor-name-1>": {
+      "host": "<user>@<hostname-or-ip>",
+      "ssh_alias": "<short-alias-for-coordinator-ssh-calls>",
+      "hardware_tag": "avx512",
+      "cpu_model": "AMD Ryzen 7 PRO 8700GE Zen 4 (or similar)",
+      "cores": "8c/16t",
+      "ram_gb": 64,
+      "perf_slots": 1,
+      "ro_slots": 4,
+      "ssh_setup_verified": "YYYY-MM-DD",
+      "notes": "Primary AVX-512 perf executor. Pinned cores recommended for paired-gate stability."
+    },
+    "<executor-name-2>": {
+      "host": "<user>@<hostname-or-ip>",
+      "ssh_alias": "<short-alias>",
+      "hardware_tag": "aarch64",
+      "cpu_model": "Apple M2 or similar",
+      "cores": "10c, no SMT",
+      "ram_gb": 16,
+      "perf_slots": 1,
+      "ro_slots": 4,
+      "ssh_setup_verified": "YYYY-MM-DD",
+      "notes": "Memory-constrained — adaptive pretouch required. Verify linger enabled (loginctl enable-linger <user>)."
+    }
+  },
+
+  "updated": "YYYY-MM-DD"
+}

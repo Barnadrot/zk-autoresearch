@@ -72,12 +72,22 @@ fn main() {
     eprintln!("setup: {setup_ms}ms, rss: {}MB", rss_kb() / 1024);
     println!("proof,seconds,rss_mb");
 
-    // First phase_boundary is warmup — initializes arena without activating
+    // Pre-warm the arena once. The original code called begin_phase() here too,
+    // which left a phase active when the loop's begin_phase() ran — a latent
+    // nested-phase bug now surfaced by PR #215's assertion. The intent was to
+    // touch / initialize the arena once; achieve that by begin+end here so the
+    // loop's begin_phase() starts from a clean state.
     #[cfg(feature = "zkalloc_global")]
-    zk_alloc::begin_phase();
+    {
+        zk_alloc::begin_phase();
+        zk_alloc::end_phase();
+    }
     #[cfg(not(feature = "zkalloc_global"))]
     if let Some(pb) = phase_boundary {
         unsafe { pb(); }
+        if let Some(da) = deactivate {
+            unsafe { da(); }
+        }
     }
 
     for i in 0..n_proofs {
