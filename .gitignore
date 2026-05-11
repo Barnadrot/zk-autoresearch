@@ -43,6 +43,23 @@ tests_guidance.md
 experiment_logs/**/report/
 brain/report/
 
+# Brain operational state — session UUIDs, queue shards, executor configs
+# Never committed (attack surface for prompt injection / hijack). See
+# brain/report/rearchitecting/proposed_architecture.md for the design.
+brain/queue/
+brain/state/
+
+# Coordinator working directory — long-lived Sonnet session, has its own UUID
+# and pulls in any state files coordinator writes.
+coordinator/
+
+# Workspace-level Claude Code config — persona files reference live infra
+# layout and would aid an attacker in mapping the system.
+.claude/
+
+# Synthetic test artifacts (kept locally for the audit but not for shipping)
+experiment_logs/test/
+
 # Build artifacts
 harness/*/bench/target/
 harness/*/correctness/target/
