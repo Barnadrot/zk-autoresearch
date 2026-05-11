@@ -1,36 +1,27 @@
 #!/bin/bash
-# Paired back-to-back wall-clock gate for leanMultisig autoresearch.
+# Paired prove_loop wall-clock gate for leanMultisig autoresearch.
 #
-# Builds a baseline and candidate bench binary, runs one discarded burn-in
-# invocation, then alternates save-baseline / compare within a single shell
-# session. Output is a JSON summary: N paired Δ%, median, mean, σ, decision.
+# Builds baseline and candidate prove_loop binaries (fat LTO, zk-alloc),
+# alternates runs, and compares warm-proof wall-clock times via Welch's t-test.
 #
 # Usage:
-#   eval_paired.sh                                   # HEAD~1 (baseline) vs HEAD (candidate), N=1
+#   eval_paired.sh                                   # HEAD~1 vs HEAD, N=1
 #   eval_paired.sh --baseline <ref> --candidate <ref> [--n <int>]
-#   eval_paired.sh --n 10                            # calibration / backtest mode
+#   eval_paired.sh --n 5 --proofs 7                  # more samples per run
 #
 # Exit codes:
-#   0 = candidate kept (improvement crosses threshold + p<0.01 on single-pass)
-#   1 = discarded (no improvement or under threshold)
-#   2 = infrastructure error (build failure, identical binaries, git state)
-#
-# Decision rule (single-pass):
-#   keep if median_Δ <= -KEEP_THRESHOLD_PCT AND paired_p < 0.01
-# For calibration / backtest mode (N>=3), only stats are reported — no decision.
+#   0 = keep (improvement crosses threshold + p < 0.01)
+#   1 = discard
+#   2 = infrastructure error
 
 set -eo pipefail
 
 # ------------------------------- CONFIG --------------------------------------
 
-KEEP_THRESHOLD_PCT=${KEEP_THRESHOLD_PCT:-1.0}    # provisional; set from backtest
-SAMPLE_SIZE=${SAMPLE_SIZE:-10}
-MEASUREMENT_TIME=${MEASUREMENT_TIME:-60}
-BURN_IN_PROFILE_TIME=${BURN_IN_PROFILE_TIME:-30}
+KEEP_THRESHOLD_PCT=${KEEP_THRESHOLD_PCT:-1.0}
+N_PROOFS=${N_PROOFS:-5}       # proofs per run; proof 0 = cold warmup, 1+ = warm
 LM_REPO=${LM_REPO:-$HOME/zk-autoresearch/leanMultisig}
-BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/leanMultisig-bench}
-BENCH_NAME=${BENCH_NAME:-xmss_leaf}
-BENCH_FILTER=${BENCH_FILTER:-xmss_leaf_1400sigs}
+BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanmultisig/bench}
 BASELINE_REF="HEAD~1"
 CANDIDATE_REF="HEAD"
 N=1
@@ -45,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --candidate) CANDIDATE_REF="$2"; shift 2 ;;
     --n)         N="$2"; shift 2 ;;
     --threshold) KEEP_THRESHOLD_PCT="$2"; shift 2 ;;
+    --proofs)    N_PROOFS="$2"; shift 2 ;;
     *)           echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,8 +46,7 @@ done
 err() { echo "[eval_paired][err] $*" >&2; }
 log() { echo "[eval_paired] $*"; }
 
-build_binary() {
-  # $1 = git ref, $2 = output path
+build_prove_loop() {
   local ref="$1" out="$2"
   (
     cd "$LM_REPO"
@@ -63,37 +54,18 @@ build_binary() {
   )
   (
     cd "$BENCH_CRATE"
-    # Force a clean rebuild of the bench crate's artifacts. Path-dep rlibs are
-    # rebuilt by cargo when git checkout updates their source mtimes. Clearing
-    # the bench's own cached outputs guarantees `ls -t` below picks the fresh
-    # binary rather than a stale one from a prior checkout.
     # Full release clean — path-dep rlibs can become inconsistent after git
-    # checkout if cargo's fingerprint cache misses a cross-crate mismatch
-    # (seen in practice: bench would panic on hint_witness parsing because
-    # rec_aggregation was stale while lean_compiler was fresh). The cost is
-    # ~5-7 minutes per rebuild; the correctness is worth it.
+    # checkout if cargo's fingerprint cache misses a cross-crate mismatch.
     cargo clean --release >/dev/null 2>&1 || true
-    cargo build --release --bench "$BENCH_NAME" 2>&1 | tail -5 >&2 || { err "cargo build failed at $ref"; exit 2; }
-    local bin
-    bin=$(ls -t "$BENCH_CRATE"/target/release/deps/${BENCH_NAME}-* 2>/dev/null | grep -v '\.d$' | head -1)
-    if [[ -z "$bin" ]]; then err "no bench binary after build at $ref"; exit 2; fi
-    cp "$bin" "$out"
+    cargo build --release --bin prove_loop --features zkalloc_global 2>&1 | tail -5 >&2 \
+      || { err "cargo build --bin prove_loop failed at $ref"; exit 2; }
+    cp target/release/prove_loop "$out" \
+      || { err "prove_loop binary not found at $ref"; exit 2; }
   )
-}
-
-# Extract the "change: [low med high] (p = P ...)" block from criterion output.
-extract_change() {
-  # $1 = log file; prints "median_pct p_value" or "NA NA"
-  local med p
-  # Median change comes from "change: [low MED high]"
-  med=$(grep -oP 'change:\s*\[\s*[-+]?[0-9.]+%\s+\K[-+]?[0-9.]+' "$1" | head -1)
-  p=$(grep -oP 'change:\s*\[[^\]]+\]\s*\(p\s*=\s*\K[0-9.]+' "$1" | head -1)
-  echo "${med:-NA} ${p:-NA}"
 }
 
 # ------------------------------ SETUP ----------------------------------------
 
-# Resolve refs to SHAs (pinning in case HEAD moves during the run)
 ORIG_HEAD=$(cd "$LM_REPO" && git rev-parse HEAD)
 ORIG_BRANCH=$(cd "$LM_REPO" && git rev-parse --abbrev-ref HEAD)
 BASELINE_SHA=$(cd "$LM_REPO" && git rev-parse "$BASELINE_REF")
@@ -101,125 +73,200 @@ CANDIDATE_SHA=$(cd "$LM_REPO" && git rev-parse "$CANDIDATE_REF")
 
 log "baseline  : $BASELINE_REF ($BASELINE_SHA)"
 log "candidate : $CANDIDATE_REF ($CANDIDATE_SHA)"
-log "N paired  : $N"
+log "N rounds  : $N"
+log "proofs/run: $N_PROOFS (proof 0 = cold, 1+ = warm)"
 
 if [[ "$BASELINE_SHA" == "$CANDIDATE_SHA" ]]; then
   err "baseline == candidate SHA — nothing to compare"
   exit 2
 fi
 
-# Restore git state on any exit
 trap 'cd "$LM_REPO" && git checkout --quiet "$ORIG_BRANCH" 2>/dev/null || git checkout --quiet "$ORIG_HEAD" 2>/dev/null || true' EXIT
 
 # ------------------------------ BUILD ----------------------------------------
 
-log "building baseline binary..."
-build_binary "$BASELINE_SHA" /tmp/bench_base
+log "building baseline prove_loop..."
+build_prove_loop "$BASELINE_SHA" /tmp/prove_loop_base
 
-log "building candidate binary..."
-build_binary "$CANDIDATE_SHA" /tmp/bench_cand
+log "building candidate prove_loop..."
+build_prove_loop "$CANDIDATE_SHA" /tmp/prove_loop_cand
 
-# NOTE: DO NOT restore ORIG_HEAD before running benches. The bench binary
-# loads `rec_aggregation/main.py` at runtime from the git-tracked path,
-# so the working tree must match the binary being executed. We re-checkout
-# inside the per-round loop below.
-
-# Binary hash guard — if both binaries are byte-identical the build cache
-# almost certainly didn't pick up the candidate change, or the change is a no-op.
-HASH_BASE=$(md5sum /tmp/bench_base | awk '{print $1}')
-HASH_CAND=$(md5sum /tmp/bench_cand | awk '{print $1}')
+HASH_BASE=$(md5sum /tmp/prove_loop_base | awk '{print $1}')
+HASH_CAND=$(md5sum /tmp/prove_loop_cand | awk '{print $1}')
 log "hash_base : $HASH_BASE"
 log "hash_cand : $HASH_CAND"
 if [[ "$HASH_BASE" == "$HASH_CAND" ]]; then
-  err "baseline and candidate binaries have identical hashes — build cache hazard or no-op change"
-  # Continue only if explicitly asked (idle-noise calibration), otherwise abort
+  err "binaries identical — no-op change or build cache hazard"
   if [[ "${ALLOW_IDENTICAL_BIN:-0}" != "1" ]]; then exit 2; fi
 fi
 
-# ------------------------------ BURN-IN --------------------------------------
+# ------------------------------ THERMAL WARMUP --------------------------------
 
-# Burn-in runs the CANDIDATE to warm thermals. Needs candidate's working tree.
 (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
-log "burn-in invocation (discarded)..."
-( cd "$BENCH_CRATE" && \
-  /tmp/bench_cand --bench "$BENCH_FILTER" --profile-time "$BURN_IN_PROFILE_TIME" \
-    --sample-size "$SAMPLE_SIZE" --noplot >/dev/null 2>&1 ) || true
+log "thermal warmup (discarded)..."
+/tmp/prove_loop_cand 2 >/dev/null 2>&1 || true
 
 # ------------------------------ MEASURE --------------------------------------
 
-RUN_LOG=$(mktemp /tmp/eval_paired_run.XXXXXX.txt)
-DELTA_FILE=$(mktemp /tmp/eval_paired_deltas.XXXXXX.txt)
-: > "$DELTA_FILE"
+ALL_BASE_TIMES=$(mktemp /tmp/eval_base_times.XXXXXX.txt)
+ALL_CAND_TIMES=$(mktemp /tmp/eval_cand_times.XXXXXX.txt)
+ROUND_LOG=$(mktemp /tmp/eval_round_log.XXXXXX.txt)
+: > "$ALL_BASE_TIMES"
+: > "$ALL_CAND_TIMES"
+: > "$ROUND_LOG"
 
 for ((round=1; round<=N; round++)); do
-  baseline_tag="eval_paired_${round}"
-  echo "=== paired round $round / $N ===" >> "$RUN_LOG"
+  log "=== round $round / $N ==="
 
-  # IMPORTANT: bench binaries load runtime files (main.py etc.) from the
-  # git-tracked path. Sync the working tree to the SHA of the binary being
-  # run, or it will try to parse the wrong-era source and panic.
+  # --- baseline run ---
   (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
-  ( cd "$BENCH_CRATE" && \
-    /tmp/bench_base --bench "$BENCH_FILTER" \
-      --save-baseline "$baseline_tag" \
-      --sample-size "$SAMPLE_SIZE" --measurement-time "$MEASUREMENT_TIME" --noplot \
-      >> "$RUN_LOG" 2>&1 )
+  BASE_CSV=$(mktemp /tmp/eval_base.XXXXXX.csv)
+  /tmp/prove_loop_base "$N_PROOFS" > "$BASE_CSV" 2>/dev/null
 
+  # --- candidate run ---
   (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
-  CMP_LOG=$(mktemp /tmp/eval_paired_cmp.XXXXXX.txt)
-  ( cd "$BENCH_CRATE" && \
-    /tmp/bench_cand --bench "$BENCH_FILTER" \
-      --baseline "$baseline_tag" \
-      --sample-size "$SAMPLE_SIZE" --measurement-time "$MEASUREMENT_TIME" --noplot \
-      > "$CMP_LOG" 2>&1 )
-  cat "$CMP_LOG" >> "$RUN_LOG"
+  CAND_CSV=$(mktemp /tmp/eval_cand.XXXXXX.csv)
+  /tmp/prove_loop_cand "$N_PROOFS" > "$CAND_CSV" 2>/dev/null
 
-  read -r med p <<< "$(extract_change "$CMP_LOG")"
-  echo "$round $med $p" >> "$DELTA_FILE"
-  log "round $round: Δ=${med}%  p=${p}"
-  rm -f "$CMP_LOG"
+  # --- extract warm proof times and per-round summary ---
+  python3 - "$BASE_CSV" "$CAND_CSV" "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG" "$round" <<'PY'
+import sys
+
+base_csv, cand_csv, base_out, cand_out, round_log, rnd = sys.argv[1:]
+
+def parse_warm(path):
+    times = []
+    for line in open(path):
+        line = line.strip()
+        if line.startswith("proof,"):
+            continue
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        idx, secs = int(parts[0]), float(parts[1])
+        if idx >= 1:
+            times.append(secs)
+    return times
+
+base_times = parse_warm(base_csv)
+cand_times = parse_warm(cand_csv)
+
+if not base_times or not cand_times:
+    print(f"round {rnd}: FAILED to extract warm proof times", file=sys.stderr)
+    sys.exit(1)
+
+with open(base_out, "a") as f:
+    for t in base_times:
+        f.write(f"{t:.6f}\n")
+with open(cand_out, "a") as f:
+    for t in cand_times:
+        f.write(f"{t:.6f}\n")
+
+base_avg = sum(base_times) / len(base_times)
+cand_avg = sum(cand_times) / len(cand_times)
+delta_pct = (cand_avg - base_avg) / base_avg * 100
+
+with open(round_log, "a") as f:
+    f.write(f"{rnd} {base_avg:.6f} {cand_avg:.6f} {delta_pct:.4f}\n")
+
+print(f"[eval_paired] round {rnd}: base={base_avg:.3f}s  cand={cand_avg:.3f}s  Δ={delta_pct:+.2f}%")
+PY
+
+  rm -f "$BASE_CSV" "$CAND_CSV"
 done
 
 # ------------------------------ ANALYZE --------------------------------------
 
-SUMMARY=$(python3 - "$DELTA_FILE" "$KEEP_THRESHOLD_PCT" "$N" "$HASH_BASE" "$HASH_CAND" "$BASELINE_SHA" "$CANDIDATE_SHA" <<'PY'
-import sys, statistics as s, json
-path, thr, n, hash_base, hash_cand, base_sha, cand_sha = sys.argv[1:]
-thr, n = float(thr), int(n)
+SUMMARY=$(python3 - "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG" \
+  "$KEEP_THRESHOLD_PCT" "$N" "$HASH_BASE" "$HASH_CAND" \
+  "$BASELINE_SHA" "$CANDIDATE_SHA" "$N_PROOFS" <<'PY'
+import sys, json, math, statistics as st
+
+base_path, cand_path, round_path = sys.argv[1:4]
+thr, n, hash_base, hash_cand, base_sha, cand_sha, n_proofs = sys.argv[4:]
+thr, n, n_proofs = float(thr), int(n), int(n_proofs)
+
+base_times = [float(x) for x in open(base_path) if x.strip()]
+cand_times = [float(x) for x in open(cand_path) if x.strip()]
+
 rounds = []
-for line in open(path):
+for line in open(round_path):
     parts = line.strip().split()
-    if len(parts) != 3: continue
-    try:
-        rounds.append((int(parts[0]), float(parts[1]), float(parts[2])))
-    except ValueError:
-        continue
-if not rounds:
-    print(json.dumps({"error": "no paired rounds parsed"}))
+    if len(parts) == 4:
+        rounds.append({
+            "round": int(parts[0]),
+            "base_avg": float(parts[1]),
+            "cand_avg": float(parts[2]),
+            "delta_pct": float(parts[3]),
+        })
+
+if not base_times or not cand_times:
+    print(json.dumps({"error": "no proof times collected"}))
     sys.exit(0)
-deltas = [r[1] for r in rounds]
-pvals  = [r[2] for r in rounds]
-med    = s.median(deltas)
-mean   = s.mean(deltas)
-sigma  = s.stdev(deltas) if len(deltas) >= 2 else 0.0
-# Single-pass decision only meaningful for N==1
-decision = None
-if n == 1:
-    d = deltas[0]
-    p = pvals[0]
-    decision = "keep" if (d <= -thr and p < 0.01) else "discard"
+
+n_b, n_c = len(base_times), len(cand_times)
+mean_b, mean_c = st.mean(base_times), st.mean(cand_times)
+delta_pct = (mean_c - mean_b) / mean_b * 100
+
+# Welch's t-test
+var_b = st.variance(base_times) if n_b >= 2 else 0
+var_c = st.variance(cand_times) if n_c >= 2 else 0
+se = math.sqrt(var_b / n_b + var_c / n_c) if (var_b + var_c) > 0 else 1e-9
+t_stat = (mean_c - mean_b) / se
+
+# Welch-Satterthwaite degrees of freedom
+if var_b + var_c > 0:
+    num = (var_b / n_b + var_c / n_c) ** 2
+    d1 = (var_b / n_b) ** 2 / (n_b - 1) if n_b > 1 and var_b > 0 else 0
+    d2 = (var_c / n_c) ** 2 / (n_c - 1) if n_c > 1 and var_c > 0 else 0
+    df = num / (d1 + d2) if (d1 + d2) > 0 else 1
+else:
+    df = 1
+
+# Two-tailed p-value via numerical integration of the t-PDF
+def t_pvalue(t_val, nu):
+    coeff = math.exp(math.lgamma((nu+1)/2) - math.lgamma(nu/2)) / math.sqrt(nu * math.pi)
+    def pdf(x):
+        return coeff * (1 + x*x/nu) ** (-(nu+1)/2)
+    abs_t = abs(t_val)
+    upper = abs_t + 50
+    n_pts = 10000
+    h = (upper - abs_t) / n_pts
+    s = 0.5 * (pdf(abs_t) + pdf(upper))
+    for i in range(1, n_pts):
+        s += pdf(abs_t + i * h)
+    return min(1.0, 2 * s * h)
+
+p_value = t_pvalue(t_stat, df) if df > 0 else 1.0
+
+# Decision
+if delta_pct <= -thr and p_value < 0.01:
+    decision = "keep"
+else:
+    decision = "discard"
+
+per_round = [{"round": r["round"],
+              "base_s": round(r["base_avg"], 4),
+              "cand_s": round(r["cand_avg"], 4),
+              "delta_pct": round(r["delta_pct"], 2)} for r in rounds]
+
 summary = {
-    "n": len(rounds),
-    "deltas_pct": deltas,
-    "p_values":  pvals,
-    "median_pct": med,
-    "mean_pct":   mean,
-    "sigma_pct":  sigma,
+    "n_rounds": len(rounds),
+    "n_proofs_per_run": n_proofs,
+    "warm_proofs_per_run": n_proofs - 1,
+    "total_samples": {"baseline": n_b, "candidate": n_c},
+    "base_avg_s": round(mean_b, 4),
+    "cand_avg_s": round(mean_c, 4),
+    "delta_pct": round(delta_pct, 2),
+    "t_stat": round(t_stat, 3),
+    "p_value": round(p_value, 6),
+    "df": round(df, 1),
     "threshold_pct": thr,
-    "decision":   decision,
-    "hash_base":  hash_base,
-    "hash_cand":  hash_cand,
-    "baseline_sha":  base_sha,
+    "decision": decision,
+    "per_round": per_round,
+    "hash_base": hash_base,
+    "hash_cand": hash_cand,
+    "baseline_sha": base_sha,
     "candidate_sha": cand_sha,
 }
 print(json.dumps(summary, indent=2))
@@ -231,9 +278,9 @@ echo "=== SUMMARY ==="
 echo "$SUMMARY"
 echo "$SUMMARY" > /tmp/eval_paired_summary.json
 
+# Cleanup temp files
+rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
+
 # Exit code
-if [[ "$N" == "1" ]]; then
-  dec=$(echo "$SUMMARY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision"])')
-  [[ "$dec" == "keep" ]] && exit 0 || exit 1
-fi
-exit 0
+dec=$(echo "$SUMMARY" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("decision","discard"))')
+[[ "$dec" == "keep" ]] && exit 0 || exit 1

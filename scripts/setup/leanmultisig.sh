@@ -46,6 +46,7 @@ git clone https://github.com/leanEthereum/leanMultisig
 git clone https://github.com/Plonky3/Plonky3
 git clone https://github.com/a16z/jolt
 git clone https://github.com/succinctlabs/sp1
+git clone https://github.com/Barnadrot/zk-alloc
 
 echo "=== Setting environment variables ==="
 cat >> ~/.bashrc << 'EOF'
