@@ -19,6 +19,9 @@
 
 set -eo pipefail
 
+SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SHARED_DIR/config.env" 2>/dev/null || true
+
 IAI_MIN_DROP_PCT=${IAI_MIN_DROP_PCT:-0.10}
 IAI_MAX_REGR_PCT=${IAI_MAX_REGR_PCT:-0.05}
 LM_REPO=${LM_REPO:-$HOME/zk-autoresearch/leanMultisig}
