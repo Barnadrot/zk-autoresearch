@@ -1,0 +1,5 @@
+{
+  "_comment": "Live Claude Code sessions across all machines. Coordinator owns this file. One writer per file via the architecture's discipline. Brain reads at start of every turn to know what's running.",
+
+  "sessions": []
+}
