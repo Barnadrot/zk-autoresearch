@@ -124,3 +124,18 @@ Every experiment defines correctness and performance gates:
 - **Experiment logs are append-only.** Never delete or modify past experiment data.
 - **One change per iteration.** Agent proposes one targeted change, eval gates decide keep/discard.
 - **Reports stay local.** `report/` folders are gitignored — saved to Nextcloud manually, never committed.
+
+## Agent Git Protocol (ABSOLUTE — applies to every dispatched experiment)
+
+When you (an executor agent) are dispatched by the coordinator to run an experiment, follow these rules for git, regardless of what the experiment's program.md says:
+
+1. **Find your branch name.** Read `brain/queue/active/<id>.json`'s `branch` field (or, if you cannot read brain/, read the value from your invocation prompt). That is the branch you commit on.
+2. **Never commit to `main`.** If `git rev-parse --abbrev-ref HEAD` returns `main`, you must `git checkout -b <branch> origin/main` (or `git checkout <branch>` if it already exists) BEFORE your first commit.
+3. **Commit-per-phase is fine** — but on the experiment branch, never on main.
+4. **Bulky raw data goes in `report/`.** Any single file >1 MB (perf.data, sample(1) txt output, xctrace .trace bundle and .xml export, powermetrics raw txt, flamegraph collapsed stacks) MUST be placed inside a `report/` subfolder of the experiment dir BEFORE you commit. The `experiment_logs/**/report/` path is gitignored — files there stay local. Only summary `.md`, `.tsv`, and small logs (<200 KB) go in the top dir.
+5. **Do NOT `git push`.** Brain reviews verdicts and pushes from the brain machine. If you need to share intermediate state across machines, write it to your experiment dir and the coordinator will rsync.
+6. **Leave Cargo.lock changes uncommitted.** Cargo will modify Cargo.lock during builds. Don't commit those changes unless the experiment explicitly tracks lockfile movement.
+
+If the program.md instructs you to commit to main or push, treat that as a program.md bug — follow this protocol instead and note the conflict in your verdict.
+
+Coordinator handles: pre-dispatch `git pull` + `git checkout -b <branch>` setup. So when you start, the branch is already checked out for you. You just commit on it.
