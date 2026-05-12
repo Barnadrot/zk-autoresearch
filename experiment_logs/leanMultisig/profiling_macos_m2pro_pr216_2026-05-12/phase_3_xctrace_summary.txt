@@ -1,0 +1,34 @@
+total rows (each = 1 ms thread-time): 113768
+
+P-core rows: 73610 (64.7%)
+E-core rows: 40158 (35.3%)
+unknown:     0
+
+Distinct P core IDs in trace: 6
+Distinct E core IDs in trace: 4
+Per-P-core thread-time: 12268 ms  (over 16.4 s wall)
+Per-E-core thread-time: 10040 ms  (over 16.4 s wall)
+P-to-E thread-time ratio per core: 1.22× (heterogeneity tax = 18.2%)
+
+Inclusive bucket share (any frame in stack matches):
+  poseidon         59673 ( 52.5% of all rows)
+  sumcheck         13287 ( 11.7% of all rows)
+  rayon           109694 ( 96.4% of all rows)
+  kernel_wait       2209 (  1.9% of all rows)
+  compress_mut     34468 ( 30.3% of all rows)
+  permute_mut       4011 (  3.5% of all rows)
+  memmove            805 (  0.7% of all rows)
+  alloc              645 (  0.6% of all rows)
+
+Per-thread Poseidon-inclusive share:
+  tid=  6151 total= 11014 pos= 5873 ( 53.3%)  prove_loop_pr216 0xa501 (prove_loop_pr216, pid: 10526)
+  tid=  6160 total= 11007 pos= 5896 ( 53.6%)  prove_loop_pr216 0xa4fd (prove_loop_pr216, pid: 10526)
+  tid=  6154 total= 10977 pos= 5879 ( 53.6%)  prove_loop_pr216 0xa4ff (prove_loop_pr216, pid: 10526)
+  tid=  6169 total= 10977 pos= 5856 ( 53.3%)  prove_loop_pr216 0xa502 (prove_loop_pr216, pid: 10526)
+  tid=  6142 total= 10970 pos= 5892 ( 53.7%)  prove_loop_pr216 0xa506 (prove_loop_pr216, pid: 10526)
+  tid=  6194 total= 10949 pos= 5889 ( 53.8%)  prove_loop_pr216 0xa4fe (prove_loop_pr216, pid: 10526)
+  tid=  6137 total= 10946 pos= 5891 ( 53.8%)  prove_loop_pr216 0xa500 (prove_loop_pr216, pid: 10526)
+  tid=  6147 total= 10946 pos= 5853 ( 53.5%)  prove_loop_pr216 0xa504 (prove_loop_pr216, pid: 10526)
+  tid=  6201 total= 10932 pos= 5831 ( 53.3%)  prove_loop_pr216 0xa505 (prove_loop_pr216, pid: 10526)
+  tid=  6122 total= 10929 pos= 5876 ( 53.8%)  prove_loop_pr216 0xa503 (prove_loop_pr216, pid: 10526)
+  tid=     2 total=  4121 pos=  937 ( 22.7%)  Main Thread 0xa42d (prove_loop_pr216, pid: 10526)
