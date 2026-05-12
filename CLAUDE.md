@@ -127,15 +127,29 @@ Every experiment defines correctness and performance gates:
 
 ## Agent Git Protocol (ABSOLUTE — applies to every dispatched experiment)
 
-When you (an executor agent) are dispatched by the coordinator to run an experiment, follow these rules for git, regardless of what the experiment's program.md says:
+Two experiment shapes; different git discipline for each.
 
-1. **Find your branch name.** Read `brain/queue/active/<id>.json`'s `branch` field (or, if you cannot read brain/, read the value from your invocation prompt). That is the branch you commit on.
-2. **Never commit to `main`.** If `git rev-parse --abbrev-ref HEAD` returns `main`, you must `git checkout -b <branch> origin/main` (or `git checkout <branch>` if it already exists) BEFORE your first commit.
-3. **Commit-per-phase is fine** — but on the experiment branch, never on main.
-4. **Bulky raw data goes in `report/`.** Any single file >1 MB (perf.data, sample(1) txt output, xctrace .trace bundle and .xml export, powermetrics raw txt, flamegraph collapsed stacks) MUST be placed inside a `report/` subfolder of the experiment dir BEFORE you commit. The `experiment_logs/**/report/` path is gitignored — files there stay local. Only summary `.md`, `.tsv`, and small logs (<200 KB) go in the top dir.
-5. **Do NOT `git push`.** Brain reviews verdicts and pushes from the brain machine. If you need to share intermediate state across machines, write it to your experiment dir and the coordinator will rsync.
-6. **Leave Cargo.lock changes uncommitted.** Cargo will modify Cargo.lock during builds. Don't commit those changes unless the experiment explicitly tracks lockfile movement.
+### Shape A — Optimization (commit-eval-decide loop)
 
-If the program.md instructs you to commit to main or push, treat that as a program.md bug — follow this protocol instead and note the conflict in your verdict.
+The agent modifies source, evaluates, keeps or reverts. Commits ARE the audit trail.
 
-Coordinator handles: pre-dispatch `git pull` + `git checkout -b <branch>` setup. So when you start, the branch is already checked out for you. You just commit on it.
+1. **Find your branch name.** Read `brain/queue/active/<id>.json`'s `branch` field. That is the branch you commit on. Coordinator has already checked it out for you before launching claude.
+2. **Never commit to `main`.** If `git rev-parse --abbrev-ref HEAD` returns `main`, you must `git checkout <branch>` before your first commit.
+3. **Commit per iteration on the experiment branch.** That's the canonical audit trail. Failed iterations get `git revert`, not `git reset` — the revert is also in the log.
+4. **Do NOT `git push`.** Brain pushes after reviewing the verdict.
+5. **Leave Cargo.lock alone** unless the experiment explicitly tracks lockfile movement.
+
+### Shape B — Profiling / measurement (read-only)
+
+No source changes. The agent writes data files to the experiment dir; that's the artifact. **There is no commit-per-phase rule** — committing the data files is what caused the executor-divergence bug on 2026-05-12.
+
+1. **Do not commit anything.** Not the program.md you read, not your phase output files, not Cargo.lock, not any branch checkout. Stay on `main` and never write a commit.
+2. **Write your phase outputs as files in the experiment dir.** That's the audit trail: file contents and mtimes.
+3. **Bulky raw data goes in `report/`.** Any single file >1 MB (perf.data, sample(1) txt output, xctrace .trace bundle and .xml export, powermetrics raw txt, flamegraph collapsed stacks, profile traces) MUST land in a `report/` subfolder of the experiment dir. The `experiment_logs/**/report/` path is gitignored — files there stay local; coordinator rsyncs them back to brain. Only summary `.md`, `.tsv`, and small logs (<200 KB) go in the top dir.
+4. **Do NOT `git push`.** Brain commits the summary artifacts after reviewing your verdict.
+
+### Both shapes
+
+If the program.md contradicts this protocol (e.g., a profiling experiment that says "commit per phase"), treat that as a program.md bug — follow this protocol instead and note the conflict in your verdict.
+
+Coordinator handles pre-dispatch sync: `git pull` and (for Shape A) `git checkout <branch>`. By the time claude starts, the tree is in the right state — you just do the work.
