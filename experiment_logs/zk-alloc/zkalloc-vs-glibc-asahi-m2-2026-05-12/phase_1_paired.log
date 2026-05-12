@@ -1,0 +1,10 @@
+=== Round 1 (sysmalloc first) ===
+A(sys): 16.83, B(zk): 16.64
+=== Round 2 (zkalloc first) ===
+A(zk): 16.27, B(sys): 16.96
+=== Round 3 (sysmalloc first) ===
+A(sys): 17.06, B(zk): 16.19
+=== Round 4 (zkalloc first) ===
+A(zk): 16.19, B(sys): 16.88
+=== Round 5 (sysmalloc first) ===
+A(sys): 17.15, B(zk): 16.25
