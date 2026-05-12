@@ -33,36 +33,37 @@ Sample stddev across rounds: **0.73 pp**. Median Δ: **−9.15%**. Every single 
 
 Order bias check: averaging by execution slot (A vs B), the two slots differ by < 0.3 s — alternation neutralized it, so the −9.24% mean is not a positional artifact.
 
-## 3. Cross-machine comparison
+## 3. Cross-machine comparison (CORRECTED 2026-05-12)
 
-| Machine                       | Chip       | OS / libc                | zk-alloc Δ vs system malloc |
-|-------------------------------|------------|--------------------------|----------------------------:|
-| **Scaleway M2-L (this run)**  | M2 Pro     | macOS 15.6.1 / libsystem | **−9.24%** ± 0.73 pp        |
-| Asahi M2 reference            | M2         | Asahi Linux / glibc      | −5.94%                      |
-| Hetzner Zen 4 reference       | Zen 4      | Linux / glibc            | ~−3% to −5%                 |
+**Reference numbers in the program.md cited "~−3% to −5%" for Hetzner — that was wrong.** Canonical data from memory `project_leanmultisig_uses_zkalloc.md`:
 
-macOS M2 is the **strongest win** of the three platforms — ~3.3 pp deeper than the same chip family running Asahi/glibc, and roughly 2× the Hetzner Zen 4 win.
+| Workload / Platform | OS / libc | zk-alloc Δ |
+|---|---|--:|
+| leanMultisig / **Hetzner Zen 4 AVX-512** | Linux / glibc | **+25%** |
+| leanMultisig / MacBook M4 | macOS / libsystem | +10% |
+| **leanMultisig / M2-L (THIS RUN)** | **macOS Sequoia / libsystem** | **+9.24% ± 0.73 pp** |
+| leanMultisig / M2 Asahi | Linux / glibc | +3.4% |
+| leanMultisig / M-series macOS 16 GiB (historical, Thomas/Emile) | macOS | **negative** |
 
-## 4. Verdict on the M1 bug story
+## 4. Verdict on the M1 bug story (CORRECTED)
 
-The program defined three candidate conclusions. The data fits **none of them** cleanly — but in the most favorable possible way:
+The narrative I drafted in §4 originally was wrong. Corrected:
 
-- Not "within ±2 pp of Asahi" → the macOS delta is 3.3 pp *deeper*, not shallower or matching.
-- Not "shallower or regression" → opposite direction; macOS libsystem is *weaker* than glibc relative to zk-alloc, not stronger.
-- Not "positive delta" (zk-alloc hurts) → every round is firmly negative.
+- macOS M2 Pro Sequoia is **NOT** the strongest zk-alloc target. Hetzner Zen 4 (Linux glibc) is, by ~2.7×.
+- The **+9.24%** measured here is **consistent with the MacBook M4 macOS reference (+10%)** — confirms cross-OS portability at the macOS-typical magnitude.
+- The **historical "negative on M-series macOS 16 GiB"** (Thomas/Emile) **does not reproduce** on this Scaleway M2-L Sequoia 15.6.1 setup. That IS a meaningful closure of the M1 bug story, but a smaller claim than "macOS is strongest."
+- Why is Asahi +3.4% the smallest Linux number? Open question. Candidate explanations: 16 KiB vs 4 KiB pages, M2 vs Zen 4 microarchitecture, Apple-Silicon-on-Linux memory-subsystem differences. Worth a focused investigation if zk-alloc's M2-Linux story matters.
 
-**Effective conclusion: the M1 12× regression story is definitively closed, and macOS is now the *best* platform for zk-alloc, not a fragile one.** What looked like a libsystem-shaped landmine in the M1 era is, on M2 + macOS Sequoia + Rust 2021 + `lto=fat`, a clean ~9% win — *larger* than Linux/glibc on the same chip. The most likely explanation is that Apple's magazine-based zone allocator pays a higher per-allocation tax than ptmalloc2 for leanMultisig's allocation profile (many medium-lived buffers per proof; bump+reset is a near-ideal fit), and that tax was masked on M1 by other regressions that have since been resolved.
+## 5. Implication for the paper claim (CORRECTED)
 
-## 5. Implication for the paper claim
+The cross-OS portability story holds at the **expected** magnitude, not better than expected:
 
-The cross-OS portability story holds, **and gets stronger than expected**. The paper claim can now read:
-
-> zk-alloc delivers wall-clock improvements on every platform tested: Linux/glibc on Zen 4 (~−3 to −5%), Linux/glibc on Apple M2 (−5.94%), and macOS/libsystem on Apple M2 Pro (−9.24%). The largest win occurs on macOS, contrary to the earlier hypothesis that Apple's zone allocator might be a strong-enough baseline to erase the gain.
+> zk-alloc delivers wall-clock improvements on every platform tested. Hetzner Zen 4 + Linux + glibc is the strongest win at +25%. macOS (MacBook M4 +10%, Scaleway M2 Pro +9.24%) consistently shows a smaller but real +9-10% win — confirming portability without claiming macOS dominance. M2 Asahi Linux's +3.4% is the smallest Linux number and warrants its own investigation.
 
 Operational consequences:
-- **Justin's deployment story:** macOS dev boxes are no longer a hedge case to caveat; they're the *best* zk-alloc target.
-- **Task #59 (zk-alloc Plonky3 macOS validation):** framing flips from "verify nothing broke" to "expect a larger win than Linux; investigate if not observed."
-- **No need to gate the `zkalloc_global` feature behind a `cfg(target_os = "linux")` guard.** Same default everywhere.
+- **Justin's deployment story:** macOS works fine — +9-10% is real and consistent, not a hedge case. NOT a "best target" but a confirmed-working target.
+- **Task #59 (zk-alloc Plonky3 macOS validation):** expect ~+10% on macOS, similar to or slightly smaller than Linux glibc, and verify the Plonky3 workload shape behaves similarly to leanMultisig.
+- **No need to gate the `zkalloc_global` feature behind a `cfg(target_os = "linux")` guard.** Same default everywhere — but the Linux/Hetzner Zen 4 path remains the headline.
 
 ---
 
