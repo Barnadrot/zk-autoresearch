@@ -1,0 +1,64 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{parskip}
+\usepackage{hyperref}
+
+\title{Why the truncated feedforward hash does not achieve $2^{124}$ collision resistance}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{The construction}
+
+State width $b=16$ KoalaBear elements (${\log_2 p \approx 31}$), rate $r=12$, capacity $c=b-r=4$, output $h=8$. Permutation $\pi:\mathbb{F}^b \to \mathbb{F}^b$. Compression and iteration:
+\[
+F(s, M) = \pi(s + (M\,\Vert\,0^c)) + s, \quad s_0 = 0^b, \quad s_i = F(s_{i-1}, M_i), \quad \mathsf{H}(M_1,\dots,M_k) = (s_k)_{1:h}.
+\]
+Truncation gives an $h$-element digest; in bits, the digest space is $h \log_2 p \approx 248$ bits.
+
+\section*{The claim, and why it doesn't hold}
+
+The original argument asserted collision resistance up to $2^{h \log_2 p / 2} \approx 2^{124}$, on the grounds that the feedforward term $+s$ defeats the standard sponge $c/2$ attack and pushes the bottleneck to the truncated-output birthday.
+
+This is contradicted by the recent literature on adding Davies-Meyer-style feedforward to sponge constructions. Specifically:
+
+\paragraph{Reference.} Siwei Sun, Shun Li, Zhiyu Zhang, Charlotte Lefevre, Bart Mennink, Zhen Qin, Dengguo Feng, \emph{Permutation-Based Hashing With Stronger (Second) Preimage Resistance}, Cryptology ePrint Archive Paper 2025/963 (2025), \url{https://eprint.iacr.org/2025/963}.
+
+The paper introduces SPONGE-DM, a sponge variant where the absorption step is performed in Davies-Meyer mode. The paper's Theorem 1 proves
+\[
+\text{collision resistance of SPONGE-DM} \;\le\; \min\!\left\{2^{c\log_2 p/2},\; 2^{h\log_2 p/2}\right\}
+\]
+(in our notation; the paper writes the capacity and digest in bits). At the parameters here, $c \log_2 p \approx 124$ bits and $h \log_2 p \approx 248$ bits, so the bound is
+\[
+\min\!\left\{2^{62},\; 2^{124}\right\} \;=\; 2^{62}.
+\]
+The paper's title is precise: feedforward improves \emph{preimage} and \emph{second preimage} resistance, but \emph{not} collision resistance. The collision bound is still $c/2$, exactly as in the vanilla sponge.
+
+\section*{What this means at the parameters of the construction}
+
+The claimed $2^{124}$ collision resistance is not supported. Under the framework of 2025/963 the construction has at most $2^{62}$ collision resistance, $62$ bits short of the design target and well below any acceptable cryptographic threshold.
+
+\section*{One technical caveat}
+
+SPONGE-DM as published is $s' = \pi(x) + x$ where $x = s + (M\,\Vert\,0)$. The construction here is $s' = \pi(x) + s$. They differ by an $(M, 0)$ term in the rate. The chosen-message-cancel attack that yields a $2^{c/2}$ full-state collision in SPONGE-DM directly does \emph{not} give a state collision in the $+s$ variant (it gives a residual rate disagreement instead).
+
+This leaves a narrow technical gap: it is conceivable that the $+s$ variant achieves better collision resistance than SPONGE-DM. However:
+\begin{itemize}
+\item No published proof of this exists.
+\item The lower-bound attack in 2025/963 that establishes the $c/2$ bound for SPONGE-DM likely transfers, with adaptation, to the $+s$ variant; the construction is too close for the bound to obviously disappear.
+\item The burden of proof has shifted to the construction.
+\end{itemize}
+Shipping a security claim of $2^{124}$ on the basis of an unpublished argument that a closely related construction (proven $c/2$-bound in 2025) is qualitatively different is not defensible without a real proof.
+
+\section*{Recommendation}
+
+Two options:
+
+\paragraph{Defensible.} Increase the capacity. Going from $c = 4$ to $c = 8$ KoalaBear elements raises $c/2$ from $62$ bits to $124$ bits, falls under the standard sponge bound, requires no new cryptanalysis, and costs roughly $2\times$ per node hash. This is what production permutation-based hashes do and why no one ships feedforward sponges in their place.
+
+\paragraph{Research.} Ask the authors of 2025/963 (Sun, Li, Zhang, Lefevre, Mennink, Qin, Feng) to extend their analysis to the $+s$ variant. They are exactly the right team. Until that work exists in writing, the $2^{124}$ figure is a conjecture, not a guarantee.
+
+\end{document}
