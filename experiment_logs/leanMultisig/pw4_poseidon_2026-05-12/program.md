@@ -7,6 +7,8 @@ You are NOT following a prescribed plan. The candidate pool below is a starting 
 
 **Hardware:** Hetzner AX42-U — AMD Ryzen 7 PRO 8700GE (Zen 4), 8c/16t, 64GB RAM, AVX-512.
 
+**HARD RULE: Stealing working branch ideas is explicitly forbidden. Will result in termination of the session if noticed.**
+
 ## Repo
 
 | Repo | Path | Branch | Role |
@@ -107,7 +109,9 @@ Production target is 128 KiB. Main branch is already 3-4× over at ~400-500 KiB.
 
 ## Prior Experiments — Dead Ends
 
-Learn from these. Do not repeat them.
+**DO NOT TRY any of these classes. They have been gated, failed, and reverted. Repeating them is wasted budget.**
+
+The entire **rayon-scheduling / nested-par-iter / chunk-size knob** class is exhausted on this baseline. The gate has already discarded every plausible variant. Stop reaching for it.
 
 | Approach | Why it fails | Source |
 |----------|-------------|--------|
@@ -120,6 +124,12 @@ Learn from these. Do not repeat them.
 | Subsequent folding factor ≠ 5 | Both 4 and 6 tested, 5 is the local optimum | exp5 iters 20-21 |
 | `permute_simd_x2` independent-state interleaving (naive) | Width-16 state uses all 32 ZMM registers; naive 2-state interleaving forces 9 spill loads that offset ILP gains. Net ~0% across 5 iters. **Note:** A redesign keeping fewer state elements simultaneously live (see Tier 1 #1) may still work. | exp6 iters 1-5 |
 | pw3 micro-tuning phase (iters 1-12) — knob-turning on `permute_mut`, `eq_mle` tile sizes, `pair_coeffs` CSE | All sub-gate (best near-miss: pair_coeffs CSE −0.41%, below 1.0% threshold). Confirmed micro-knob tuning is exhausted on `origin/main`. **Implication:** start at medium or structural scale. Don't waste cycles on sub-1% knob tuning. | pw3 iters 1-12 |
+| Parallelizing per-column copies in `stack_polynomials_and_commit` with 4MB chunking | Already in baseline as exp5 keep. Re-applying it does nothing. | pw4-1 (reverted) |
+| Dropping nested `par_iter_mut` in `combine_statement` chunk loop (whir/open.rs) | Sub-gate on `prove_loop` (the production e2e bench). Authored on `origin/improve-rayon` reports +10.6% on `fancy-aggregation` — that workload doesn't translate to `prove_loop`; ignore it. | pw4-2 (reverted) |
+| Eliminating `InternalLayer16` copy in `permute_simd` partial rounds | Fits "micro-tuning `permute_mut` internals" class — sub-gate. | pw4-3 (reverted) |
+| Precomputing `eq_mle` once per table in logup post-GKR | Sub-gate. | pw4-4 (reverted) |
+| `estimate_num_rows_in_l1` chunk-size pow2 flooring | Sub-gate. Chunk-size knob class. | pw4-5 (reverted) |
+| Dropping nested `par_chunks_exact_mut` in WHIR DFT layer kernels (`dft_layer_par_*`) | Sub-gate. Same rayon-nesting class as pw4-2. | pw4-6 (reverted) |
 
 ## Prior Experiments — What Worked
 
