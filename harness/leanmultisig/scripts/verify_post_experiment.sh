@@ -1,6 +1,6 @@
 #!/bin/bash
 # Post-experiment manual verification script.
-# Run this BEFORE asking Emile or Chaos to review any result.
+# Run this BEFORE surfacing results for upstream review.
 # Not run by the agent — human-triggered only.
 #
 # Checks:

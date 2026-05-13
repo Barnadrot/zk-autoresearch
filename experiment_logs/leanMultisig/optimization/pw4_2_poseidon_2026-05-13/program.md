@@ -19,25 +19,33 @@ Hetzner AX42-U (AMD Ryzen 7 PRO 8700GE Zen 4, 8c/16t, 64 GiB, AVX-512). Branch `
 
 ## HARD RULES (also in repo CLAUDE.md — both apply)
 
-1. **No microoptimizations.** Predicted Δ% at hypothesize time must be ≥ 1.0%. Aim high — small-scale optimizations are not this experiment's target. If your own prediction is sub-gate, re-scope or skip.
-2. **No cherry-picks.** Off-main branches (any repo, any fork) are forbidden as idea sources. `git log` / `git show` / `git diff` against refs other than `origin/main` and `pw4_2-2026-05-13` is banned. Violations terminate the session.
-3. **No mining inspiration repos.** Plonky3 / Jolt / SP1 / Halo2 source on their `origin/main` IS allowed for algorithmic-pattern study. Their `git log` is NOT.
-4. **Magnitude class definitions are strict.** structural = ≥80 LoC AND multi-file AND/OR new public API. Anything less = medium. Agent cannot self-classify dishonestly.
-5. **Per-keep proof_size_check.** Every keep auto-runs `bash ~/zk-autoresearch/harness/leanmultisig/scripts/verify_post_experiment.sh` post-gate; abort the keep if proof size deltas > 1% unintentionally.
+1. **No microoptimizations.** Predicted Δ% at hypothesize time must be **≥ 1.5%** (gate threshold is 1.0%; the 50% margin gives reliable discrimination above noise σ=0.51%). Aim high — small-scale optimizations are not this experiment's target. Single number, not a range. If your own prediction is sub-1.5%, re-scope or skip.
+2. **No cherry-picks.** Off-main branches (any repo, any fork) are forbidden as idea sources. `git log` / `git show` / `git diff` against refs other than `origin/main` and `pw4_2-2026-05-13` is banned. Local `git diff HEAD~1` on the experiment branch is fine. Violations terminate the session.
+3. **No mining inspiration repos.** Plonky3 / Jolt / SP1 source on their `origin/main` IS allowed for algorithmic-pattern study. Their `git log` is NOT.
+4. **Magnitude class definitions are strict.** structural = (≥80 LoC) AND (multi-file OR new public API). Both LoC and a structural axis must be satisfied. Otherwise medium. Agent cannot self-classify dishonestly.
+5. **Per-keep proof-size sanity (inline, no full test suite).** Before iter 1, seed the baseline once on `origin/main`:
+   ```bash
+   cd ~/zk-autoresearch/harness/leanmultisig/bench && \
+     RUSTFLAGS="-C target-cpu=native" cargo build --release --bin proof_size_check && \
+     ./target/release/proof_size_check | tee /tmp/lm_proof_size_baseline.txt
+   ```
+   After every keep, build + run `proof_size_check` on the kept commit, compare bytes vs baseline. If `|Δ| > 1%`, revert the commit (it shipped an unintentional proof-size regression). The full multi-suite verify (`verify_post_experiment.sh`) is human-triggered post-experiment, NOT per-iter.
 
 ## Iteration cycle
 
 ```
 Phase 1: Hypothesize (DEEP, this is where slow iteration earns its keep)
   - Cite specific profiling data, disassembly, dependency-chain analysis
-  - State predicted Δ% (must be ≥ 1.0%) with explicit mechanism
+  - State predicted Δ% (must be ≥ 1.5%, single number) with explicit mechanism
   - State magnitude class up-front (medium or structural)
   - State kill condition: what would tell you this hypothesis is wrong
     even before measuring?
-  - Optional: review inspiration repos (MANDATORY after 3 consecutive
-    zero-keep hypotheses — see Inspiration sources section below)
-  - Re-read this program.md (it's mandatory; the candidate pool, dead-ends,
-    and rules anchor the next decision)
+  - Re-read this program.md (it's mandatory; the candidate pool and
+    rules anchor the next decision)
+  - Inspiration repo review:
+      0-2 consecutive zero-keeps → optional
+      3+ consecutive zero-keeps → MANDATORY before Phase 2
+    (see Inspiration sources section below)
 
 Phase 2: Implement (attempt #1 of this hypothesis)
   - Single change, commit on pw4_2-2026-05-13 (NEVER main)
@@ -46,8 +54,15 @@ Phase 2: Implement (attempt #1 of this hypothesis)
 Phase 3: Gate
   - bash ~/zk-autoresearch/harness/leanmultisig/scripts/eval_paired.sh
   - Auto-chain handles cumulative + Criterion ship-gate on KEEP
-  - KEEP → Phase 5 (pivot)
+  - KEEP (fast-tier exit 0 + ship-gate exit 0) → Phase 5 (pivot)
+  - KEEP (fast-tier) but ship-gate exit 1 (REGRESS) or exit 2 (COULD-NOT-MEASURE):
+      Run `bash ~/zk-autoresearch/harness/leanmultisig/scripts/eval_revert_ab.sh`.
+      If A/B reproduces ≥ MIN_REPRODUCE_FRACTION (config.env:45 = 0.5) → KEEP;
+      else REVERT. Log the ship-gate-conflict status in rationale column.
   - DISCARD → Phase 4 (diagnostic)
+  - Three consecutive eval exit 2 (infra error) in a row → pause for human
+    intervention; do NOT count toward 12-zero-keep counter. Run `df -h /tmp /home`
+    at every iter start to catch disk-fill early.
 
 Phase 4: Diagnostic (only on discard, NOT optional)
   - Re-run with `perf record -F 997` + `perf report` on candidate binary
@@ -55,16 +70,26 @@ Phase 4: Diagnostic (only on discard, NOT optional)
   - Classify why:
       (a) hypothesis-wrong   → log dead-end, Phase 5 (pivot, different surface)
       (b) implementation-bug → fix + retry as attempt #2 (max 2 attempts/hypothesis)
-      (c) compiler-quirk     → reframe (intrinsics, layout, alignment); retry as attempt #2
-      (d) measurement-edge   → real but sub-gate; log as ORPHAN in iters.tsv
-                                (status=orphan), then Phase 5
+      (c) compiler-quirk     → reframe (intrinsics, layout, alignment); retry as attempt #2.
+                                MUST cite disassembly-diff evidence (objdump pre/post)
+                                in the rationale or downgrade to (a).
+      (d) measurement-edge   → real but sub-gate. Requires |measured| ≥ 0.5% AND
+                                p_value < 0.10. Log as ORPHAN in iters.tsv
+                                (status=orphan), then Phase 5. Below that floor,
+                                classify (a) hypothesis-wrong instead.
+      (e) env-confound       → drift abort fired, thermal anomaly, neighbor load.
+                                Retry without consuming an attempt. Log env metadata.
   - Max 2 attempts per hypothesis. After 2 failed attempts: dead-end, Phase 5.
+  - Orphans cap: 3 per session. Beyond 3, the orphan-accumulation pattern is its
+    own structural hypothesis — surface and address explicitly.
 
 Phase 5: Pivot
   - If KEEP: re-profile (mandatory if cumulative ≥ -3%); update bottleneck mental model
   - State which Candidate Pool entry next, and why it ranks above the unattempted ones
   - Pending orphans MUST be bundled with the next compatible medium/structural;
-    no bundle = log explicit reason
+    "compatible" = orphan's commit and next iter's commit touch overlapping files
+    AND have independent mechanisms (different lines, no logical interaction).
+    No bundle = log explicit reason in the next iter's rationale.
 ```
 
 ## Inspiration sources
@@ -118,7 +143,7 @@ Citing an inspiration source in Phase 1 commit body is welcome — it makes the 
 
 **Suggestions:**
 - **D.1:** Incremental eq-evaluation in `add_new_equality` / `add_new_base_equality` (`crates/whir/src/open.rs:336-381`) — currently rebuilds eq-poly per `points` slice via `compute_eval_eq_packed`. Maintain a persistent eq-vector across statements; update incrementally using folding randomness already in `round_state.randomness_vec`.
-- **D.2:** Toom-Cook product-folding for per-round univariate polynomial in `fold_and_compute_product_sumcheck_polynomial` — round-poly is sampled at {0, 2} with c1 derived from `sum − 2·c0 − c2` (`product_computation.rs:165-168`). Sample at {0, ±1, ∞} for higher-degree variants, saves base-field muls. Targets the two-closure 7.74% cluster. Paper anchor: Dao-Thaler, eprint 2024/1210.
+- **D.2:** Toom-Cook product-folding for per-round univariate polynomial in `fold_and_compute_product_sumcheck_polynomial` — round-poly is sampled at {0, 2} with c1 derived from `sum − 2·c0 − c2` (`product_computation.rs:301`, inside the `fold_and_compute_*` body starting at L242; same pattern also appears at L166 and L237 inside the non-fold siblings — your edit target is L301 specifically). Sample at {0, ±1, ∞} for higher-degree variants, saves base-field muls. Targets the two-closure 7.74% cluster. Paper anchor: Dao-Thaler, eprint 2024/1210.
 
 ### Broad Target E: Cryptanalysis-gated MDS coefficient re-search (small-entry circulant)
 
@@ -145,19 +170,34 @@ That's it. Auto-chain handles env_preflight (pre-flight), drift abort (within ru
 
 ## Logging — `iters.tsv`
 
-Append per iteration (single row at keep/discard decision; orphans get their own row):
+Path (explicit): `experiment_logs/leanMultisig/optimization/pw4_2_poseidon_2026-05-13/iters.tsv`. Pre-seed at iter 0 with this header row:
+
 ```
-hypothesis_id  magnitude  predicted_pct  measured_pct  proof_kib  status  files_changed  rationale
+hypothesis_id	magnitude	predicted_pct	measured_pct	proof_kib	status	files_changed	rationale
 ```
-Status: `keep` | `discard` | `orphan` | `dead-end` (after 2-attempt exhaustion)
+
+Append one tab-separated row per attempt at keep/discard decision (orphans get their own row).
+
+Status enum (one of):
+- `keep` — passed gate + auto-chain (or ship-gate-conflict resolved keep)
+- `discard` — failed gate, classified as hypothesis-wrong or dead-end-after-2-attempts
+- `orphan` — measurement-edge per Phase 4 (d) with `|measured| ≥ 0.5%` AND `p_value < 0.10`
+- `dead-end` — 2 attempts exhausted without keep
+- `cryptanalysis-pending` — Target E candidate matrix logged, NOT shipped, NOT counted
 
 `hypothesis_id` groups multiple attempts under one hypothesis (e.g., `h1-attempt1`, `h1-attempt2`, then `h2-attempt1`). One row per attempt.
 
 ## Stop criterion
 
-Stop after **12 consecutive zero-keep hypotheses**. Each hypothesis can have up to 2 attempts (initial + diagnostic-driven retry); both failing = 1 hypothesis exhausted = +1 toward counter. Any keep resets counter to 0. Orphans don't count toward the counter.
+Stop after **12 consecutive zero-keep hypotheses**. Each hypothesis can have up to 2 attempts (initial + diagnostic-driven retry); both failing = 1 hypothesis exhausted = +1 toward counter. Any keep resets counter to 0.
 
-On stop: write `verdict.md` (structured header per `context.md` schema) + `pr_body.md` (PR draft).
+Counter exclusions:
+- Orphans don't count toward the counter (capped at 3 per session, see Phase 4)
+- `cryptanalysis-pending` rows don't count
+- Three consecutive eval exit-2 (infra error) results = pause for human intervention, NOT +1 (see Phase 3)
+- Abnormal session termination (context-window exhaustion, Cargo.lock corruption, disk-fill): write `verdict.md` with `status: aborted` + the reason, do not retry blindly
+
+On normal stop: write `verdict.md` (structured header per `context.md` schema) + `pr_body.md` (PR draft).
 
 ## NEVER STOP
 

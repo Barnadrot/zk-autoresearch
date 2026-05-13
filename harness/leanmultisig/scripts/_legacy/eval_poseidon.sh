@@ -1,6 +1,6 @@
 #!/bin/bash
 # Poseidon microbench — primary eval signal for Poseidon experiment.
-# Source: Emile (2026-04-14). Runs benchmark_poseidons::bench_poseidon
+# Sourced from upstream leanMultisig (2026-04-14). Runs benchmark_poseidons::bench_poseidon
 # in mt-koala-bear. Fast (~10s), low noise, direct Poseidon signal.
 #
 # Usage:

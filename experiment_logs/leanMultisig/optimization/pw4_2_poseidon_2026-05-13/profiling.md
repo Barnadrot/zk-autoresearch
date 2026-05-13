@@ -1,6 +1,6 @@
 # pw4_2 — Initial profiling (read once at session start)
 
-Source: `experiment_logs/leanMultisig/profiling/concluded/profiling_baseline_hetzner_2026-05-11/` full report (committed in repo). This file is the **distilled critical sections** for pw4_2's starting picture.
+Source: distilled from `experiment_logs/leanMultisig/profiling/concluded/profiling_baseline_hetzner_2026-05-11/program.md` (the parent profiling experiment). Raw phase outputs from that experiment live in its gitignored `report/` subdir on brain — NOT synced to the executor. The distilled numbers in this file are the canonical reference for pw4_2.
 
 **This profile decays after your first big keep (cumulative ≥ -3%).** When that happens, re-profile via the cheatsheet below; the fresh profile supersedes this file as your hot-symbol reference. Don't keep planning iterations from a stale picture.
 
@@ -84,7 +84,10 @@ perf report -i /tmp/perf.data --stdio                                # children 
 # Line-level annotation of a hot symbol (find the exact instruction)
 perf annotate -i /tmp/perf.data --stdio --symbol='Poseidon1KoalaBear16::compress_mut' | head -200
 
-# Hardware counters (cycles, IPC, miss rates) — needs sudo for perf paranoia=0 on Hetzner
+# Hetzner: enable perf for this session (idempotent, passwordless sudo configured)
+sudo sysctl -w kernel.perf_event_paranoid=0 kernel.kptr_restrict=0
+
+# Hardware counters (cycles, IPC, miss rates) — requires the sysctl above
 perf stat -e cycles,instructions,branch-misses,L1-dcache-loads,L1-dcache-load-misses,\
 LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses,stalled-cycles-frontend \
   ./target/release/prove_loop 3
@@ -119,4 +122,4 @@ After re-profile: write `report/profiling_after_iter_N.md` (gitignored in report
 - Per-line `perf annotate` dumps — too much detail; agent re-runs them per-hypothesis with the cheatsheet
 - Allocator-pressure analysis — already factored into zk-alloc enablement; no further leverage here
 
-If you need any of the above, the full profiling baseline is at `experiment_logs/leanMultisig/profiling/concluded/profiling_baseline_hetzner_2026-05-11/`.
+If you need any of the above, the full profiling baseline experiment's `program.md` is at `experiment_logs/leanMultisig/profiling/concluded/profiling_baseline_hetzner_2026-05-11/program.md` (the raw phase outputs are NOT on the executor — they live on brain only). If you need fresh per-line data, re-run the cheatsheet commands above against the current binary.

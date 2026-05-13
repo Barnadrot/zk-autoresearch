@@ -25,7 +25,8 @@ pw4 left these untouched. **The Candidate Pool in program.md is selected from th
 - Plonky3 (`~/zk-autoresearch/Plonky3`) — Poseidon1/Poseidon2 implementations, packed-field arithmetic, FRI
 - SP1 (`~/zk-autoresearch/sp1`) — Hypercube / Jagged-PCS reference; sumcheck batching patterns
 - Jolt (`~/zk-autoresearch/jolt`) — Dory commitments; alternative PCS shapes
-- Halo2 — lookup arguments, plonkish patterns (less direct relevance to STARK Poseidon perf)
+
+All three are present at the cited paths on the executor (verified). Halo2 is NOT cloned — if you want to look at lookup-argument patterns, the Plonky3 logUp implementation is the in-tree reference.
 
 ## Verdict.md structured header (write at stop time)
 
