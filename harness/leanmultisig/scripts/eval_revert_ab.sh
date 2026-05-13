@@ -50,15 +50,15 @@ trap cleanup EXIT
 bash "$SHARED_DIR/eval_paired.sh" --baseline 'HEAD~1' --candidate 'HEAD' --n 1 --threshold 0.0 \
      > /tmp/revert_ab.log 2>&1 || true
 
-# eval_paired prints JSON summary; grab its decision + median
+# eval_paired prints JSON summary; grab delta + p-value (current schema 2026-05-13)
 MED=$(python3 -c '
 import json
 d = json.load(open("/tmp/eval_paired_summary.json"))
-print(d["median_pct"])')
+print(d["delta_pct"])')
 P=$(python3 -c '
 import json
 d = json.load(open("/tmp/eval_paired_summary.json"))
-print(d["p_values"][0])')
+print(d["p_value"])')
 
 cleanup
 trap - EXIT

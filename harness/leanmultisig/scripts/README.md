@@ -1,87 +1,108 @@
-# leanMultisig autoresearch — harness scripts
+# leanMultisig autoresearch — gate scripts
 
 All scripts are leanMultisig-specific. They assume:
 - leanMultisig repo at `~/zk-autoresearch/leanMultisig`
-- bench crate at `~/zk-autoresearch/leanMultisig-bench`
-- Criterion bench target `xmss_leaf`, filter `xmss_leaf_1400sigs`
-- iai driver bin name `iai_driver` (see `leanMultisig-bench/src/bin/iai_driver.rs`)
-- KVM-virtualized AMD Zen 4 on c7a.2xlarge (no CPU pinning knobs available)
+- bench crate at `~/zk-autoresearch/harness/leanmultisig/bench`
+- AMD Zen 4 (Hetzner AX42-U) as the primary executor
+- macOS Sequoia / Apple Silicon M2/M4 as secondary executors (env_preflight degrades cleanly)
 
-Do not attempt to reuse these scripts on a different repo without re-calibration.
+Do not reuse on a different repo without re-calibration.
 
-## Scripts
+## Active scripts
 
-### `correctness.sh` (unchanged from original)
-Runs `cargo test -p mt-koala-bear --release` and `cargo test -p mt-whir --release`.
-~40 s. Exit 0 = pass.
-
-### `eval_paired.sh` — Stage 2 wall-clock gate
-Paired back-to-back criterion comparison between two git refs, same shell session, with burn-in. Replaces the original `eval_e2e.sh` fixed-baseline pattern.
-
-- Default: HEAD~1 vs HEAD, N=1 (one paired comparison → keep/discard decision).
-- Calibration/backtest mode: `--n 10` (or higher) → emits σ only, no decision.
-- Handles the `main.py` runtime-load hazard by git-checkout-ing the working tree to match each binary being executed.
-- Writes summary JSON to `/tmp/eval_paired_summary.json`.
-- Exit: 0 = keep, 1 = discard, 2 = infra error.
+### `env_preflight.sh` — environmental pre-flight
+**Run before any wall-clock measurement.** Verifies the host is in a measurement-trustworthy state. Linux: checks CPU governor is `performance` and 1-min load is below `ENV_PREFLIGHT_LOAD_THRESHOLD` (default 1.0). macOS: no-op pass (governor concept doesn't apply).
 
 ```bash
-bash eval_paired.sh                                      # loop-mode: HEAD~1 vs HEAD, N=1
-bash eval_paired.sh --baseline 25de31b^ --candidate 25de31b --n 10  # backtest mode
+bash env_preflight.sh           # default thresholds, human-readable + JSON
+bash env_preflight.sh --json-only
 ```
 
-Runtime: ~1 min/paired round + 60 s for two `cargo clean --release` + build cycles.
-Per-round: ~235 s. Single-decision loop-mode: ~4–5 min.
+Exit: 0 PASS, 1 FAIL with remediation hints, 2 infra error.
 
-### `eval_iai.sh` — Stage 1 instruction-count gate
-Runs the `iai_driver` binary under `valgrind --tool=callgrind` at baseline and candidate, diffs per-symbol `Ir` counts for the sumcheck + adjacent hot-path namespaces.
-
-- Default: HEAD~1 vs HEAD.
-- Writes summary JSON to `/tmp/eval_iai_summary.json`.
-- Tracked regex (see `TRACK_REGEX` in script): `mt_sumcheck|product_computation|sc_computation|quotient_computation|eq_mle|handle_gkr|fold_and_compute_product_sumcheck`.
-- Exit: 0 = PASS (keep-eligible), 1 = FAIL (abort iter), 2 = infra error.
-
-Runtime estimate: per binary, 50 sigs under callgrind ≈ a few minutes.
-
-### `eval_revert_ab.sh` — Stage 3 marginal confirmation
-After a marginal keep, applies a revert commit on top of HEAD, runs paired A/B (HEAD~1 = the keep, HEAD = reverted state). Expects Δ ≥ `MIN_REPRODUCE_FRACTION × claim_pct` (default 50 %).
-
-Cleans up its revert commit before returning regardless of outcome. Exit 0 = keep confirmed, 1 = noise rider (caller must unwind the keep), 2 = infra error.
+### `eval_paired.sh` — per-iter wall-clock gate (PRIMARY)
+Paired prove_loop bench between two git refs. Builds both binaries (fat LTO, zk-alloc, `RUSTFLAGS=-C target-cpu=native`), runs N alternating rounds, computes Welch's t-test on warm-proof samples, decides keep/discard.
 
 ```bash
-bash eval_revert_ab.sh 1.2    # claim_pct = 1.2% (magnitude of the kept win)
+bash eval_paired.sh                                   # HEAD~1 vs HEAD, N=1
+bash eval_paired.sh --baseline <ref> --candidate <ref> --n <int>
+bash eval_paired.sh --n 5                             # 5 paired rounds
 ```
 
-### `eval_e2e.sh` — legacy (kept for backward reference)
-Original fixed-baseline bench. Superseded by `eval_paired.sh`. Do not use as a keep gate — it's drift-vulnerable (σ ≈ 1.0 %). Retained so old runs can be reproduced.
+Output: `/tmp/eval_paired_summary.json` (full JSON). Exit: 0 keep, 1 discard, 2 infra error.
 
-### `config.env`
-Threshold and sample-size settings sourced by the scripts / loop orchestrator. Edit here, not in individual scripts. Current values reflect backtest calibration from 25de31b; re-calibrate if the sumcheck crate is refactored.
+Decision rule (`config.env`): `delta_pct <= -KEEP_THRESHOLD_PCT AND p_value < 0.01`. Default threshold 1.0%.
 
-## Directories
+**Methodology caveats** (per pw4 audit 2026-05-13):
+- Default baseline is `HEAD~1` (rolling). Per-iter deltas are marginal contributions, NOT cumulative. After a keep, use `eval_cumulative.sh` to anchor against `origin/main` for interpretable wall-clock-vs-main numbers.
+- Block-design alternation within rounds: each round runs the full baseline binary first, then the full candidate. With many rounds (N >= 5), drift is averaged out; with N=1 the block design is exposed to minute-scale drift. Use `--n 5` or higher for keep-decisions on borderline cases.
 
-- `report/` — output of diagnostic passes:
-  - `noise_floor.md`, `noise_floor_v2.md` — σ characterization (idle, paired, pinned)
-  - `bench_profile.md` — `perf record` profile confirming sumcheck is ≥30 % of inclusive time and no bench-setup artifacts dominate
-  - `threshold_calibration.md` — `KEEP_THRESHOLD_PCT` derivation from backtest data
+### `eval_cumulative.sh` — cumulative anchor measurement
+Wraps `eval_paired.sh` with `--baseline=origin/main --candidate=HEAD --n=5`. Runs `env_preflight.sh` first. Designed to be invoked automatically after a keep lands, or manually after any structural change, to record an interpretable cumulative-vs-main number.
 
-### `eval_poseidon.sh` — Poseidon throughput (legacy)
-Runs the in-crate `benchmark_poseidons::bench_poseidon` ignored test. Prints throughput numbers but has no automated comparison or decision. Superseded by the `poseidon_permute` Criterion bench in `leanMultisig-bench/benches/poseidon_permute.rs` for experiment 5+.
+```bash
+bash eval_cumulative.sh                               # origin/main vs HEAD, N=5
+bash eval_cumulative.sh --anchor <tag> --n 7          # different anchor or sample size
+EXPERIMENT_DIR=experiment_logs/leanMultisig/foo bash eval_cumulative.sh   # archives to <dir>/report/cumulative_<ts>.json
+```
 
-## Experiment-specific overrides
+Output: `/tmp/eval_cumulative_summary.json` + optional archived copy under `EXPERIMENT_DIR/report/`.
 
-Starting with experiment 5 (`experiment_poseidon_whir/`), experiments may provide their own
-`eval_gate.sh` that replaces the shared version's stage layout. For example, exp5 uses a
-three-tier gate (microbench → Criterion → production) instead of the shared two-stage
-(iai → paired) flow. The experiment-local scripts still delegate to shared `eval_paired.sh`
-and `correctness.sh` for the infrastructure they have in common.
+### `eval_revert_ab.sh` — marginal-keep confirmation (optional)
+After a kept change, applies a temporary revert commit on top of HEAD and runs paired A/B. Expected: reverting reproduces at least `MIN_REPRODUCE_FRACTION × claim_pct` of the claimed improvement (default 50%). If not, the keep is a noise rider and the caller must unwind.
 
-## Criterion microbenchmarks
+```bash
+bash eval_revert_ab.sh 1.2     # claim_pct = 1.2% (magnitude of the keep being confirmed)
+```
 
-Diagnostic Criterion benches live in `leanMultisig-bench/benches/`:
-- `xmss_leaf.rs` — e2e proving benchmark (do not modify)
-- `poseidon_permute.rs` — Poseidon permute_mut in isolation (packed SIMD + scalar)
+Exit: 0 confirmed, 1 noise rider, 2 infra error. Use when the kept delta is close to the threshold (within ~2x).
 
-These are registered in `leanMultisig-bench/Cargo.toml` as `[[bench]]` entries.
+### `verify_post_experiment.sh` — manual post-experiment validation
+Layered correctness check (cargo test on `mt-koala-bear`, `mt-whir`, `rec_aggregation`, full `test_multisignatures`). Human-triggered, not part of the per-iter loop. Run before requesting external review.
+
+```bash
+bash verify_post_experiment.sh
+```
+
+### `config.env` — central thresholds
+Edit here, not in individual scripts. Documents what each threshold means and why it's set where it is. Current settings reflect Zen 4 calibration on Hetzner.
+
+## Hibernated scripts (`_legacy/`)
+
+Four scripts retired on 2026-05-13. See `_legacy/README.md` for what they did, why they were hibernated, and how to reactivate. Summary:
+
+- `eval_iai.sh` — instruction-count gate via callgrind. Wrong calibration class for current Poseidon (microarch-sensitive) work. Reactivate for next sumcheck-shape experiment.
+- `eval_gate.sh` — broken orchestrator (iai → paired → revert-A/B). Reactivate alongside iai.
+- `eval_e2e.sh` — legacy Criterion wrapper. Superseded by `eval_paired.sh`.
+- `eval_poseidon.sh` — manual throughput print, no decision logic. Superseded by Criterion poseidon_permute bench.
+
+## Recommended invocation pattern (per-iter)
+
+```bash
+# 1. Verify env is healthy before any measurement window starts
+bash env_preflight.sh || exit 1
+
+# 2. Make the change, commit it
+
+# 3. Run correctness gate (separate crate, see harness/leanmultisig/correctness/)
+bash ~/zk-autoresearch/harness/leanmultisig/correctness/correctness.sh
+
+# 4. Run the wall-clock gate
+bash eval_paired.sh
+EXIT=$?
+
+# 5. On keep, anchor cumulative against origin/main
+if [[ $EXIT -eq 0 ]]; then
+  bash eval_cumulative.sh
+fi
+```
+
+## Known gaps (tracked, not blocking)
+
+- **Per-sample alternation inside a round.** Current eval_paired.sh runs the full baseline binary first then full candidate within each round. Per-sample interleaving (base-proof, cand-proof, base-proof, cand-proof, ...) would tighten the variance further. Requires modifying `prove_loop` to support single-proof mode. Tracked for pw4_2 methodology work.
+- **Auto-recheck on keep inside eval_paired.sh.** Currently the recommendation is "run eval_cumulative manually after keep." Could be folded into eval_paired.sh as a side-effect on keep decisions. Tracked.
+- **Criterion-based slow-tier gate.** For high-stakes keeps (e.g., ship gate before opening PRs), a Criterion bench in `harness/leanmultisig/bench` with bootstrap CIs would tighten the inference further. Tracked as a separate workstream.
 
 ## Loop orchestration
-The loop is driven by program.md instructions to the optimizer agent. There is no single orchestrator script — the agent calls these gates in sequence. See each experiment's `program.md` "Experiment Loop" section.
+
+There is no single orchestrator script — the experiment's program.md tells the agent which scripts to call and in what order. Each experiment can override scripts by providing local replacements in its experiment directory (see `experiment_logs/<project>/<experiment>/`).
