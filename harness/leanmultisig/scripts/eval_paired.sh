@@ -4,17 +4,33 @@
 # Builds baseline and candidate prove_loop binaries (fat LTO, zk-alloc),
 # alternates runs, and compares warm-proof wall-clock times via Welch's t-test.
 #
+# Pre-flight: refuses to run unless env_preflight.sh PASSes (governor
+# performance, load below threshold). Set SKIP_PREFLIGHT=1 to bypass.
+#
+# Per-round drift abort: if base_avg drifts more than DRIFT_ABORT_PCT
+# (default 1.5%) from round 1 within the same run, abort and ask the
+# caller to clean the env. Drift is the pw4-era failure mode this catches.
+#
+# Auto-cumulative on keep: if a keep decision is reached AND
+# AUTO_CUMULATIVE_ON_KEEP=1 AND BASELINE_REF != origin/main, invoke
+# eval_cumulative.sh to anchor the cumulative-vs-main number. The keep
+# decision is NOT affected by the cumulative result — it's recorded.
+#
 # Usage:
 #   eval_paired.sh                                   # HEAD~1 vs HEAD, N=1
 #   eval_paired.sh --baseline <ref> --candidate <ref> [--n <int>]
 #   eval_paired.sh --n 5 --proofs 7                  # more samples per run
+#   SKIP_PREFLIGHT=1 eval_paired.sh                  # bypass env_preflight
+#   AUTO_CUMULATIVE_ON_KEEP=1 eval_paired.sh         # auto-anchor on keep
 #
 # Exit codes:
 #   0 = keep (improvement crosses threshold + p < 0.01)
 #   1 = discard
-#   2 = infrastructure error
+#   2 = infrastructure error (incl. env_preflight FAIL, drift abort)
 
 set -eo pipefail
+
+SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ------------------------------- CONFIG --------------------------------------
 
@@ -25,6 +41,9 @@ BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanmultisig/bench}
 BASELINE_REF="HEAD~1"
 CANDIDATE_REF="HEAD"
 N=1
+DRIFT_ABORT_PCT=${DRIFT_ABORT_PCT:-1.5}
+SKIP_PREFLIGHT=${SKIP_PREFLIGHT:-0}
+AUTO_CUMULATIVE_ON_KEEP=${AUTO_CUMULATIVE_ON_KEEP:-0}
 
 export RUSTFLAGS="-C target-cpu=native"
 
@@ -40,6 +59,17 @@ while [[ $# -gt 0 ]]; do
     *)           echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# ------------------------------ PRE-FLIGHT -----------------------------------
+
+if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
+  if ! bash "$SHARED_DIR/env_preflight.sh" --json-only > /tmp/eval_paired_preflight.json 2>/dev/null; then
+    echo "[eval_paired][err] env_preflight FAILED — refusing to measure" >&2
+    bash "$SHARED_DIR/env_preflight.sh" >/dev/null  # re-run for human-readable stderr
+    exit 2
+  fi
+fi
+PREFLIGHT_JSON=$(cat /tmp/eval_paired_preflight.json 2>/dev/null || echo "{}")
 
 # ------------------------------- HELPERS -------------------------------------
 
@@ -173,6 +203,32 @@ print(f"[eval_paired] round {rnd}: base={base_avg:.3f}s  cand={cand_avg:.3f}s  �
 PY
 
   rm -f "$BASE_CSV" "$CAND_CSV"
+
+  # --- drift abort: compare this round's base_avg to round 1 ---
+  if [[ "$round" -gt 1 ]]; then
+    DRIFT_DECISION=$(python3 - "$ROUND_LOG" "$DRIFT_ABORT_PCT" <<'PY'
+import sys
+log_path, thr = sys.argv[1], float(sys.argv[2])
+rows = [line.strip().split() for line in open(log_path) if line.strip()]
+if len(rows) < 2:
+    print("OK")
+    sys.exit(0)
+r1_base = float(rows[0][1])
+rN_base = float(rows[-1][1])
+drift_pct = (rN_base - r1_base) / r1_base * 100.0
+if abs(drift_pct) > thr:
+    print(f"ABORT drift={drift_pct:+.2f}% (threshold {thr}%, r1={r1_base:.4f}s rN={rN_base:.4f}s)")
+else:
+    print(f"OK drift={drift_pct:+.2f}%")
+PY
+)
+    if [[ "$DRIFT_DECISION" == ABORT* ]]; then
+      err "drift detected within run: $DRIFT_DECISION"
+      err "machine state changed mid-measurement. Clean env (env_preflight + tmux + thermal) and retry."
+      rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
+      exit 2
+    fi
+  fi
 done
 
 # ------------------------------ ANALYZE --------------------------------------
@@ -276,11 +332,39 @@ PY
 echo ""
 echo "=== SUMMARY ==="
 echo "$SUMMARY"
-echo "$SUMMARY" > /tmp/eval_paired_summary.json
+
+# Splice env metadata + preflight JSON into summary
+python3 - <<PY > /tmp/eval_paired_summary.json
+import json
+summary = json.loads('''$SUMMARY''')
+try:
+    preflight = json.loads('''$PREFLIGHT_JSON''')
+except Exception:
+    preflight = None
+summary['env_preflight'] = preflight
+summary['hostname'] = '$(hostname 2>/dev/null || echo unknown)'
+summary['uptime'] = '$(uptime | sed "s/'/ /g" 2>/dev/null || echo unknown)'
+print(json.dumps(summary, indent=2))
+PY
 
 # Cleanup temp files
 rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
 
 # Exit code
-dec=$(echo "$SUMMARY" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("decision","discard"))')
-[[ "$dec" == "keep" ]] && exit 0 || exit 1
+dec=$(python3 -c 'import json; print(json.load(open("/tmp/eval_paired_summary.json")).get("decision","discard"))')
+EXIT_CODE=1
+[[ "$dec" == "keep" ]] && EXIT_CODE=0
+
+# Auto-cumulative on keep (opt-in via env var; skipped if baseline is already origin/main)
+if [[ "$EXIT_CODE" -eq 0 && "$AUTO_CUMULATIVE_ON_KEEP" == "1" ]]; then
+  BASELINE_IS_ORIGIN_MAIN=$( (cd "$LM_REPO" && [[ "$(git rev-parse origin/main)" == "$BASELINE_SHA" ]]) && echo "1" || echo "0")
+  if [[ "$BASELINE_IS_ORIGIN_MAIN" == "0" ]]; then
+    log ""
+    log "KEEP decision recorded. AUTO_CUMULATIVE_ON_KEEP=1 → anchoring against origin/main..."
+    bash "$SHARED_DIR/eval_cumulative.sh" --anchor origin/main --n 5 || true
+  else
+    log "AUTO_CUMULATIVE_ON_KEEP=1 set, but baseline IS origin/main — already anchored, skipping recheck"
+  fi
+fi
+
+exit $EXIT_CODE

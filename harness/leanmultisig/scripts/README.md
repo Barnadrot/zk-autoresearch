@@ -57,12 +57,33 @@ bash eval_revert_ab.sh 1.2     # claim_pct = 1.2% (magnitude of the keep being c
 
 Exit: 0 confirmed, 1 noise rider, 2 infra error. Use when the kept delta is close to the threshold (within ~2x).
 
-### `verify_post_experiment.sh` — manual post-experiment validation
-Layered correctness check (cargo test on `mt-koala-bear`, `mt-whir`, `rec_aggregation`, full `test_multisignatures`). Human-triggered, not part of the per-iter loop. Run before requesting external review.
+### `eval_ship_gate.sh` — Criterion slow-tier ship gate
+Wraps `cargo bench --bench xmss_leaf` with Criterion's save-baseline / compare-baseline workflow. Use when you want bootstrap CIs, outlier detection, and Criterion's built-in regression-detection — typically before opening an upstream PR. Per-sample alternation and adaptive sample size are Criterion's defaults.
 
 ```bash
-bash verify_post_experiment.sh
+# Establish baseline at current HEAD (e.g., origin/main)
+bash eval_ship_gate.sh --save-baseline origin_main
+
+# Compare HEAD vs saved baseline
+bash eval_ship_gate.sh --baseline origin_main
+
+# Full paired cycle: save at <ref>, compare HEAD
+bash eval_ship_gate.sh --paired origin/main
 ```
+
+Output: `/tmp/eval_ship_gate_last.txt` (Criterion stdout), `/tmp/eval_ship_gate_summary.json`, plus `target/criterion/` HTML reports. Exit 0 = ship-eligible, 1 = regression, 2 = infra error.
+
+Runtime: ~60-120s per run depending on `SHIP_GATE_MEASURE_SECS` (default 60). Significantly slower than `eval_paired.sh` (~5 min total for paired cycle); reserve for high-stakes keeps.
+
+### `verify_post_experiment.sh` — manual post-experiment validation
+Four-layer check: KoalaBear unit tests + WHIR integration + rec_aggregation (type-1 + type-2) + full multisignatures + **proof size invariant** via the `proof_size_check` binary (postcard-serialized type-1 aggregate, N_SIGS=100). Human-triggered, not part of the per-iter loop. Run before requesting external review.
+
+```bash
+bash verify_post_experiment.sh                  # run all four layers
+bash verify_post_experiment.sh --save-baseline  # save proof size baseline (run once on clean origin/main)
+```
+
+Proof size baseline file: `/tmp/lm_proof_size_baseline.txt`. If proof size changes vs baseline, exit 1 with delta + percentage — typically signals a structural change (RATE/folding factor, sponge variant, etc).
 
 ### `config.env` — central thresholds
 Edit here, not in individual scripts. Documents what each threshold means and why it's set where it is. Current settings reflect Zen 4 calibration on Hetzner.
@@ -99,9 +120,7 @@ fi
 
 ## Known gaps (tracked, not blocking)
 
-- **Per-sample alternation inside a round.** Current eval_paired.sh runs the full baseline binary first then full candidate within each round. Per-sample interleaving (base-proof, cand-proof, base-proof, cand-proof, ...) would tighten the variance further. Requires modifying `prove_loop` to support single-proof mode. Tracked for pw4_2 methodology work.
-- **Auto-recheck on keep inside eval_paired.sh.** Currently the recommendation is "run eval_cumulative manually after keep." Could be folded into eval_paired.sh as a side-effect on keep decisions. Tracked.
-- **Criterion-based slow-tier gate.** For high-stakes keeps (e.g., ship gate before opening PRs), a Criterion bench in `harness/leanmultisig/bench` with bootstrap CIs would tighten the inference further. Tracked as a separate workstream.
+- **Per-sample alternation inside a round.** Current eval_paired.sh runs the full baseline binary first then full candidate within each round. Per-sample interleaving (base-proof, cand-proof, base-proof, cand-proof, ...) would tighten the variance further. Requires modifying `prove_loop` to support single-proof mode. Tracked for pw4_2 methodology work. (`eval_ship_gate.sh` gets this for free via Criterion when you need it.)
 
 ## Loop orchestration
 

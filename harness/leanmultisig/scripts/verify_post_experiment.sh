@@ -51,25 +51,44 @@ echo "      PASSED"
 echo ""
 
 # ── Layer 4: Proof size invariant ─────────────────────────────────────
-# TODO: update proof size check for new type-1 API
-echo "[4/4] Proof size invariant check..."
-CURRENT_SIZE="unknown"
+echo "[4/4] Proof size invariant check (postcard-serialized type-1 aggregate, N_SIGS=100)..."
+BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanmultisig/bench}
+
+# Build the proof_size_check binary (fast — small N_SIGS, but still needs DFT precompute)
+(cd "$BENCH_CRATE" && cargo build --release --bin proof_size_check 2>&1 | tail -3)
+
+# Run it and parse stdout
+PROOF_SIZE_OUT=$("$BENCH_CRATE/target/release/proof_size_check" 2>&1) || {
+  echo "      FAILED — proof_size_check binary returned non-zero"
+  echo "$PROOF_SIZE_OUT" | tail -10
+  exit 1
+}
+CURRENT_SIZE=$(echo "$PROOF_SIZE_OUT" | grep -oP 'proof_bytes=\K[0-9]+' | head -1)
+if [[ -z "$CURRENT_SIZE" ]]; then
+  echo "      FAILED — could not parse proof_bytes from output"
+  echo "$PROOF_SIZE_OUT" | tail -5
+  exit 1
+fi
 
 if [[ "$1" == "--save-baseline" ]]; then
   echo "$CURRENT_SIZE" > "$BASELINE_FILE"
-  echo "      Baseline saved: $CURRENT_SIZE bytes"
+  echo "      Baseline saved: $CURRENT_SIZE bytes (file: $BASELINE_FILE)"
 else
   if [[ -f "$BASELINE_FILE" ]]; then
     BASELINE_SIZE=$(cat "$BASELINE_FILE")
     if [[ "$CURRENT_SIZE" == "$BASELINE_SIZE" ]]; then
       echo "      PASSED — proof size unchanged ($CURRENT_SIZE bytes)"
     else
-      echo "      FAILED — proof size changed: baseline=$BASELINE_SIZE, current=$CURRENT_SIZE"
-      echo "      This may indicate a structural change. Investigate before submitting."
+      DELTA=$((CURRENT_SIZE - BASELINE_SIZE))
+      DELTA_PCT=$(python3 -c "print(f'{($CURRENT_SIZE - $BASELINE_SIZE) / $BASELINE_SIZE * 100:+.2f}')")
+      echo "      FAILED — proof size changed: baseline=$BASELINE_SIZE, current=$CURRENT_SIZE (Δ=${DELTA} bytes, ${DELTA_PCT}%)"
+      echo "      Structural change in proof format. Investigate before submitting."
+      echo "      If intentional (e.g., RATE/folding-factor change), re-save baseline with --save-baseline."
       exit 1
     fi
   else
-    echo "      SKIPPED — no baseline saved. Run with --save-baseline on clean main first."
+    echo "      SKIPPED — no baseline saved. Current: $CURRENT_SIZE bytes."
+    echo "      Run with --save-baseline on clean origin/main to establish."
   fi
 fi
 
