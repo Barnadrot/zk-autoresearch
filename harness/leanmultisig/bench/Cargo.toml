@@ -15,6 +15,7 @@ mt-koala-bear    = { path = "../../../leanMultisig/crates/backend/koala-bear" }
 utils            = { path = "../../../leanMultisig/crates/utils" }
 rayon            = "1"
 backtrace        = "0.3"
+postcard         = { version = "1", default-features = false, features = ["alloc"] }
 zk-alloc         = { path = "../../../leanMultisig/crates/backend/zk-alloc", optional = true }
 
 [features]
@@ -46,6 +47,10 @@ harness = false
 [[bin]]
 name = "prove_loop"
 path = "src/bin/prove_loop.rs"
+
+[[bin]]
+name = "proof_size_check"
+path = "src/bin/proof_size_check.rs"
 
 [profile.release]
 lto = "fat"
