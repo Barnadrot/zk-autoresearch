@@ -71,7 +71,7 @@ fi
 if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
   if ! bash "$SHARED_DIR/env_preflight.sh" --json-only > /tmp/eval_ship_gate_preflight.json 2>/dev/null; then
     echo "[eval_ship_gate][err] env_preflight FAILED — refusing to measure" >&2
-    bash "$SHARED_DIR/env_preflight.sh" >/dev/null
+    bash "$SHARED_DIR/env_preflight.sh" >&2 || true   # human-readable stderr; || true so set -e doesn't override our exit 2
     exit 2
   fi
 fi

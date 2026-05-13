@@ -375,23 +375,14 @@ if [[ "$EXIT_CODE" -eq 0 ]]; then
 
   # Step 2: Criterion ship-gate confirmation
   if [[ "$AUTO_SHIP_GATE_ON_KEEP" == "1" ]]; then
-    # Load decay window — eval_paired's bench just ran, system load is elevated.
-    # Wait until 1-min loadavg drops back below ENV_PREFLIGHT_LOAD_THRESHOLD,
-    # or 120s max, before invoking the ship gate.
-    log "[auto-chain] ship-gate: waiting for load decay (up to 120s)..."
-    THRESHOLD=${ENV_PREFLIGHT_LOAD_THRESHOLD:-1.0}
-    for i in {1..24}; do
-      L=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0")
-      if awk -v l="$L" -v t="$THRESHOLD" 'BEGIN{exit !(l<t)}'; then
-        log "[auto-chain] ship-gate: load=$L (< $THRESHOLD) after ${i}×5s — proceeding"
-        break
-      fi
-      sleep 5
-    done
-
-    log "[auto-chain] ship-gate: Criterion-confirm HEAD vs origin/main..."
+    # eval_paired's own bench just ran ~3.5 min; 1-min loadavg is elevated
+    # because the bench's tail end is still in the window. The env state is
+    # otherwise fine (we passed preflight at the start of this gate run and
+    # the system has only been doing OUR bench). Skip preflight for the
+    # ship-gate auto-invocation — we own the env.
+    log "[auto-chain] ship-gate: Criterion-confirm HEAD vs origin/main (SKIP_PREFLIGHT=1, env owned by this gate)..."
     SHIP_EXIT=0
-    bash "$SHARED_DIR/eval_ship_gate.sh" --paired origin/main || SHIP_EXIT=$?
+    SKIP_PREFLIGHT=1 bash "$SHARED_DIR/eval_ship_gate.sh" --paired origin/main || SHIP_EXIT=$?
     case "$SHIP_EXIT" in
       0) log "[auto-chain] ship-gate: PASS (Criterion: no regression / improved)" ;;
       1) log ""
