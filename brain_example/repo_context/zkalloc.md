@@ -45,7 +45,7 @@ Asahi result is small because the workload is compute-bound + the 16 KiB pages +
 
 - **Asahi Linux aarch64** needs `vm.overcommit_memory=1` OR the 687ec5cc commit fix or zk-alloc SIGABRTs on `MAP_NORESERVE`. (See PR #11.)
 - **macOS Mach-VM** does lazy backing differently from Linux; `MAP_NORESERVE` is a no-op. macOS path uses libc fallback (slower setup but functional).
-- **16 GiB M-series Macs** are RAM-constrained: the iter 8 win (14 GiB pre-touched arena) OOMs on Justin's M2 16 GiB target. `PRETOUCH_BYTES` must be `MemTotal`-adaptive before shipping that variant.
+- **16 GiB M-series Macs** are RAM-constrained: the iter 8 win (14 GiB pre-touched arena) OOMs on M2 16 GiB targets. `PRETOUCH_BYTES` must be `MemTotal`-adaptive before shipping that variant.
 - **Linux x86_64** standard glibc baseline; THP huge pages available via `madvise(MADV_HUGEPAGE)` (Task #72, not yet integrated).
 
 ## Configuration tunables
@@ -82,7 +82,7 @@ zk-alloc itself has unit tests; integration validation happens IN downstream pro
 ## Closed decisions / dead-ends
 
 - **Iter 8 PRETOUCH OOM** (HARD FACT). 14 GiB pre-touched arena OOMs on 16 GiB Macs. NOT shippable as-is. Need `MemTotal`-adaptive sizing before shipping.
-- **Nested phase model** (HARD FACT). The allocator is flat-phase by contract. Nested `begin_phase` calls inside a phase are a contract violation. PR #12 added `assert_flat_phase()` to enforce this in dev builds. Emile's pattern, validated cross-prover.
+- **Nested phase model** (HARD FACT). The allocator is flat-phase by contract. Nested `begin_phase` calls inside a phase are a contract violation. PR #12 added `assert_flat_phase()` to enforce this in dev builds. Pattern validated cross-prover.
 - **No competing ZK allocator exists** (research finding, 2026-05). Paper opportunity post-devnet.
 
 ## Active investigations
