@@ -9,24 +9,31 @@ This folder is what stays public. Copy to `brain/` in your own checkout, fill in
 A three-tier agent architecture:
 
 ```
-                      user
-                       ↕
-                     brain                   ← long-lived Claude session, architect role
-                    /  |  \
-                   /   |   \
-   brain.deep ─────┤   │   ├─── brain.portfolio    ← specialist personas (Agent tool)
-  (bug-hunting,    │   │   │    (weekly cross-experiment review)
-   profiling,      │   │   │
-   paper survey)   │   │   │
-                   │   │   │
-                   ▼   ▼   ▼
-                 coordinator                  ← long-lived Claude session, state machine
+                       user
+                        ↕
+                      brain                   ← long-lived Claude session, architect role
+                  ┌───┬─┴─┬───┐
+                  │   │   │   │
+        brain-deep   brain-author-*   brain-portfolio   ← specialist personas (Agent tool)
+        (research    (program.md      (weekly cross-
+         synthesis,   authoring,       experiment
+         ad-hoc       template-        review)
+         profiling,   driven,
+         surveys)     per-type)
+                  │   │   │   │
+                  ▼   ▼   ▼   ▼
+                  coordinator                 ← long-lived Claude session, state machine
                        ↕
               ┌────────┴────────┐
               ▼                 ▼
          queue/<state>/   executors (rented hardware)
          (sharded JSON)   (one Claude per experiment)
 ```
+
+Specialist personas split by JOB SHAPE:
+- **brain-deep** — open-ended one-shot reasoning (candidate surveys, adversarial review, ad-hoc profiling). The answer isn't a template fill.
+- **brain-author-{bug-hunter, profiler, optimization}** — template-driven program.md authoring. The structure is fixed; only the variable section changes per dispatch. Read `agents/AUTHORS.md` for the dispatch contract.
+- **brain-portfolio** — weekly cross-experiment review.
 
 The split keeps brain free of operational bookkeeping (which executor has capacity, what's stalled, what PR is open) — coordinator handles all that and escalates ambiguous cases back to brain via `queue/needs-decision/`. Brain never has to remember; it reads queue state at the start of every conversation turn.
 
@@ -50,8 +57,16 @@ brain_example/
 ├── README.md                       # this file
 ├── program.md                      # brain's prompt (the architect role)
 ├── agents/
-│   ├── brain-deep.md               # specialist persona: bug-hunting + profiling + paper survey
-│   └── brain-portfolio.md          # weekly cross-experiment review persona
+│   ├── AUTHORS.md                  # dispatch contract for the brain-author-* family
+│   ├── brain-deep.md               # one-shot research synthesis + ad-hoc profiling
+│   ├── brain-portfolio.md          # weekly cross-experiment review
+│   ├── brain-author-bug-hunter.md  # template-driven program.md for bug-hunting experiments
+│   ├── brain-author-profiler.md    # template-driven program.md for profiling experiments
+│   └── brain-author-optimization.md # template-driven 3-file design for optimization loops
+├── repo_context/
+│   ├── leanmultisig.md             # hot symbols, baseline, gate, known-no-go's
+│   ├── plonky3.md                  # subsystems, bench bins, bug-class patterns
+│   └── zkalloc.md                  # API, platform results, integrations
 ├── coordinator/
 │   ├── program.md                  # coordinator's persistent session prompt
 │   └── settings.json               # coordinator's tool scope (Read-heavy, write-stingy)
