@@ -43,7 +43,8 @@ CANDIDATE_REF="HEAD"
 N=1
 DRIFT_ABORT_PCT=${DRIFT_ABORT_PCT:-1.5}
 SKIP_PREFLIGHT=${SKIP_PREFLIGHT:-0}
-AUTO_CUMULATIVE_ON_KEEP=${AUTO_CUMULATIVE_ON_KEEP:-0}
+AUTO_CUMULATIVE_ON_KEEP=${AUTO_CUMULATIVE_ON_KEEP:-1}    # default ON: anchor every keep vs origin/main
+AUTO_SHIP_GATE_ON_KEEP=${AUTO_SHIP_GATE_ON_KEEP:-1}     # default ON: Criterion-confirm every keep
 
 export RUSTFLAGS="-C target-cpu=native"
 
@@ -355,15 +356,38 @@ dec=$(python3 -c 'import json; print(json.load(open("/tmp/eval_paired_summary.js
 EXIT_CODE=1
 [[ "$dec" == "keep" ]] && EXIT_CODE=0
 
-# Auto-cumulative on keep (opt-in via env var; skipped if baseline is already origin/main)
-if [[ "$EXIT_CODE" -eq 0 && "$AUTO_CUMULATIVE_ON_KEEP" == "1" ]]; then
+# Auto-chain on keep: cumulative anchor → Criterion ship-gate confirmation
+if [[ "$EXIT_CODE" -eq 0 ]]; then
+  log ""
+  log "==================== KEEP — running auto-chain ===================="
+
   BASELINE_IS_ORIGIN_MAIN=$( (cd "$LM_REPO" && [[ "$(git rev-parse origin/main)" == "$BASELINE_SHA" ]]) && echo "1" || echo "0")
-  if [[ "$BASELINE_IS_ORIGIN_MAIN" == "0" ]]; then
-    log ""
-    log "KEEP decision recorded. AUTO_CUMULATIVE_ON_KEEP=1 → anchoring against origin/main..."
-    bash "$SHARED_DIR/eval_cumulative.sh" --anchor origin/main --n 5 || true
-  else
-    log "AUTO_CUMULATIVE_ON_KEEP=1 set, but baseline IS origin/main — already anchored, skipping recheck"
+
+  # Step 1: Cumulative anchor vs origin/main
+  if [[ "$AUTO_CUMULATIVE_ON_KEEP" == "1" ]]; then
+    if [[ "$BASELINE_IS_ORIGIN_MAIN" == "1" ]]; then
+      log "[auto-chain] cumulative: baseline IS origin/main — skipping (already anchored)"
+    else
+      log "[auto-chain] cumulative: anchoring HEAD vs origin/main..."
+      bash "$SHARED_DIR/eval_cumulative.sh" --anchor origin/main --n 5 || true
+    fi
+  fi
+
+  # Step 2: Criterion ship-gate confirmation
+  if [[ "$AUTO_SHIP_GATE_ON_KEEP" == "1" ]]; then
+    log "[auto-chain] ship-gate: Criterion-confirm HEAD vs origin/main..."
+    SHIP_EXIT=0
+    bash "$SHARED_DIR/eval_ship_gate.sh" --paired origin/main || SHIP_EXIT=$?
+    if [[ "$SHIP_EXIT" -eq 1 ]]; then
+      log ""
+      log "[auto-chain] WARNING: fast-tier said KEEP but Criterion ship-gate detected REGRESSION."
+      log "[auto-chain] Inspect /tmp/eval_ship_gate_summary.json + /tmp/eval_ship_gate_last.txt"
+      log "[auto-chain] Recommend manual eval_revert_ab.sh before relying on this keep."
+    elif [[ "$SHIP_EXIT" -eq 0 ]]; then
+      log "[auto-chain] ship-gate: PASS (no regression)"
+    else
+      log "[auto-chain] ship-gate: infrastructure error (exit $SHIP_EXIT), see logs"
+    fi
   fi
 fi
 

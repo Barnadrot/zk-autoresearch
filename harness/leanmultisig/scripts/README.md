@@ -97,26 +97,49 @@ Four scripts retired on 2026-05-13. See `_legacy/README.md` for what they did, w
 - `eval_e2e.sh` — legacy Criterion wrapper. Superseded by `eval_paired.sh`.
 - `eval_poseidon.sh` — manual throughput print, no decision logic. Superseded by Criterion poseidon_permute bench.
 
-## Recommended invocation pattern (per-iter)
+## Per-iter pipeline (auto-chained on keep)
+
+```
+[change committed]
+      │
+      ▼
+correctness.sh                                                       ← agent calls
+      │  pass
+      ▼
+eval_paired.sh                                                       ← agent calls
+      │  (calls env_preflight internally; aborts if FAIL)
+      │  (per-round drift abort if drift > DRIFT_ABORT_PCT)
+      │
+      ├─ discard → revert, next iter
+      │
+      └─ keep
+          │
+          ├─ AUTO_CUMULATIVE_ON_KEEP=1 (default)
+          │      → eval_cumulative.sh anchors HEAD vs origin/main
+          │
+          └─ AUTO_SHIP_GATE_ON_KEEP=1 (default)
+                 → eval_ship_gate.sh --paired origin/main (Criterion confirm)
+                 │
+                 ├─ PASS → keep confirmed
+                 └─ REGRESS → WARNING logged. Inspect, optionally eval_revert_ab.sh
+```
+
+Agent-side invocation reduces to:
 
 ```bash
-# 1. Verify env is healthy before any measurement window starts
-bash env_preflight.sh || exit 1
+# 1. Make the change, commit it
 
-# 2. Make the change, commit it
+# 2. Correctness
+bash ~/zk-autoresearch/harness/leanmultisig/correctness/correctness.sh || exit 1
 
-# 3. Run correctness gate (separate crate, see harness/leanmultisig/correctness/)
-bash ~/zk-autoresearch/harness/leanmultisig/correctness/correctness.sh
-
-# 4. Run the wall-clock gate
+# 3. Fast gate (handles env preflight + auto-chain internally)
 bash eval_paired.sh
-EXIT=$?
-
-# 5. On keep, anchor cumulative against origin/main
-if [[ $EXIT -eq 0 ]]; then
-  bash eval_cumulative.sh
-fi
+# Exit 0 = keep (auto-chained cumulative + ship-gate already ran)
+# Exit 1 = discard (next iter)
+# Exit 2 = infra error (env preflight FAIL, drift abort, identical binaries, etc.)
 ```
+
+The agent does NOT need to remember to call cumulative or ship gate — they auto-fire on keep. To disable for fast iteration: `AUTO_SHIP_GATE_ON_KEEP=0 bash eval_paired.sh`.
 
 ## Known gaps (tracked, not blocking)
 

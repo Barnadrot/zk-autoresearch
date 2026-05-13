@@ -36,7 +36,9 @@ SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
 BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanmultisig/bench}
 LM_REPO=${LM_REPO:-$HOME/zk-autoresearch/leanMultisig}
 BENCH_NAME=${BENCH_NAME:-xmss_leaf}
-BENCH_FILTER=${BENCH_FILTER:-xmss_leaf_1400sigs}
+# Default filter matches xmss_leaf_<N_SIGS>sigs from bench source (N_SIGS=1550 currently).
+# Just "xmss_leaf" prefix-matches any size variant.
+BENCH_FILTER=${BENCH_FILTER:-xmss_leaf}
 SAMPLE_SIZE=${SHIP_GATE_SAMPLE_SIZE:-10}
 MEASURE_SECS=${SHIP_GATE_MEASURE_SECS:-60}
 SKIP_PREFLIGHT=${SKIP_PREFLIGHT:-0}
