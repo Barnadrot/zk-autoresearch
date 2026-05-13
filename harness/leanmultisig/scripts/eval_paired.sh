@@ -375,19 +375,34 @@ if [[ "$EXIT_CODE" -eq 0 ]]; then
 
   # Step 2: Criterion ship-gate confirmation
   if [[ "$AUTO_SHIP_GATE_ON_KEEP" == "1" ]]; then
+    # Load decay window — eval_paired's bench just ran, system load is elevated.
+    # Wait until 1-min loadavg drops back below ENV_PREFLIGHT_LOAD_THRESHOLD,
+    # or 120s max, before invoking the ship gate.
+    log "[auto-chain] ship-gate: waiting for load decay (up to 120s)..."
+    THRESHOLD=${ENV_PREFLIGHT_LOAD_THRESHOLD:-1.0}
+    for i in {1..24}; do
+      L=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0")
+      if awk -v l="$L" -v t="$THRESHOLD" 'BEGIN{exit !(l<t)}'; then
+        log "[auto-chain] ship-gate: load=$L (< $THRESHOLD) after ${i}×5s — proceeding"
+        break
+      fi
+      sleep 5
+    done
+
     log "[auto-chain] ship-gate: Criterion-confirm HEAD vs origin/main..."
     SHIP_EXIT=0
     bash "$SHARED_DIR/eval_ship_gate.sh" --paired origin/main || SHIP_EXIT=$?
-    if [[ "$SHIP_EXIT" -eq 1 ]]; then
-      log ""
-      log "[auto-chain] WARNING: fast-tier said KEEP but Criterion ship-gate detected REGRESSION."
-      log "[auto-chain] Inspect /tmp/eval_ship_gate_summary.json + /tmp/eval_ship_gate_last.txt"
-      log "[auto-chain] Recommend manual eval_revert_ab.sh before relying on this keep."
-    elif [[ "$SHIP_EXIT" -eq 0 ]]; then
-      log "[auto-chain] ship-gate: PASS (no regression)"
-    else
-      log "[auto-chain] ship-gate: infrastructure error (exit $SHIP_EXIT), see logs"
-    fi
+    case "$SHIP_EXIT" in
+      0) log "[auto-chain] ship-gate: PASS (Criterion: no regression / improved)" ;;
+      1) log ""
+         log "[auto-chain] CONFLICT: fast-tier=KEEP, Criterion ship-gate=REGRESS."
+         log "[auto-chain] Inspect /tmp/eval_ship_gate_summary.json + /tmp/eval_ship_gate_last.txt"
+         log "[auto-chain] Recommend manual eval_revert_ab.sh to settle." ;;
+      2) log "[auto-chain] ship-gate: COULD NOT MEASURE (exit 2: env_preflight fail, build error, etc.)"
+         log "[auto-chain] Fast-tier keep decision stands; ship-gate confirmation pending."
+         log "[auto-chain] Inspect /tmp/eval_ship_gate_last.txt for cause." ;;
+      *) log "[auto-chain] ship-gate: unexpected exit $SHIP_EXIT — see /tmp/eval_ship_gate_last.txt" ;;
+    esac
   fi
 fi
 
