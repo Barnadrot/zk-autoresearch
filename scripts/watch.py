@@ -3,7 +3,7 @@
 Live experiment monitor for zk-autoresearch.
 
 Usage:
-    python3 watch.py experiment_logs/leanMultisig/experiment_sumcheck_deep/iters.tsv
+    python3 watch.py experiment_logs/leanMultisig/optimization/pw4_2_poseidon_2026-05-13/iters.tsv
     python3 watch.py experiments.jsonl
     tail -f iters.tsv | python3 watch.py --tsv
     python3 watch.py                              # read jsonl from stdin
