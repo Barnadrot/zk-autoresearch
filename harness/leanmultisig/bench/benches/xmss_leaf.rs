@@ -50,5 +50,13 @@ fn bench_xmss_leaf(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_xmss_leaf);
+// noise_threshold tuned for Hetzner Zen 4 idle σ ≈ 0.51% (per profiling memory).
+// 0.7% is just above σ so genuine sub-fast-tier (1.0%) wins still classify as
+// "improved" rather than "within noise threshold" — matches the eval_ship_gate.sh
+// confirmation tier's role. Re-tune for substantially different hardware noise floors.
+criterion_group!(
+    name = benches;
+    config = Criterion::default().noise_threshold(0.007);
+    targets = bench_xmss_leaf
+);
 criterion_main!(benches);
