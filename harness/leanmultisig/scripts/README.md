@@ -21,21 +21,29 @@ bash env_preflight.sh --json-only
 Exit: 0 PASS, 1 FAIL with remediation hints, 2 infra error.
 
 ### `eval_paired.sh` — per-iter wall-clock gate (PRIMARY)
-Paired prove_loop bench between two git refs. Builds both binaries (fat LTO, zk-alloc, `RUSTFLAGS=-C target-cpu=native`), runs N alternating rounds, computes Welch's t-test on warm-proof samples, decides keep/discard.
+Paired prove_loop bench between two git refs. Builds both binaries (fat LTO, zk-alloc, `RUSTFLAGS=-C target-cpu=native`), runs N counterbalanced rounds, computes Welch's t-test on warm-proof samples, decides keep/discard.
+
+**Measurement hardening** (post pw4 audit):
+- **N=3 default** — 12 samples/side (3 rounds × 4 warm proofs). Previous N=1 had ~40% power to detect real 1% changes; N=3 gives ~85%.
+- **Counterbalanced round ordering** — odd rounds run base→cand, even rounds cand→base. Eliminates systematic within-round position bias.
+- **Core pinning** — `taskset -c $TASKSET_CORES` (default `0-7`, one thread per physical core). Eliminates SMT migration noise.
+- **Page cache drop** — `drop_caches` between each side within a round. Both sides start from identical cache state.
+- **A-vs-A noise floor** — before measurement, runs the baseline binary against itself. Records `noise_floor_pct` in the summary JSON. Soft-fail: flags `noise_reliable: false` if noise exceeds `NOISE_FLOOR_WARN_PCT` (default 0.5%) but does NOT abort the loop.
 
 ```bash
-bash eval_paired.sh                                   # HEAD~1 vs HEAD, N=1
+bash eval_paired.sh                                   # HEAD~1 vs HEAD, N=3
 bash eval_paired.sh --baseline <ref> --candidate <ref> --n <int>
-bash eval_paired.sh --n 5                             # 5 paired rounds
+bash eval_paired.sh --n 5 --proofs 7                  # more samples per run
+bash eval_paired.sh --skip-noise-check                # bypass A-vs-A noise floor
+SKIP_PREFLIGHT=1 eval_paired.sh                       # bypass env_preflight
 ```
 
-Output: `/tmp/eval_paired_summary.json` (full JSON). Exit: 0 keep, 1 discard, 2 infra error.
+Output: `/tmp/eval_paired_summary.json` (full JSON incl. `noise_floor_pct`, `noise_reliable`). Exit: 0 keep, 1 discard, 2 infra error.
 
 Decision rule (`config.env`): `delta_pct <= -KEEP_THRESHOLD_PCT AND p_value < 0.01`. Default threshold 1.0%.
 
-**Methodology caveats** (per pw4 audit 2026-05-13):
-- Default baseline is `HEAD~1` (rolling). Per-iter deltas are marginal contributions, NOT cumulative. After a keep, use `eval_cumulative.sh` to anchor against `origin/main` for interpretable wall-clock-vs-main numbers.
-- Block-design alternation within rounds: each round runs the full baseline binary first, then the full candidate. With many rounds (N >= 5), drift is averaged out; with N=1 the block design is exposed to minute-scale drift. Use `--n 5` or higher for keep-decisions on borderline cases.
+**Methodology note** (per pw4 audit 2026-05-13):
+Default baseline is `HEAD~1` (rolling). Per-iter deltas are marginal contributions, NOT cumulative. After a keep, use `eval_cumulative.sh` to anchor against `origin/main` for interpretable wall-clock-vs-main numbers.
 
 ### `eval_cumulative.sh` — cumulative anchor measurement
 Wraps `eval_paired.sh` with `--baseline=origin/main --candidate=HEAD --n=5`. Runs `env_preflight.sh` first. Designed to be invoked automatically after a keep lands, or manually after any structural change, to record an interpretable cumulative-vs-main number.
@@ -85,6 +93,25 @@ bash verify_post_experiment.sh --save-baseline  # save proof size baseline (run 
 
 Proof size baseline file: `/tmp/lm_proof_size_baseline.txt`. If proof size changes vs baseline, exit 1 with delta + percentage — typically signals a structural change (RATE/folding factor, sponge variant, etc).
 
+### `eval_steady_state.sh` — steady-state measurement tier
+Measures proof times at production steady-state (proof 200+) rather than fresh-warm (proofs 1-4). Captures the regime where zk-alloc RSS has plateaued and working-set exceeds L3 — the regime production actually operates in.
+
+```bash
+# Standalone with SHAs (builds prove_loop binaries)
+bash eval_steady_state.sh --baseline <sha> --candidate <sha>
+
+# With pre-built binaries (skips build, used by auto-chain)
+bash eval_steady_state.sh --baseline-bin /tmp/base --candidate-bin /tmp/cand \
+  --baseline <sha> --candidate <sha>
+
+# Custom window
+bash eval_steady_state.sh --baseline <sha> --candidate <sha> --proofs 300 --measure-last 100
+```
+
+Output: `/tmp/eval_steady_state_summary.json`. Exit: 0 = no regression, 1 = regression (>1%, p<0.05), 2 = infra error.
+
+Runtime: ~$((250 * 2 * 2 / 60)) min with defaults (250 proofs × ~2s × 2 sides). Auto-chained on keeps exceeding `STEADY_STATE_THRESHOLD_PCT` (default 2.0%) — does NOT fire on typical sub-2% keeps.
+
 ### `config.env` — central thresholds
 Edit here, not in individual scripts. Documents what each threshold means and why it's set where it is. Current settings reflect Zen 4 calibration on Hetzner.
 
@@ -107,7 +134,9 @@ correctness.sh                                                       ← agent c
       │  pass
       ▼
 eval_paired.sh                                                       ← agent calls
-      │  (calls env_preflight internally; aborts if FAIL)
+      │  (env_preflight: governor + load check)
+      │  (noise floor: A-vs-A calibration, soft-fail)
+      │  (counterbalanced rounds, core-pinned, page-cache-dropped)
       │  (per-round drift abort if drift > DRIFT_ABORT_PCT)
       │
       ├─ discard → revert, next iter
@@ -117,11 +146,17 @@ eval_paired.sh                                                       ← agent c
           ├─ AUTO_CUMULATIVE_ON_KEEP=1 (default)
           │      → eval_cumulative.sh anchors HEAD vs origin/main
           │
-          └─ AUTO_SHIP_GATE_ON_KEEP=1 (default)
-                 → eval_ship_gate.sh --paired origin/main (Criterion confirm)
+          ├─ AUTO_SHIP_GATE_ON_KEEP=1 (default)
+          │      → eval_ship_gate.sh --paired origin/main (Criterion confirm)
+          │      │
+          │      ├─ PASS → keep confirmed
+          │      └─ REGRESS → WARNING logged. Inspect, optionally eval_revert_ab.sh
+          │
+          └─ AUTO_STEADY_STATE_ON_KEEP=1 (default, |Δ| >= 2.0% only)
+                 → eval_steady_state.sh (250 proofs, measure last 50)
                  │
-                 ├─ PASS → keep confirmed
-                 └─ REGRESS → WARNING logged. Inspect, optionally eval_revert_ab.sh
+                 ├─ no_change / improved → steady-state OK
+                 └─ regression → WARNING logged. Fresh-warm may not transfer.
 ```
 
 Agent-side invocation reduces to:
@@ -143,7 +178,7 @@ The agent does NOT need to remember to call cumulative or ship gate — they aut
 
 ## Known gaps (tracked, not blocking)
 
-- **Per-sample alternation inside a round.** Current eval_paired.sh runs the full baseline binary first then full candidate within each round. Per-sample interleaving (base-proof, cand-proof, base-proof, cand-proof, ...) would tighten the variance further. Requires modifying `prove_loop` to support single-proof mode. Tracked for pw4_2 methodology work. (`eval_ship_gate.sh` gets this for free via Criterion when you need it.)
+- **Per-sample interleaving within a round.** Counterbalanced round ordering (odd=base→cand, even=cand→base) eliminates most systematic position bias but does not interleave individual proof samples within a round. Full interleaving (base-proof, cand-proof, ...) would further tighten variance but requires `prove_loop` to support single-proof mode with shared setup. Deferred — counterbalancing + page-cache-drop captures the majority of the benefit. (`eval_ship_gate.sh` gets per-sample interleaving for free via Criterion.)
 
 ## Loop orchestration
 
