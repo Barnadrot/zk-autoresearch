@@ -49,7 +49,8 @@ experiment_logs/**/report/
 
 # Coordinator working directory — long-lived Sonnet session, has its own UUID
 # and pulls in any state files coordinator writes.
-coordinator/
+# Anchored to repo root so brain_example/coordinator/ (public scaffolding) stays tracked.
+/coordinator/
 
 # Workspace-level Claude Code config — persona files reference live infra
 # layout and would aid an attacker in mapping the system.
