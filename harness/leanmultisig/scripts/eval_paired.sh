@@ -40,11 +40,16 @@ LM_REPO=${LM_REPO:-$HOME/zk-autoresearch/leanMultisig}
 BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanmultisig/bench}
 BASELINE_REF="HEAD~1"
 CANDIDATE_REF="HEAD"
-N=1
+N=3
 DRIFT_ABORT_PCT=${DRIFT_ABORT_PCT:-1.5}
 SKIP_PREFLIGHT=${SKIP_PREFLIGHT:-0}
 AUTO_CUMULATIVE_ON_KEEP=${AUTO_CUMULATIVE_ON_KEEP:-1}    # default ON: anchor every keep vs origin/main
 AUTO_SHIP_GATE_ON_KEEP=${AUTO_SHIP_GATE_ON_KEEP:-1}     # default ON: Criterion-confirm every keep
+TASKSET_CORES=${TASKSET_CORES:-"0-7"}
+NOISE_FLOOR_WARN_PCT=${NOISE_FLOOR_WARN_PCT:-0.5}
+SKIP_NOISE_CHECK=${SKIP_NOISE_CHECK:-0}
+AUTO_STEADY_STATE_ON_KEEP=${AUTO_STEADY_STATE_ON_KEEP:-1}
+STEADY_STATE_THRESHOLD_PCT=${STEADY_STATE_THRESHOLD_PCT:-2.0}
 
 export RUSTFLAGS="-C target-cpu=native"
 
@@ -57,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --n)         N="$2"; shift 2 ;;
     --threshold) KEEP_THRESHOLD_PCT="$2"; shift 2 ;;
     --proofs)    N_PROOFS="$2"; shift 2 ;;
+    --skip-noise-check) SKIP_NOISE_CHECK=1; shift ;;
     *)           echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -76,6 +82,19 @@ PREFLIGHT_JSON=$(cat /tmp/eval_paired_preflight.json 2>/dev/null || echo "{}")
 
 err() { echo "[eval_paired][err] $*" >&2; }
 log() { echo "[eval_paired] $*"; }
+
+drop_caches() {
+  sync
+  echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
+}
+
+run_pinned() {
+  if command -v taskset > /dev/null 2>&1 && [[ -n "$TASKSET_CORES" ]]; then
+    taskset -c "$TASKSET_CORES" "$@"
+  else
+    "$@"
+  fi
+}
 
 build_prove_loop() {
   local ref="$1" out="$2"
@@ -131,11 +150,55 @@ if [[ "$HASH_BASE" == "$HASH_CAND" ]]; then
   if [[ "${ALLOW_IDENTICAL_BIN:-0}" != "1" ]]; then exit 2; fi
 fi
 
-# ------------------------------ THERMAL WARMUP --------------------------------
+# ------------------------------ NOISE FLOOR + THERMAL WARMUP ----------------
 
-(cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
-log "thermal warmup (discarded)..."
-/tmp/prove_loop_cand 2 >/dev/null 2>&1 || true
+if [[ "$SKIP_NOISE_CHECK" != "1" ]]; then
+  (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
+  log "noise floor check (A-vs-A, also serves as thermal warmup)..."
+  NOISE_CSV_A=$(mktemp /tmp/eval_noise_a.XXXXXX.csv)
+  NOISE_CSV_B=$(mktemp /tmp/eval_noise_b.XXXXXX.csv)
+  drop_caches
+  run_pinned /tmp/prove_loop_base "$N_PROOFS" > "$NOISE_CSV_A" 2>/dev/null
+  drop_caches
+  run_pinned /tmp/prove_loop_base "$N_PROOFS" > "$NOISE_CSV_B" 2>/dev/null
+
+  NOISE_FLOOR_PCT=$(python3 - "$NOISE_CSV_A" "$NOISE_CSV_B" <<'PY'
+import sys
+def parse_warm(path):
+    times = []
+    for line in open(path):
+        line = line.strip()
+        if line.startswith("proof,"): continue
+        parts = line.split(",")
+        if len(parts) < 2: continue
+        idx, secs = int(parts[0]), float(parts[1])
+        if idx >= 1: times.append(secs)
+    return times
+a, b = parse_warm(sys.argv[1]), parse_warm(sys.argv[2])
+if a and b:
+    mean_a, mean_b = sum(a)/len(a), sum(b)/len(b)
+    print(f"{abs((mean_b - mean_a) / mean_a * 100):.4f}")
+else:
+    print("0.0")
+PY
+  )
+  rm -f "$NOISE_CSV_A" "$NOISE_CSV_B"
+
+  NOISE_RELIABLE=1
+  if python3 -c "import sys; sys.exit(0 if float('$NOISE_FLOOR_PCT') < float('$NOISE_FLOOR_WARN_PCT') else 1)" 2>/dev/null; then
+    log "noise floor: ${NOISE_FLOOR_PCT}% (< ${NOISE_FLOOR_WARN_PCT}% — OK)"
+  else
+    log "WARNING: noise floor ${NOISE_FLOOR_PCT}% >= ${NOISE_FLOOR_WARN_PCT}% — results flagged unreliable"
+    NOISE_RELIABLE=0
+  fi
+else
+  log "noise check skipped (SKIP_NOISE_CHECK=1)"
+  NOISE_FLOOR_PCT="skipped"
+  NOISE_RELIABLE=1
+  (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
+  log "thermal warmup (discarded)..."
+  run_pinned /tmp/prove_loop_cand 2 >/dev/null 2>&1 || true
+fi
 
 # ------------------------------ MEASURE --------------------------------------
 
@@ -149,15 +212,27 @@ ROUND_LOG=$(mktemp /tmp/eval_round_log.XXXXXX.txt)
 for ((round=1; round<=N; round++)); do
   log "=== round $round / $N ==="
 
-  # --- baseline run ---
-  (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
   BASE_CSV=$(mktemp /tmp/eval_base.XXXXXX.csv)
-  /tmp/prove_loop_base "$N_PROOFS" > "$BASE_CSV" 2>/dev/null
-
-  # --- candidate run ---
-  (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
   CAND_CSV=$(mktemp /tmp/eval_cand.XXXXXX.csv)
-  /tmp/prove_loop_cand "$N_PROOFS" > "$CAND_CSV" 2>/dev/null
+
+  # Counterbalanced ordering: odd rounds base→cand, even rounds cand→base
+  if (( round % 2 == 1 )); then
+    log "  order: base → cand"
+    drop_caches
+    (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
+    run_pinned /tmp/prove_loop_base "$N_PROOFS" > "$BASE_CSV" 2>/dev/null
+    drop_caches
+    (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
+    run_pinned /tmp/prove_loop_cand "$N_PROOFS" > "$CAND_CSV" 2>/dev/null
+  else
+    log "  order: cand → base"
+    drop_caches
+    (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
+    run_pinned /tmp/prove_loop_cand "$N_PROOFS" > "$CAND_CSV" 2>/dev/null
+    drop_caches
+    (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
+    run_pinned /tmp/prove_loop_base "$N_PROOFS" > "$BASE_CSV" 2>/dev/null
+  fi
 
   # --- extract warm proof times and per-round summary ---
   python3 - "$BASE_CSV" "$CAND_CSV" "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG" "$round" <<'PY'
@@ -236,11 +311,11 @@ done
 
 SUMMARY=$(python3 - "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG" \
   "$KEEP_THRESHOLD_PCT" "$N" "$HASH_BASE" "$HASH_CAND" \
-  "$BASELINE_SHA" "$CANDIDATE_SHA" "$N_PROOFS" <<'PY'
+  "$BASELINE_SHA" "$CANDIDATE_SHA" "$N_PROOFS" "$NOISE_FLOOR_PCT" "$NOISE_RELIABLE" <<'PY'
 import sys, json, math, statistics as st
 
 base_path, cand_path, round_path = sys.argv[1:4]
-thr, n, hash_base, hash_cand, base_sha, cand_sha, n_proofs = sys.argv[4:]
+thr, n, hash_base, hash_cand, base_sha, cand_sha, n_proofs, noise_floor_str, noise_reliable_str = sys.argv[4:]
 thr, n, n_proofs = float(thr), int(n), int(n_proofs)
 
 base_times = [float(x) for x in open(base_path) if x.strip()]
@@ -325,6 +400,8 @@ summary = {
     "hash_cand": hash_cand,
     "baseline_sha": base_sha,
     "candidate_sha": cand_sha,
+    "noise_floor_pct": float(noise_floor_str) if noise_floor_str != "skipped" else None,
+    "noise_reliable": int(noise_reliable_str) == 1,
 }
 print(json.dumps(summary, indent=2))
 PY
@@ -369,7 +446,7 @@ if [[ "$EXIT_CODE" -eq 0 ]]; then
       log "[auto-chain] cumulative: baseline IS origin/main — skipping (already anchored)"
     else
       log "[auto-chain] cumulative: anchoring HEAD vs origin/main..."
-      bash "$SHARED_DIR/eval_cumulative.sh" --anchor origin/main --n 5 || true
+      SKIP_NOISE_CHECK=1 bash "$SHARED_DIR/eval_cumulative.sh" --anchor origin/main --n 5 || true
     fi
   fi
 
@@ -394,6 +471,19 @@ if [[ "$EXIT_CODE" -eq 0 ]]; then
          log "[auto-chain] Inspect /tmp/eval_ship_gate_last.txt for cause." ;;
       *) log "[auto-chain] ship-gate: unexpected exit $SHIP_EXIT — see /tmp/eval_ship_gate_last.txt" ;;
     esac
+  fi
+
+  # Step 3: Steady-state gate (on large keeps only)
+  if [[ "$AUTO_STEADY_STATE_ON_KEEP" == "1" ]]; then
+    KEEP_DELTA=$(python3 -c "import json; print(abs(json.load(open('/tmp/eval_paired_summary.json')).get('delta_pct', 0)))")
+    if python3 -c "import sys; sys.exit(0 if float('$KEEP_DELTA') >= float('$STEADY_STATE_THRESHOLD_PCT') else 1)" 2>/dev/null; then
+      log "[auto-chain] steady-state: |Δ|=${KEEP_DELTA}% >= ${STEADY_STATE_THRESHOLD_PCT}% — measuring..."
+      bash "$SHARED_DIR/eval_steady_state.sh" \
+        --baseline-bin /tmp/prove_loop_base --candidate-bin /tmp/prove_loop_cand \
+        --baseline "$BASELINE_SHA" --candidate "$CANDIDATE_SHA" || true
+    else
+      log "[auto-chain] steady-state: |Δ|=${KEEP_DELTA}% < ${STEADY_STATE_THRESHOLD_PCT}% — skipped"
+    fi
   fi
 fi
 
