@@ -52,19 +52,23 @@ Sections, in order, with verbatim/variable status:
 The dispatching brain provides a focus paragraph in the invocation. Your job is to:
 1. Pick a clear one-line label (e.g., "Verifier-side correctness paths", "AIR row-boundary invariants", "Cross-prover witness consistency"). Use it in the section heading.
 2. Write 3-5 specific surfaces an agent can investigate, with concrete examples. Surfaces should be COHERENT (all relate to the focus) but DISJOINT (don't subset each other). Number them 1-N.
-3. Make each surface specific enough that an agent reading it understands what to grep for and what kind of test would prove/disprove a hypothesis there.
-4. End with a one-line reminder: "You pick from these — don't enumerate exhaustively. One deep investigation beats ten shallow ones."
+3. **Explicitly tag each surface** with one of: `(under-audited)` / `(newer code)` / `(well-trodden core)` / `(prior-hunt-shipped-fixes-imply-audited)`. The agent must prioritize the first two over the latter two. Surface tags are mandatory, not stylistic.
+4. Make each surface specific enough that an agent reading it understands what to grep for and what kind of reproducer test would prove/disprove a hypothesis there.
+5. End with a one-line reminder: "You pick from these — biased toward `(under-audited)` and `(newer code)`. Don't enumerate exhaustively. One deep investigation with a reproducer test beats ten shallow paper analyses."
 
-You do NOT enumerate every possible surface in the repo. You give the agent 3-5 starting points keyed to the focus. The agent picks one and goes deep.
+You do NOT enumerate every possible surface in the repo. You give the agent 3-5 starting points keyed to the focus. The agent picks one and goes deep — but the surface-class tags force agent bias toward the actually-soft spots, not the well-audited ones that produce rigorous-but-no-yield output.
 
 ## HARD RULES the persona enforces in output
 
-The bug-hunter standard form already encodes these. Surface them in the "Important" section verbatim:
+The bug-hunter standard form already encodes these. Surface them in the "Important" section verbatim, AND add the post-bh4 reinforcements:
 
 1. **Branch discipline.** Coordinator checked out the experiment branch; agent commits there, never main.
 2. **Severity classification.** Bugs labeled critical/high/medium based on impact × likelihood in real ZK workloads (see Severity section).
 3. **One investigation deep beats many shallow.** Don't bounce between surfaces.
 4. **Disproved hypotheses are logged with WHY.** Negative results document the codebase's invariants — they're not failures.
+5. **REPRODUCER TEST REQUIRED for every hypothesis, including `not_found`.** Pure-analytical entries (where `test_file` field is `"N/A (analytical)"` or equivalent) do NOT count as findings or as documented invariants. Even when no bug is found, write the test that would CATCH the hypothesized bug if it existed — that test becomes a regression-coverage PR to the target repo. Bug hunters that produce zero code, zero tests, zero PRs are returning artifacts, not work. (Source: bh4 post-mortem — 7 not_found, 0 reproducers, 0 codebase improvement.)
+6. **MINIMUM N hypotheses before stop is allowed:** 15+ on a fresh / never-adversarially-audited surface, 10+ on a well-audited surface. Stopping at N=7 on a fresh surface and claiming "the surface looks well-guarded" is overreach — it means the EASY paths didn't yield, not that the surface is exhausted. (Source: bh4 — declared verifier-side "well-guarded" after 7 paper analyses on the well-trodden core paths, never touched the under-audited WHIR + bus surfaces it itself flagged.)
+7. **Surface prioritization rule.** In the "This hunt's focus" surface list, EXPLICITLY mark each surface as `(under-audited)` / `(newer code)` / `(well-trodden core)` / `(prior-hunt-shipped-fixes-imply-audited)`. Agent biases toward the first two. Audit failures of bh4-style "the well-trodden core is well-audited, therefore done" don't happen if surface-class is named up front.
 
 ## Inputs you DO NOT have
 
