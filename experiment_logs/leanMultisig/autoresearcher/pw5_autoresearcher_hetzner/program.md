@@ -26,18 +26,62 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 
 ## Autoresearch Loop
 
-### Phase 0 - Profiling 
+### Phase 0 - Profiling
 
-Phase 0 — Profiling. Run cargo run --release -- xmss --n-signatures 1550 under flamegraph. Save the result to ~/zk-autoresearch/experiment_logs/leanMultisig/autoresearcher/pw5_autoresearcher_hetzner/report/iter-N-flamegraph.svg. Note the top 3 self-time call sites in report/iter-N-profile-notes.md (≤200 lines) before entering Phase 1. The flamegraph and notes are the prerequisite for Phase 1 hypothesis generation.
+Profile the workload from THREE angles before entering Phase 1. All three artifacts are prerequisite — do not enter Phase 1 without them.
+
+**Experiment dir for artifacts:** `~/zk-autoresearch/experiment_logs/leanMultisig/autoresearcher/pw5_autoresearcher_hetzner/report/`
+
+**Commands** (all use `RUSTFLAGS="-C target-cpu=native"`):
+
+1. **Call-attribution (flamegraph):**
+   ```bash
+   cd ~/zk-autoresearch/leanMultisig && \
+   cargo flamegraph --bin lean-multisig -- xmss --n-signatures 1550
+   ```
+   Move SVG to `<experiment_dir>/report/iter-N-flamegraph.svg`.
+
+2. **Counter stats — parallel + serial for IPC delta detection:**
+   ```bash
+   perf stat -d -d -d --per-thread \
+     cargo run --release -- xmss --n-signatures 1550 \
+     2>&1 | tee <experiment_dir>/report/iter-N-perfstat-parallel.txt
+
+   RAYON_NUM_THREADS=1 perf stat -d -d -d \
+     cargo run --release -- xmss --n-signatures 1550 \
+     2>&1 | tee <experiment_dir>/report/iter-N-perfstat-serial.txt
+   ```
+
+3. **Per-core utilization (during the parallel run):**
+   ```bash
+   ( cargo run --release -- xmss --n-signatures 1550 & ) && \
+     sleep 2 && \
+     mpstat -P ALL 1 30 > <experiment_dir>/report/iter-N-mpstat.txt
+   ```
+   (Fallback if `mpstat` missing: `perf stat --per-core sleep 30`.)
+
+**Profile-notes synthesis** — write `~/zk-autoresearch/experiment_logs/leanMultisig/autoresearcher/pw5_autoresearcher_hetzner/report/iter-N-profile-notes.md` (≤200 lines), with these sections in this order:
+
+1. **Top-line:** wall-clock total, peak RSS, exit status.
+2. **Call attribution:** top 3 self-time symbols with % cycles (from flamegraph).
+3. **IPC:** serial IPC, parallel IPC, delta. If delta > 30%, parallel-side bottleneck is memory-related; if < 10%, compute throughput is the ceiling.
+4. **CPU utilization:** cores used out of available, per-core average %. If `actual-cores < 0.7 × available-cores`, hardware is NOT saturated despite the workload appearing busy. State this explicitly.
+5. **Memory subsystem:** LLC miss rate (% of LLC refs), DRAM bandwidth (% of DDR ceiling), dTLB miss rate. Flag if LLC miss > 5% OR DRAM bw > 30% of ceiling.
+6. **Regime classification (REQUIRED single line):** one of `{compute-bound-throughput, compute-bound-latency, memory-bound-bandwidth, memory-bound-latency, mixed-N%-cpu/M%-memory}` with numeric evidence inline (cite IPC + cache-miss + utilization).
+
 
 ### Phase 1 - Develop Your Hypothesis
 1. You need to develop 3 candidates using the tools available. Log to `hypothesis_pool.yaml` - see ## Logging for details
-2. Always have 3 unique hypothesis. Once reached implement one with the best possible implementation. On next turn you need to find another, select one and implement it, justify the pick in the implementation commit body.
+2. Reason through share-arithmetic for predicted_pct (component_share x component_saving = total)
+3. Composition of techniques by combining multiple research papers is going to yield better ideas.
+4. Always have 3 unique hypothesis. Once reached implement one with the best possible implementation. On next turn you need to find another, select one and implement it, justify the pick in the implementation commit body.
     a. Select by ambition: largest plumbing breadth (cross-crate > multi-file within one crate > single-file). Tiebreak: largest |predicted_pct|.
+5. If you can clearly discard a hypothesis during this phase, it should be removed from the hypothesis pool with the rationale. If you discard a pool entry in Phase 1, you MUST add a replacement entry to keep current_pool at 3 BEFORE moving to Phase 2, find a learning-coupled replacement. Discards and their replacements are paired atomically within Phase 1. Pool size at Phase 2 entry is ALWAYS 3. Add discarded to history section of `hypothesis_pool.yaml`
+6. The mechanism field of each pool entry MUST cite ≥2 distinct research papers (eprint refs with section/page, or named theorems with attribution). Inspiration-repo file:line citations are ALWAYS additional — never a substitute for the paper bar. Citations belong in the hypothesis at formation time, not added to iter rationale post-hoc.
 
 ### Phase 2: Implement
 
-Implement your hypothesis. Commit when logically complete; run the gate when the change is measurable.
+Implement your hypothesis. Commit when logically complete; run the gate when the change is measurable. Iter rationale references the mechanism's papers + any inspiration-repo file:line that shaped the implementation.
 
 If the change is structural and requires multiple commits before it can be measured cleanly, use the WIP arc pattern:
 - Log each intermediate commit as `status=wip` in iters.tsv. WIP iterations run the correctness gate only — incomplete structural changes produce meaningless performance numbers.
@@ -112,7 +156,7 @@ Update the hypothesis pool at `~/zk-autoresearch/experiment_logs/leanMultisig/au
 
 **Required fields per entry**:
 - `id` — short stable identifier (h1, h2, ...)
-- `paper_anchor` — eprint ref with section/page, OR cross-component analysis sketch (one of the two required)
+- `paper_anchor` — eprint ref with section/page, cross-component analysis sketch
 - `mechanism` — one-paragraph explicit mechanism statement
 - `predicted_pct` — single number (Δ%, negative for wall-clock improvement)
 - `plumbing` — list of `<file>:<line-range>` showing where the change goes
@@ -128,8 +172,8 @@ Update the hypothesis pool at `~/zk-autoresearch/experiment_logs/leanMultisig/au
 ```yaml
 current_pool:
   - id: h7
-    paper_anchor: "Bagad 2025/719, §3.2"
-    mechanism: "Pack two independent permutations into one SIMD instruction stream to hide MDS latency"
+    paper_anchor: ["Bagad 2025/719, §3.2", "Goldwasser et al. 2018/156, §4.1 (NIZK reduction)"]
+    mechanism: "Combine Bagad's packed-permutation (interleave two states across SIMD lanesto hide MDS latency) with Goldreich-Lindell's hash-schedule composabilityargument (independent state instances are independent under the random-oraclereduction). Profile: compress_mut self-time 22.4% of total; predicted 35%reduction in compress_mut cycles via lane interleaving. Share-arithmetic: 22.4% × 35% = -7.8% total wall-clock."
     predicted_pct: -5.0
     plumbing:
       - "poseidon1_koalabear_16.rs:945-1032"
