@@ -118,7 +118,6 @@ IF Kept Start the loop again from Phase 0
 IF its reverted start the loop again from Phase 1
 
 **Commit discipline:** Every change and revert gets its own commit. `git revert`, not reset.
-You are working in the leanMultisig repo. Only changes to this need to be commited. Logging files only modify locally.  
 
 ## Inspiration Repos
 | Repo | Path | Branch | Purpose |
