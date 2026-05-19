@@ -12,12 +12,13 @@
 #            3 = test-file integrity violation.
 
 set -e
+
+SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd ~/zk-autoresearch/leanMultisig
 
 export RUSTFLAGS="-C target-cpu=native"
 
 REPEAT=${CORRECTNESS_REPEAT:-1}
-SHARED_DIR="$(dirname "$0")"
 
 # -----------------------------------------------------------------------
 # Inject vendored test files (quintic extension tests, etc.)
@@ -68,12 +69,21 @@ echo "[correctness] Layer 2: Full WHIR proof integration test (~30s)..."
 cargo test -p mt-whir --release 2>&1
 
 # -----------------------------------------------------------------------
-# Layer 3: Nondeterminism detection (repeat runs)
+# Layer 3: Type-1 + Type-2 aggregation end-to-end (~40s first, ~13s hot)
+# Exercises aggregate_type_1, merge_many_type_1, split_type_2, verify.
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 3: Type-1 + Type-2 aggregation end-to-end..."
+cargo test --release test_type_1_aggregation -- --nocapture 2>&1
+cargo test --release test_type_2_aggregation -- --nocapture 2>&1
+
+# -----------------------------------------------------------------------
+# Layer 4: Nondeterminism detection (repeat runs)
 # Only on repeat > 1. Re-runs the WHIR test to catch data races.
 # -----------------------------------------------------------------------
 if [[ "$REPEAT" -gt 1 ]]; then
   echo ""
-  echo "[correctness] Layer 3: Nondeterminism detection ($REPEAT repeat runs)..."
+  echo "[correctness] Layer 4: Nondeterminism detection ($REPEAT repeat runs)..."
   FAIL_COUNT=0
   for ((r=2; r<=REPEAT; r++)); do
     echo "[correctness]   repeat $r/$REPEAT..."
@@ -86,8 +96,8 @@ if [[ "$REPEAT" -gt 1 ]]; then
     echo "[correctness] This indicates a data race or uninitialized memory in parallel code."
     exit 2
   fi
-  echo "[correctness] Layer 3 PASSED — $REPEAT runs agree."
+  echo "[correctness] Layer 4 PASSED — $REPEAT runs agree."
 fi
 
 echo ""
-echo "[correctness] ALL PASSED — safe to benchmark."
+echo "[correctness] ALL PASSED."
