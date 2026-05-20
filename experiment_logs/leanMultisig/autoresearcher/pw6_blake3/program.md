@@ -50,6 +50,7 @@ Profile the RECURSION CIRCUIT from three angles before entering Phase 1. All thr
    ```
    Move SVG to `<experiment_dir>/report/iter-N-flamegraph.svg`.
    Extract: total wall-clock, % in DFT/encode, % in Merkle commit, % in sumcheck, % in fold.
+   Note: Expected to fail on this branch before Blake3 is fully functional. Skip this part until you can fully run it. 
 
 2. **Recursion circuit surface map + n_vars=27 cost:**
    ```bash
