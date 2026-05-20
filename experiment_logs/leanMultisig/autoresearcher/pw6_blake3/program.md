@@ -21,6 +21,7 @@ You reason from primary sources: ePrints, cryptanalysis results, Github repos, a
 4) No candidate is too big to implement. 
 5) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's context management will manage context by auto-compression if you hit the 1 million token context limit. 
 6) Increasing commitment surface is not an issue. Proof size can be reduced via further recursion, include that in the final codebase or in your calculations.
+7) Do not remove Merkle path verification from the recursion circuit. The circuit must verify Merkle proofs, not delegate to the native verifier.
 
 ## Context
 
