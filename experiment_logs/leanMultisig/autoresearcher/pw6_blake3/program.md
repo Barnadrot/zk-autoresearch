@@ -16,20 +16,26 @@ You reason from primary sources: ePrints, cryptanalysis results, Github repos, a
 
 ## Hard Constraints
 1) Always specify the security regime and strengthen it with citations
-2) Do not modify tests or anything that affects the correctness or the benchmarking methodology. 
-3) Do not migrate to Poseidon2 implementation. LeanMultisig migrated to Poseidon1 for security reasons, its not a valid candidate. 
-4) No candidate is too big to implement. 
-5) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's context management will manage context by auto-compression if you hit the 1 million token context limit. 
-6) Increasing commitment surface is not an issue. Proof size can be reduced via further recursion, include that in the final codebase or in your calculations.
-7) Do not remove Merkle path verification from the recursion circuit. The circuit must verify Merkle proofs, not delegate to the native verifier.
+2) Do not modify tests or anything that affects the correctness or the benchmarking methodology.  
+3) No candidate is too big to implement. 
+4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's context management will manage context by auto-compression if you hit the 1 million token context limit. 
+5) Increasing commitment surface is not an issue (currently n_vars = 26, it can be increased). Proof size can be reduced via further recursion, include that in the final codebase or in your calculations.
+6) Do not remove Merkle path verification from the recursion circuit. The circuit must verify Merkle proofs, not delegate to the native verifier.
+7) Do not add feature flags!
 
 ## Context
 
-The current codebase has implemented Blake3 partially. It passes prove_loop, but fails aggregation tests. The correctness gate would not pass in the current form. Intermediate results showed a 20-25% throughput increase in XMSS/s. Finish the implementation to pass the aggregation test with keeping the throughput over 1000 XSMSS/s, thats the production target. The feasible way per theory is composition of ideas to maintain production feasibility. 
+The current codebase has implemented Blake3 partially. It passes prove_loop, but fails aggregation tests. The correctness gate would not pass in the current form. Intermediate results showed a 20-25% throughput increase in XMSS/s. Implement Blake3 to pass the aggregation test while keeping the throughput over 1000 XSMSS/s, thats the production target. 
+
+## Thesis
+Blake3 is faster for Merkle tree (leaf hash + internal compression) and for Fiat-Shamir challenge. Poseidon is faster for AIR constraint and recursion-AIR merkle verficiation. 
+Our thesis is that a hybrid apporach where the circuit verifies Blake3 native commitments is the optimal path, using the best of both hashes. Fully migrating to Blake3 is the second approach, but it is more difficult to make this work. 
 
 ## Autoresearch Loop
 
 ### Phase 0 - Profiling
+
+The branch already has working Blake3 native code. Study the existing implementation before writing new code. 
 
 Profile the RECURSION CIRCUIT from three angles before entering Phase 1. All three artifacts are prerequisite — do not enter Phase 1 without them. This experiment targets aggregation/recursion, not the native prover.
 
@@ -39,7 +45,7 @@ Profile the RECURSION CIRCUIT from three angles before entering Phase 1. All thr
 
 1. **Aggregation baseline + cost breakdown (flamegraph):**
    ```bash
-   cd ~/zk-autoresearch/leanMultisig && git checkout origin/main && \
+   cd ~/zk-autoresearch/leanMultisig && \
    cargo flamegraph --test test_multisignatures -- test_type_1_aggregation --nocapture
    ```
    Move SVG to `<experiment_dir>/report/iter-N-flamegraph.svg`.
@@ -66,14 +72,16 @@ Profile the RECURSION CIRCUIT from three angles before entering Phase 1. All thr
 3. **Surface map:** per-table (name, AIR cols, log2 rows, cells), total cells, n_vars, headroom before n_vars bump.
 4. **n_vars=27 cost:** wall-clock delta vs baseline. This determines the entire implementation strategy — if ≤15% regression, n_vars=27 is viable and column budget relaxes from ≤35 to unconstrained.
 5. **Hash budget:** leaf hashes, internal compressions, FS permutations, total. Cross-reference with file:line sites.
-6. **Regime classification (REQUIRED single line):** is the recursion proof bottlenecked by trace surface (DFT/commit), constraint evaluation (sumcheck), or memory? Cite flamegraph percentages.
+6. **Regime classification (REQUIRED single line):** is the recursion proof bottlenecked by trace surface (DFT/commit), constraint evaluation (sumcheck), or memory? Cite flamegraph percentages.7
 
-### Phase 1 - Develop Your Hypothesis
+DO NOT ENTER PHASE 1 by skipping Phase 0
+
+### Phase 1 - Develop Your Blake3 Hypothesis
 1. You need to develop 3 candidates using the tools available. Log to `hypothesis_pool.yaml` - see ## Logging for details
-2. Reason through share-arithmetic for predicted_pct (component_share x component_saving = total)
-3. Composition of techniques by combining multiple research papers is going to yield better ideas.
+2. Reason through how the recursion will work with them, what changes to the commitment surface are needed, and how are you goin to offset them. 
+3. Composition of techniques by combining multiple research papers is the only way to make this work. The pre-existing standalone Blake3 immplementations will not work. 
 4. Always have 3 unique hypothesis. Once reached implement one with the best possible implementation. On next turn you need to find another, select one and implement it, justify the pick in the implementation commit body.
-    a. Select by ambition: largest plumbing breadth (cross-crate > multi-file within one crate > single-file). Tiebreak: largest |predicted_pct|.
+    a. Select the most likely to make recursion work
 5. If you can clearly discard a hypothesis during this phase, it should be removed from the hypothesis pool with the rationale. If you discard a pool entry in Phase 1, you MUST add a replacement entry to keep current_pool at 3 BEFORE moving to Phase 2, find a learning-coupled replacement. Discards and their replacements are paired atomically within Phase 1. Pool size at Phase 2 entry is ALWAYS 3. Add discarded to history section of `hypothesis_pool.yaml`
 6. The mechanism field of each pool entry MUST cite ≥2 distinct research papers (eprint refs with section/page, or named theorems with attribution). Inspiration-repo file:line citations are ALWAYS additional — never a substitute for the paper bar. Citations belong in the hypothesis at formation time, not added to iter rationale post-hoc.
 
@@ -132,20 +140,16 @@ Experiment branches are set up for both.
 | SP1 | `~/zk-autoresearch/sp1` | `main` | Precompile circuit reference |
 | LeanSpec | `~/zk-autoresearch/leanSpec` | `main` | Specifications for LeanVM |
 
-## Correctness
+## Gate
+
+Combined correctness + performance. Both must pass.
 
 ```bash
-bash ~/zk-autoresearch/harness/leanmultisig/correctness/correctness.sh
+bash ~/zk-autoresearch/harness/leanmultisig/scripts/eval_pw6_gate.sh
 ```
-## Evaluation Gate
 
-The evaluation gate measures throughput in secdonds and xmss/s. For this experiment you need the evaluation gate to pass 1000 xmss/s. Check the warm proof average (proofs 2-5) to be below 1.55s or over 1000 xmss/s.
-
-```bash
-cd ~/zk-autoresearch/harness/leanmultisig/bench && \
-RUSTFLAGS="-C target-cpu=native" cargo build --release --bin prove_loop --features zkalloc_global 2>&1 | tail -1 && \
-target/release/prove_loop 5
-```
+Step 1: Aggregation tests (test_type_1_aggregation + test_type_2_aggregation).
+Step 2: prove_loop with zk-alloc, warm avg ≤1.55s (≥1000 XMSS/s).
 
 ## Logging
 
