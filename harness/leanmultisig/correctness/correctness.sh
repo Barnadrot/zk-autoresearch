@@ -17,6 +17,7 @@ SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd ~/zk-autoresearch/leanMultisig
 
 export RUSTFLAGS="-C target-cpu=native"
+export RUST_MIN_STACK=67108864
 
 REPEAT=${CORRECTNESS_REPEAT:-1}
 
@@ -73,7 +74,8 @@ cargo test -p mt-whir --release 2>&1
 # Exercises aggregate_type_1, merge_many_type_1, split_type_2, verify.
 # -----------------------------------------------------------------------
 echo ""
-echo "[correctness] Layer 3: Type-1 + Type-2 aggregation end-to-end..."
+echo "[correctness] Layer 3: Non-recursive + recursive aggregation end-to-end..."
+cargo test --release test_aggregation -- --nocapture 2>&1
 cargo test --release test_type_1_aggregation -- --nocapture 2>&1
 cargo test --release test_type_2_aggregation -- --nocapture 2>&1
 
