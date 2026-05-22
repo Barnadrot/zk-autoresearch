@@ -1,0 +1,90 @@
+current_pool:
+  - id: h5
+    paper_anchor: >
+      WHIR (Arnon et al. 2024, ePrint 2024/1586, Section 4.3: folding factor trade-offs);
+      FRI query optimization (Ben-Sasson et al. 2018, ePrint 2017/1050, Section 3.4: batching and rate selection)
+    mechanism: >
+      Tune WHIR round parameters to reduce extension_op table rows (currently 38.1% of surface).
+      Extension_op rows scale with num_queries × folding_factor per WHIR round. Increasing
+      log_inv_rate from 1 to 2 halves the number of queries at the cost of 2x larger initial
+      polynomial. If the surface reduction from fewer extension_op rows exceeds the surface
+      increase from larger initial commitment, net improvement results.
+      Key formula: num_queries ≈ security_level / |log₂(1-δ)| where δ = 1-√ρ-η for
+      JohnsonBound. At log_inv_rate=1: δ≈0.25, queries≈299. At log_inv_rate=2: δ≈0.45,
+      queries≈144. If extension_op shrinks from 2^17 to 2^16, n_vars drops 24→23.
+    predicted_pct: -15
+    plumbing:
+      - harness/leanmultisig/bench/src/bin/prove_loop.rs:12 (LOG_INV_RATE constant)
+      - crates/lean_prover/src/lib.rs:22-28 (WHIR config constants)
+      - crates/rec_aggregation/src/compilation.rs (WHIR config for recursion)
+    kill_condition: >
+      Extension_op non-padded count at log_inv_rate=2 still exceeds 2^16 (pads to 2^17,
+      no n_vars reduction), or RS domain size increase causes DFT regression that exceeds
+      the sumcheck savings.
+
+  - id: h6
+    paper_anchor: >
+      stwo-cairo (Haböck & Bruestle 2024, IACR 2024/278, Section 3: instruction batching);
+      Cairo VM AIR (Goldberg et al. 2021, ePrint 2021/1063, Section 3.2: minimizing trace width via precompiles)
+    mechanism: >
+      Reduce execution table row count (currently 52.5% of surface at 2^18 rows) by adding
+      a copy_n precompile that copies N field elements in a single instruction instead of N
+      individual deref instructions. The circuit uses copy_5/copy_6 extensively in XMSS
+      (wots_pk_hash, merkle_verify) — each copy_5 is 5 deref instructions. With a copy
+      precompile, these become 1 instruction each, potentially reducing execution rows by 20-30%.
+    predicted_pct: -5
+    plumbing:
+      - crates/lean_vm/src/tables/ (new copy_n precompile module)
+      - crates/lean_vm/src/isa/instruction.rs (CopyN variant)
+      - crates/lean_compiler/src/a_simplify_lang/mod.rs (recognize copy_n)
+      - crates/rec_aggregation/zkdsl_implem/utils.py (copy_5, copy_6 implementation)
+    kill_condition: >
+      Copy precompile column overhead exceeds the execution row savings, or the new table
+      pushes n_vars up.
+
+  - id: h7
+    paper_anchor: >
+      Poseidon sponge modes (Grassi et al. 2021, ePrint 2019/458, Section 4.2: Poseidon-π
+      overwrite mode for hashing);
+      XMSS standard (Hülsing et al. 2018, RFC 8391, Section 4.1.5: WOTS+ chain independence)
+    mechanism: >
+      Reduce native Poseidon16 overhead (~16% of prove_loop, ~370ms/proof) by parallelizing
+      WOTS chain evaluation across multiple signatures. Currently the VM processes signatures
+      in a ParallelBatch loop — each iteration runs 42 chain hashes sequentially via
+      match_range. By restructuring the inner XMSS circuit to process chain pairs from
+      DIFFERENT signatures simultaneously (interleaving chain hashes from sig_i and sig_j),
+      the Poseidon16 precompile can batch adjacent rows' permutations using AVX-512 4-wide
+      packed KoalaBear ops. This targets the 6.57% compress_mut + 5.21% eval_2_full_rounds
+      hotspots. The interleaving is safe because WOTS+ chains are independent (RFC 8391
+      Section 4.1.5: "Each chain is computed independently").
+    predicted_pct: -10
+    plumbing:
+      - crates/rec_aggregation/zkdsl_implem/xmss_aggregate.py (chain_hash_pair inner loop)
+      - crates/lean_vm/src/tables/poseidon_16/trace_gen.rs (SIMD batch permutation)
+      - crates/lean_vm/src/execution/runner.rs (ParallelBatch dispatch)
+    kill_condition: >
+      Poseidon16 precompile trace_gen already uses SIMD (check trace_gen.rs for
+      PackedKoalaBear), or interleaving chains across signatures requires restructuring
+      the circuit memory layout in ways that increase execution instruction count.
+
+history:
+  - id: h1
+    status: keep
+    iter: 1
+    result: "-15.7% (2.663s → 2.246s). Native Blake3 Merkle tree with runtime flag."
+  - id: h2
+    status: keep
+    iter: 3
+    result: "-44.4% cumulative (2.246s → 1.249s). Native Blake3 precompile with hardcoded_offset_left + half_output."
+  - id: h3
+    status: discarded
+    iter: null
+    result: "Invalidated by user: 'H3 is invalid, you need to make Blake3 work not changing poseidon1 to poseidon2.'"
+  - id: h4
+    status: discarded
+    iter: null
+    result: "Invalidated: Blake3 AIR eval() has 0 constraints on input→output (0 bits of security). Cannot switch circuit hashing to Blake3 without implementing full AIR constraints (~7,400 columns for bit decomposition). The stwo-cairo 53-column approach requires LogUp infrastructure not available in leanMultisig."
+  - id: security-fix
+    status: keep
+    iter: 4
+    result: "Restored Poseidon16 for XMSS. Warm avg 2.179s / 711 XMSS/s. Surface identical (n_vars=24). Mandatory security fix."

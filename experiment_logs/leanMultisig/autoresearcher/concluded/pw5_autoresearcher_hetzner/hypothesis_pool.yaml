@@ -1,0 +1,429 @@
+# pw5 autoresearcher — hypothesis pool
+#
+# Schema:
+#   current_pool: list of EXACTLY 3 entries at any given time
+#   history:      append-only, consumed entries with iter outcomes
+
+
+current_pool:
+  - id: h50
+    paper_anchor:
+      - "Arnon, Chiesa, Fenzi, Yogev 2024/1586, S6.1 -- pipeline-parallel proving phases for WHIR-like PCS"
+      - "Thaler 2013/351, S3.2 -- sumcheck prover cost dominated by data preparation when table is large"
+      - "Setty 2020/1618, S4.1 -- decoupling data layout from Fiat-Shamir sequential dependency"
+    mechanism: |
+      Move AIR sumcheck data preparation (shifted columns + column bit-reversal) BEFORE the
+      logup/GKR phase. These operations depend only on raw trace data — NOT on Fiat-Shamir
+      challenges from the commitment or logup. Currently they run sequentially AFTER the 475ms
+      logup phase, adding 20ms to the critical path.
+
+      The bit-reversal (18ms across 3 tables: execution 8.6ms, poseidon16 9.2ms, extension_op
+      0.3ms) permutes column data within 2^12 chunks for the endianness-pivot fold schedule.
+      This is purely a data transformation on the packed base-field columns.
+
+      Implementation: extract bit-reversal from AirSumcheckSession::new into a standalone
+      precomputation. Compute shifted columns and bit-reverse all table columns immediately
+      after trace generation (before stack+commit). Pass pre-bit-reversed MleGroup to session
+      constructors after logup completes.
+
+      Savings: 20ms removed from critical path. At 1.61s warm prove: -1.24%.
+      Mechanistic: eliminated serial dependency between independent data transformations.
+    predicted_pct: -1.2
+    plumbing:
+      - "leanMultisig/crates/sub_protocols/src/air_sumcheck.rs (add already_bit_reversed flag to AirSumcheckSession::new, skip BR when set)"
+      - "leanMultisig/crates/lean_prover/src/prove_execution.rs (move shifted_rows + pack + BR before prove_generic_logup, pass precomputed to sessions)"
+    kill_condition: |
+      If the bit-reversal's memory traffic interferes with the commit FFT/Merkle that precedes
+      logup (cache pollution), the moved preparation could slow the commit phase. Kill if
+      commit+logup combined time increases despite the serial overlap savings. Also kill if
+      warm-proof recycling means the bit-reversal vectors don't benefit from pre-allocation
+      (zk-alloc reuses exact sizes from the previous proof iteration anyway).
+
+  - id: h51
+    paper_anchor:
+      - "Ulvetanna/Binius 2023/1784, S4.2 -- batched memory checking via vector-valued logup"
+      - "Haboeck 2022/1530, S3 -- logup protocol with multi-value random linear combination"
+      - "Setty, Thaler 2023/552, S4.3 -- reducing GKR prover cost via lookup batching"
+    mechanism: |
+      Reduce logup entry count by batching contiguous memory accesses into single vector-valued
+      lookups. Currently each lookup of k values at address_offset+0..k-1 generates k separate
+      logup entries (one per memory cell). This inflates logup data from ~4.4M to 17.6M entries,
+      requiring GKR at n_vars=25 (20 layers).
+
+      With vector-valued logup: each k-value lookup generates 1 entry with challenge:
+        c - sum(alpha^j * value[j] for j in 0..k)
+      The memory table presents matching vector entries. Entry count drops from 17.6M to ~4.4M
+      (average k≈4), reducing GKR n_vars from 25 to ~22 (17 layers instead of 20).
+
+      GKR cost scales linearly with data size. From 393ms * (2^22/2^25) = ~49ms. Total savings:
+      ~344ms = -21% of warm prove time.
+
+      RISK: the memory table must be restructured to present vector entries, requiring changes
+      to the memory consistency argument. The bus protocol must support vector-valued entries.
+      Very large implementation surface.
+    predicted_pct: -21.0
+    plumbing:
+      - "leanMultisig/crates/lean_vm/src/tables/memory.rs (restructure to vector-valued entries)"
+      - "leanMultisig/crates/lean_vm/src/lookups.rs (batch contiguous lookups into single vector entry)"
+      - "leanMultisig/crates/sub_protocols/src/logup.rs (vector-valued logup data preparation)"
+      - "leanMultisig/crates/lean_vm/src/bus.rs (multi-value bus channel)"
+    kill_condition: |
+      If the vector-valued logup requires extending the bus width beyond current alpha_powers
+      capacity. If the memory table restructuring breaks the stacking layout (changes n_vars
+      threshold). If the vector entries create uneven GKR layer sizes that prevent the packed
+      bit-reversed optimization.
+
+  - id: h52
+    paper_anchor:
+      - "Thaler 2013/351, S3.2 -- sumcheck cost proportional to 2^{n-r} evaluations per variable"
+      - "Setty 2020/1618, S4.1 -- fused fold-and-evaluate reduces memory passes in sumcheck prover"
+      - "Arnon, Chiesa, Fenzi, Yogev 2024/1586, S5.3 -- deferred binding in multi-round sumcheck"
+    mechanism: |
+      Fuse the fold pass into the polynomial computation in GKR's run_phase2_sumcheck.
+      Phase 2 currently does SEPARATE fold + compute per round: after computing the round
+      polynomial (reading all 4 arrays num_l, num_r, den_l, den_r), it calls
+      fold_normal_with_padding 4 times (reading the same arrays again).
+
+      Fused approach: during compute, write folded values into output buffers simultaneously.
+      Since fold = lo + r*(hi-lo) and the compute already reads (lo, hi) pairs, we can produce
+      the folded output with ~0 extra cost (1 mul + 1 add per element, already available).
+
+      For the largest GKR layer (2^24 elements), phase 2 starts at 2^17 and runs 16 rounds.
+      Total fold traffic eliminated: 4 arrays × sum(2^{17-r} for r=0..15) × 20B ≈ 80MB.
+      At 50GB/s: ~1.6ms savings — too small alone. But combined with eliminating the separate
+      allocation for folded output: reduced allocation pressure + cache improvement.
+
+      More impactful for SMALLER GKR layers (layers 1-15) where cache is warm and fold traffic
+      competes with compute data. Combined across all 20 layers: ~5-8ms.
+    predicted_pct: -0.4
+    plumbing:
+      - "leanMultisig/crates/sub_protocols/src/quotient_gkr/sumcheck_utils.rs (fuse fold into compute in run_phase2_sumcheck loop)"
+    kill_condition: |
+      If the fused loop body prevents LLVM auto-vectorization of the pair_coeffs computation.
+      If the write-back to folded output causes store-buffer pressure that stalls the sumcheck
+      accumulation. If total savings < 5ms (below noise floor).
+
+history:
+  - id: h2
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -1.0
+    mechanism_summary: "Fuse Poseidon1 partial-round pairs to eliminate 10 witness columns — degree 3^2=9 fits within degree_air=10"
+    post_mortem: |
+      Killed during analysis (iter 10 context). Fusing 2 partial rounds WITHOUT full state
+      checkpointing causes degree explosion: state[i>0] carries degree-3 terms between fused
+      pairs → cube(degree-3) = degree-9 within one pair is fine, BUT the NEXT pair's input
+      includes state elements that passed through the previous sparse MDS multiply carrying
+      degree-3 s0, so cube(degree-3) = degree-9 in the s0 lane, then sparse matrix propagates
+      degree-9 to all state elements, making the next cube degree-27. Fundamental algebraic
+      constraint prevents fusion without per-round checkpointing (which adds columns — killed
+      by h17 lesson). Same root cause as h19.
+      NOTE (h35 update): h2 was killed because it described fusing WITHOUT CHECKPOINTS BETWEEN
+      PAIRS. h35 retains checkpoints at every-2-round boundaries (10 checkpoints for 20 rounds)
+      and verifies each PAIR independently at degree 9. The degree-27 issue only arises when
+      fusing 3+ rounds without intermediate checkpoints.
+
+  - id: h19
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -2.0
+    mechanism_summary: "Column-reducing partial round fusion: fuse 2 partial rounds into 1 degree-9 constraint, dropping 10 columns"
+    post_mortem: |
+      Killed during analysis — same degree-explosion root cause as h2. See h35 for corrected
+      mechanism that retains inter-pair checkpoints.
+
+  - id: h18
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -3.0
+    mechanism_summary: "Batch WHIR PCS product-sumcheck instances into one combined sumcheck"
+    post_mortem: |
+      Killed — research confirmed run_product_sumcheck is called only ONCE in the entire WHIR
+      opening (open.rs:411-445, run_initial_sumcheck_rounds). There is exactly one product
+      sumcheck invocation, not multiple per folding round as hypothesized.
+
+  - id: h1
+    iter: 1
+    outcome: discard
+    measured_pct: -0.19
+    predicted_pct: -3.5
+    mechanism_summary: "Early MerkleData release before sumcheck to reduce working set during dTLB-pressured phase"
+    post_mortem: "Δ=-0.19% p=0.195 (noise). Freed buffers not TLB-resident during sumcheck."
+
+  - id: h4
+    iter: 2
+    outcome: discard
+    measured_pct: +80.0
+    predicted_pct: -8.0
+    mechanism_summary: "MAP_HUGETLB in zk-alloc arena to use 2M pages, reducing dTLB miss rate"
+    post_mortem: "dTLB 51%→4% but L3 cache set coloring from 2M alignment caused +80% regression."
+
+  - id: h5
+    iter: 3
+    outcome: discard
+    measured_pct: +0.68
+    predicted_pct: -1.5
+    mechanism_summary: "with_min_len(64) on Merkle parallel loops to reduce Rayon work-stealing overhead"
+    post_mortem: "+0.68% regression. Coarser granularity hurt load balancing."
+
+  - id: h6
+    iter: 4
+    outcome: keep
+    measured_pct: -20.03
+    predicted_pct: -10.0
+    mechanism_summary: "Blake3 hybrid Merkle leaf hashing for WHIR: Blake3 for leaves, Poseidon for internal nodes."
+    post_mortem: "Δ=-20.03%, steady-state -21.19%. Exceeded prediction."
+
+  - id: h10
+    iter: 5
+    outcome: discard
+    measured_pct: -0.22
+    predicted_pct: -1.5
+    mechanism_summary: "Raw Montgomery-form Blake3 leaf hashing: skip to_unique_u32 serialization"
+    post_mortem: "Δ=-0.22% (noise). Blake3 leaf hashing only 2.33% of total; serialization nearly free."
+
+  - id: h11
+    iter: 6
+    outcome: discard
+    measured_pct: +0.23
+    predicted_pct: -4.0
+    mechanism_summary: "Fused eq fold in run_phase1_sumcheck using r-interpolation"
+    post_mortem: "+0.23% (noise). Wrong fold operation (r-interpolation costs same as eval_eq_packed)."
+
+  - id: h12
+    iter: 7
+    outcome: keep
+    measured_pct: -1.33
+    predicted_pct: -4.0
+    mechanism_summary: "Blake3 internal Merkle node compression: replace Poseidon-16 for all tree levels."
+    post_mortem: "Δ=-1.33% p=0.0. Criterion -15.17% vs origin/main."
+
+  - id: h8
+    iter: 8
+    outcome: discard
+    measured_pct: +0.41
+    predicted_pct: -3.0
+    mechanism_summary: "Incremental additive eq fold replacing per-round eval_eq_packed"
+    post_mortem: "+0.41% (noise). eval_eq_packed not a viable optimization target (3 attempts null)."
+
+  - id: h15
+    iter: 9
+    outcome: discard
+    measured_pct: -0.59
+    predicted_pct: -1.5
+    mechanism_summary: "Blake3-based Fiat-Shamir sponge replacing Poseidon-16 permute_mut"
+    post_mortem: "Δ=-0.59% p=0.001 but below -1.0% keep threshold."
+
+  - id: h17
+    iter: 10
+    outcome: discard
+    measured_pct: +52.34
+    predicted_pct: -5.0
+    mechanism_summary: "Degree-3 Poseidon AIR via single-round checkpointing (109→189 columns)"
+    post_mortem: "+52% regression. 80 new columns increased trace width 48%, overwhelming eval savings."
+
+  - id: h22
+    iter: 11
+    outcome: discard
+    measured_pct: -0.24
+    predicted_pct: -2.0
+    mechanism_summary: "In-place multilinear fold for AIR sumcheck"
+    post_mortem: "Δ=-0.24% (noise). Allocator free-list recycles exact-sized chunks, making alloc ~free."
+
+  - id: h23
+    iter: 12
+    outcome: keep
+    measured_pct: -1.06
+    predicted_pct: -2.5
+    mechanism_summary: "Remove 16 trivially-zero Poseidon output constraints (flag_permute ≡ 0). n_constraints 99→83."
+    post_mortem: "Δ=-1.06% p=0.0. Ship-gate -15.69% vs origin/main."
+
+  - id: h24_mallopt
+    iter: 13
+    outcome: discard
+    measured_pct: -0.32
+    predicted_pct: -30.0
+    mechanism_summary: "Disable glibc heap trimming via mallopt — no-op when zk-alloc is global allocator"
+    post_mortem: "Δ=-0.32% (noise). mallopt configures glibc, not zk-alloc."
+
+  - id: h28
+    iter: 14
+    outcome: keep
+    measured_pct: -1.37
+    predicted_pct: -1.3
+    mechanism_summary: "Eliminate flag_half_output gate: degree_air 10→9. Save 1 eval point per sumcheck round."
+    post_mortem: "Δ=-1.37% p=0.0. Ship-gate -16.56% vs origin/main. Near-perfect prediction."
+
+  - id: h30
+    iter: 15
+    outcome: discard
+    measured_pct: +5.89
+    predicted_pct: -25.0
+    mechanism_summary: "GKR-based Poseidon verification: degree-9 AIR (109 cols) → GKR (degree-2, 25 cols)"
+    post_mortem: "+5.89% regression. stacked_n_vars stayed at 26; GKR witness gen dominated."
+
+  - id: h31
+    iter: 16
+    outcome: keep
+    measured_pct: -4.03
+    predicted_pct: -4.0
+    mechanism_summary: "Remove 8 dead outputs_right columns from Poseidon-16 table. Column count 109→101, total trace 158→150."
+    post_mortem: "Δ=-4.03% p=0.0. Near-perfect prediction accuracy."
+
+  - id: h35
+    iter: 17
+    outcome: discard
+    measured_pct: +4.98
+    predicted_pct: -3.0
+    mechanism_summary: "Fuse partial-round pairs: remove 10 of 20 s0 checkpoint columns (101->91). Remove low_degree_block."
+    post_mortem: "+4.98% regression. Low_degree_block skip optimization is far more valuable than column reduction."
+
+  - id: h36
+    iter: 18
+    outcome: discard
+    measured_pct: -0.91
+    predicted_pct: -2.0
+    mechanism_summary: "Skip zero_vec in combine_statement when first OOD statement initializes full array."
+    post_mortem: "-0.91% below -1.0% keep threshold."
+
+  - id: h37_h36b
+    iter: 19
+    outcome: keep
+    measured_pct: -1.39
+    predicted_pct: -1.0
+    mechanism_summary: "WIP arc: zero-alloc blake3 hashing + combine_statement zero_vec skip."
+    post_mortem: "-1.39% p=1e-06. Ship-gate -24.88% vs origin/main."
+
+  - id: h40
+    iter: 20
+    outcome: discard
+    measured_pct: +0.34
+    predicted_pct: -0.9
+    mechanism_summary: "Move 7 metadata constraints into low_degree_block (skip 27 instead of 20 at high points)"
+    post_mortem: "+0.34% (noise). Savings too small vs overhead of accumulator_low tracking."
+
+  - id: h42
+    iter: 21
+    outcome: discard
+    measured_pct: null
+    predicted_pct: -5.0
+    mechanism_summary: "Factored eq construction in combine_statement"
+    post_mortem: "Verification failure. Variable ordering in packed parallel eq construction too complex to factor."
+
+  - id: h42-fix
+    iter: 22
+    outcome: keep
+    measured_pct: 0
+    predicted_pct: 0
+    mechanism_summary: "Fix verification failure from iter 14 (restore flag_half_output gate)"
+    post_mortem: "Bug fix. Restores degree_air=10."
+
+  - id: h43
+    iter: 23
+    outcome: keep
+    measured_pct: -24.6
+    predicted_pct: -5.0
+    mechanism_summary: "Reduce degree_air 10→9 via conditional lookups (eliminate flag-gated output constraints)"
+    post_mortem: "Δ=-24.6% massive improvement. Degree 10→9 saves eval points in AIR sumcheck."
+
+  - id: h44
+    iter: 24
+    outcome: discard
+    measured_pct: +57.9
+    predicted_pct: -5.0
+    mechanism_summary: "Split full-round pairs into single-round (degree 9→3, +64 columns)"
+    post_mortem: "+57.9% regression. Extra columns inflated stacked polynomial."
+
+  - id: h42b
+    iter: 25
+    outcome: keep
+    measured_pct: -2.54
+    predicted_pct: -3.0
+    mechanism_summary: "Fused dual-point eq computation in combine_statement"
+    post_mortem: "Δ=-2.54% p=0.0. combine_statement 186→135ms."
+
+  - id: h45
+    iter: 26
+    outcome: discard
+    measured_pct: +21.62
+    predicted_pct: -3.0
+    mechanism_summary: "On-the-fly eq weight evaluation with tiling"
+    post_mortem: "+21.6% regression. Compute overhead exceeds saved DRAM bandwidth."
+
+  - id: h46
+    iter: 27
+    outcome: discard
+    measured_pct: null
+    predicted_pct: -2.7
+    mechanism_summary: "Remove 5 dead Poseidon-16 metadata columns (101→96)"
+    post_mortem: "Premise invalid. Only flag_permute is truly dead (1 column, ~0.55%)."
+
+  - id: h48
+    iter: 28
+    outcome: discard
+    measured_pct: -0.6
+    predicted_pct: -0.6
+    mechanism_summary: "Cache-blocked transposition in prepare_evals_for_fft_unpacked"
+    post_mortem: "-0.6% below threshold. Micro-optimization."
+
+  - id: h49
+    iter: 29
+    outcome: discard
+    measured_pct: -0.27
+    predicted_pct: -0.27
+    mechanism_summary: "Hugepage hints + lazy zero-init for large allocations"
+    post_mortem: "-0.27% (not significant). Kernel zero-fill persists regardless of page size."
+
+  - id: h41
+    iter: null
+    outcome: retired
+    measured_pct: null
+    predicted_pct: -2.0
+    mechanism_summary: "Fuse fold pass into AIR sumcheck polynomial computation"
+    post_mortem: |
+      Retired. Analysis shows fold traffic in AIR sumcheck is negligible (~1ms total across all
+      rounds). The packed phase uses fused fold implicitly, and phase 2 data sizes are too small
+      for fold bandwidth to matter. The 441ms cost is entirely compute-bound (constraint eval).
+
+  - id: h33
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -2.0
+    mechanism_summary: "Bundle: outputs_right (8 cols) + flag_permute (1 col) removal from Poseidon"
+    post_mortem: "Subsumed by h31. Residual (flag_permute alone) below noise floor."
+
+  - id: h9
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -3.0
+    mechanism_summary: "NTT-based circulant MDS — already implemented (mds_fft_16)"
+    post_mortem: "Kill condition: optimization already exists in codebase."
+
+  - id: h34
+    iter: null
+    outcome: retired
+    measured_pct: null
+    predicted_pct: -1.5
+    mechanism_summary: "Increase WHIR starting_log_inv_rate from 1 to 2."
+    post_mortem: "Retired. +17.7% proof size increase violates proof size ceiling."
+
+  - id: h38
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -1.6
+    mechanism_summary: "Batch MDS assertion via M^T*alpha_vec precomputation"
+    post_mortem: "Killed. MDS is cheap (IF×F); assertion accumulation dominates. Batching INCREASES cost."
+
+  - id: h39
+    iter: null
+    outcome: killed
+    measured_pct: null
+    predicted_pct: -3.0
+    mechanism_summary: "Reduce beginning full-round checkpoints from 2 to 1"
+    post_mortem: "Killed — degree 81 from 4 rounds without checkpoint."
