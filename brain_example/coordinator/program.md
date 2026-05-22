@@ -179,13 +179,32 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
    ssh <host> "tmux send-keys -t <tmux_name> 'PATH=/path/to/claude:\\$PATH claude --dangerously-skip-permissions --model ${MODEL} --remote-control <tmux_name>' Enter"
    ```
 5. **Wait ~5s** (`sleep 5`) for claude to print its session banner.
-6. **Send the initial prompt:** `tmux send-keys -t <tmux_name> "read <program_path> and execute it" Enter`
-7. **Capture the session UUID** by reading `~/.claude/projects/*/*.jsonl` on the executor (newest one): `ssh <host> "ls -1t ~/.claude/projects/*/*.jsonl | head -1"`. Extract UUID from the filename.
-8. **Write the UUID into sessions.json** under a new entry.
-9. **Update the queue entry** in claimed/ with `session_uuid`, `started_at`, then `mv claimed → active`.
-10. **PushNotification to brain** (NOT the user): `{kind: "experiment_dispatched", id: "<id>", session: "<uuid>", rc_url: "<from --remote-control banner>"}`. Brain surfaces this to the user when next active.
+6. **Set the /goal verifier FIRST.** Extract `goal_condition` from the queue entry and dispatch it as a slash command. The verifier is the sole stop mechanism per v3 spec (memory: `feedback_goal_replaces_stop_criteria`); without it, the agent runs until context exhaustion.
+   ```
+   GOAL=$(jq -r .goal_condition brain/queue/claimed/<id>.json)
+   if [ -z "$GOAL" ] || [ "$GOAL" = "null" ]; then
+     # Legacy entry without goal_condition — DO NOT dispatch without a stop mechanism
+     escalate_to_needs_decision "queue entry missing goal_condition field"
+     exit
+   fi
+   ssh <host> "tmux send-keys -t <tmux_name> \"/goal ${GOAL}\" Enter"
+   sleep 0.5
+   ```
+   Verify `/goal` was registered by capturing the pane and checking for a `Goal set:` (or equivalent) acknowledgment line. If missing after 3s, retry once before escalating.
+7. **Send the dispatch prompt with ultrathink:**
+   ```
+   ssh <host> "tmux send-keys -t <tmux_name> 'read <program_path> and start the experiment ultrathink' Enter"
+   ```
+   Use this exact wording. Three deliberate choices:
+   - `read <program_path>` — triggers the agent's Read tool on the program file rather than embedding program.md content as the user message. The failure mode hit on pw5 2026-05-15: coordinator pasted full program.md content as the dispatch prompt instead of this directive form, costing context budget and losing the wrapper that frames the work.
+   - `start the experiment` (NOT `execute it`) — frames the dispatch as initiating a long-running autonomous loop, matching the autoresearcher / optimization / bug-hunter shape rather than one-shot execution.
+   - `ultrathink` — triggers extended thinking budget. Because the entire autonomous loop flows from this single user message (no further user input until stop), one keyword covers the whole session — no periodic re-injection needed.
+8. **Capture the session UUID** by reading `~/.claude/projects/*/*.jsonl` on the executor (newest one): `ssh <host> "ls -1t ~/.claude/projects/*/*.jsonl | head -1"`. Extract UUID from the filename.
+9. **Write the UUID into sessions.json** under a new entry.
+10. **Update the queue entry** in claimed/ with `session_uuid`, `started_at`, then `mv claimed → active`.
+11. **PushNotification to brain** (NOT the user): `{kind: "experiment_dispatched", id: "<id>", session: "<uuid>", rc_url: "<from --remote-control banner>"}`. Brain surfaces this to the user when next active.
 
-If step 4 or 6 fail (e.g., tmux send-keys returns error, ssh connection drops): retry once after 30s, then escalate to needs-decision/ if still failing.
+If steps 4, 6, or 7 fail (e.g., tmux send-keys returns error, ssh connection drops, /goal not acknowledged): retry once after 30s, then escalate to needs-decision/ if still failing. Do NOT proceed to step 7 if step 6 failed — an agent without /goal has no stop condition and is worse than no dispatch.
 
 ### Active monitoring
 
