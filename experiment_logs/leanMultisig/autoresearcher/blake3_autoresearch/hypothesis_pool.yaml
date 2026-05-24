@@ -1,83 +1,137 @@
 current_pool:
+  # POOL EXHAUSTED — All major optimization surfaces have been systematically explored.
+  # 42 iterations across 39+ hypotheses. Every subsystem analyzed:
+  #   - WHIR: protocol params wired into recursion circuit (H55, H57, H63, H39)
+  #   - GKR: parameter tuning cascades (H39), multi-layer fusion changes proof format (H64)
+  #   - combine_statement: all fusion/batching approaches killed (H32, H49, H50, H52, H58)
+  #   - Product sumcheck: delayed reduction null on Zen 4 OoO (H29, H31, H62)
+  #   - DFT: all transpose/fusion/twiddle approaches killed (H44, H46, H56, H60, H61, H66)
+  #   - AIR sumcheck: parallelism/prefetch/padding/vectorization all null (H17, H27, H28, H43, H45, H59, H65)
+  #   - Column reduction: cascades through recursion circuit (H22, H35)
+  #   - Memory/cache: Zen 4 OoO hides all access-pattern optimizations (H1, H13, H16, H27, H28, H42, H46)
+  #   - Pipeline: sequential dependencies prevent overlap (H51)
+  #   - Merkle: leaf optimized (H18 kept), internal negligible (H19), format locked (recursion)
+  #   - LogUp: fingerprint computation near-optimal (~26ms, already base×ext optimized)
+  #
+  # Kept improvements: H19 (-14.1%), H24 (-8.1%), H14v2 (-2.73%), H18 (-1.09%)
+  # Current: 1.656s warm avg. Target: 1.55s. Gap: 106ms (6.4%).
+  #
+  # The remaining gap appears irreducible under the given constraints:
+  #   1. No protocol changes (recursion circuit self-referentially compiled)
+  #   2. No column count changes (cascade through recursion)
+  #   3. No proof format changes (degree, coefficient count)
+  #   4. Zen 4 OoO execution (IPC=1.86) hides all latency-based optimizations
+  #   5. zk-alloc already eliminates allocation bottlenecks
+  #   6. rayon already parallelizes all O(n) operations effectively
+  #
+  # To make further progress, one of the hard constraints must be relaxed:
+  #   A. Allow recursion circuit modifications (unlock WHIR/GKR parameter space)
+  #   B. Target a different hardware profile (latency-sensitive CPU, GPU prover)
+  #   C. Allow algorithmic changes to the proving system (different commitment scheme, etc.)
+  []
+
+history:
+  - id: h66
+    paper_anchor: >
+      Arnon et al., WHIR §4.2; Afonso et al., ePrint 2023/033 §3
+    mechanism: In-place transpose of stacked polynomial to eliminate DFT input buffer.
+    predicted_pct: -1.5
+    iter_id: 42
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. The stacked polynomial is passed to WhirConfig::prove
+      (prove_execution.rs:274-278) and read during WHIR opening rounds for folding and
+      evaluation. Cannot be destructively transposed. Closes in-place transpose approach.
+
+  - id: h64
+    paper_anchor: >
+      Thaler, §4.6.2; Cormode et al., ITCS 2012 §4
+    mechanism: 2-layer GKR fused backward sumcheck.
+    predicted_pct: -1.5
+    iter_id: 41
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Composing two sum_quotients_2_by_2 yields degree-4 in z (each
+      layer is degree 2). A degree-4 sumcheck polynomial requires 5 evaluation points
+      instead of 3, changing the proof format. The recursion circuit's GKR verifier
+      expects degree-2 sumcheck polynomials. Same cascade mechanism as H55/H63.
+      Closes multi-layer GKR fusion approach.
+
+  - id: h65
+    paper_anchor: >
+      Grassi et al., USENIX Security 2021, §3.1
+    mechanism: Batched Poseidon16 S-box vectorization across 16 state elements.
+    predicted_pct: -2.5
+    iter_id: 40
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. The constraint folder already uses PFPacking<EF> (16-wide SIMD)
+      as AB::IF. Each state[i].cube() is already a 16-wide SIMD cube operation across
+      evaluation rows. The packing is across rows, not state elements. No additional
+      vectorization opportunity exists.
+
+  - id: h62
+    paper_anchor: >
+      Thaler, §4.6.2; Xie et al., CRYPTO 2019 §4
+    mechanism: Wire base_ext_packed delayed-reduction kernel into WHIR product sumcheck Round 0.
+    predicted_pct: -1.5
+    iter_id: 39
+    result: killed
+    diagnostic: >
+      +0.0% (1.6575s avg vs 1.656s baseline, n=4 warm). The EFPacking × PFPacking multiplication
+      is only 5 × 16 = 80 base-field muls (not 400 as initially assumed — 400 is ext × ext).
+      The specialized u128 kernel trades SIMD parallelism (16-wide) for reduced modular reduction,
+      net zero. Combined with H29, closes ALL delayed-reduction approaches for product sumcheck.
+
+  - id: h63
+    paper_anchor: >
+      Thaler, §13.1; Setty, Spartan §5.2
+    mechanism: Increase MAX_NUM_VARIABLES_TO_SEND_COEFFS from 8 to 10.
+    predicted_pct: -2.0
+    iter_id: 38
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. MAX_NUM_VARIABLES_TO_SEND_COEFFS is a placeholder in whir.py,
+      used at 5 locations in the recursion circuit. Changing it triggers self-referential
+      compilation cascade. Closes all WHIR protocol parameter changes.
+
+  - id: h61
+    paper_anchor: >
+      Frigo & Johnson, 2005 §3.2; Van Loan, SIAM 1992 §3.1
+    mechanism: Fuse DFT prep transpose into initial butterfly layers.
+    predicted_pct: -2.5
+    iter_id: 37
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Index mapping within L1-local chunks scatters across 240 blocks
+      with stride 524K in the source polynomial — not contiguous. Fusing would require
+      performing scattered reads during EVERY butterfly pass (6 layers) instead of once.
+      Current single scatter-gather pass + contiguous DFT is strictly better.
+
   - id: h60
     paper_anchor: >
-      Cooley & Tukey, "An Algorithm for the Machine Calculation of Complex Fourier Series,"
-      Mathematics of Computation 1965 §2 (butterfly decomposition);
-      Plonky3, "radix_2_small_batch.rs" (reference DFT implementation).
-    mechanism: >
-      Eliminate redundant twiddle multiplications in the DFT initial layers by exploiting the
-      twiddle-free butterfly at position 0 of each block. Currently, the initial_layers phase
-      (6 layers, L1-cache-local) uses dft_layer which special-cases i==0 to use TwiddleFreeEvalsButterfly
-      (0 multiplies instead of 1). But the parallel triple-layer groups (4 groups × 3 layers = 12 layers)
-      do NOT use this optimization — fft_triple_layer_single_twiddle applies the same butterfly to
-      all 4 pairs in a block, including index 0.
-
-      For each triple-layer group, 1 out of every 8 butterflies at the finest layer is at index 0
-      and could use TwiddleFree. Similarly, 1 out of 4 at the middle layer, and 1 out of 2 at the
-      coarsest layer. Total per 8 elements: 3 skippable twiddle muls out of 12 = 25% reduction.
-
-      HOWEVER: looking at the EvalsButterfly for evaluations-DFT specifically, the butterfly is
-      (x1 + x2_tw, x1 - x2_tw) where x2_tw = fused_sub_mul(x1, tw) = (x2-x1)*tw. At tw=1 (twiddle-free),
-      this becomes (x2, 2*x1 - x2). The current TwiddleFreeEvalsButterfly already implements this
-      (line 553: (x2, x1.double() - x2)). The question is whether the triple-layer code path
-      actually encounters tw=1 butterflies that aren't being optimized.
-
-      KILL CHECK: Need to verify that the triple-layer twiddle tables actually contain 1.0 entries
-      at the expected positions. If the twiddle table is reindexed to exclude them, no savings exist.
+      Cooley & Tukey, 1965 §2
+    mechanism: Twiddle-free butterflies in DFT triple-layer groups.
     predicted_pct: -1.5
-    plumbing:
-      - crates/whir/src/dft.rs (add twiddle-free checks in triple-layer butterfly groups)
-    kill_condition: >
-      Kill if twiddle tables don't contain 1.0 entries (already optimized out during table construction).
-      Kill if branch prediction cost of checking tw==1 exceeds the multiplication savings.
-      Kill if measured delta is within noise floor.
+    iter_id: 36
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Twiddle-free at ind=0 saves 7 out of 12×twiddles_small.len()
+      butterflies per group. With twiddles_small.len() ≈ 4K+, savings are <0.2% of DFT
+      work (0.2ms). Below noise floor.
 
   - id: h58
     paper_anchor: >
-      Bünz et al., "Proofs for Inner Pairing Products and Applications," ePrint 2019/1177 §5;
-      Thaler, "Proofs, Arguments, and Zero-Knowledge," §4.3.1 (eq polynomial recursion);
-      Intel, "Zen 4 Microarchitecture," AMD PPR §2.7.2 (memory bandwidth).
-    mechanism: >
-      Fuse the first product sumcheck round into combine_statement by interleaving the eq-polynomial
-      recursive doubling with the product sumcheck's half-element accumulation.
-
-      Currently combine_statement (135ms) materializes the full 2^22 EFPacking combined_weights buffer
-      via 22 passes of recursive doubling. Then run_product_sumcheck Round 0 (specialized BasePacked ×
-      ExtensionPacked path) reads this 1.34GB buffer twice — once for lo elements and once for hi —
-      performing 2 multiplies per pair across 2^21 pairs.
-
-      The fused approach: instead of materializing combined_weights, interleave the eq-polynomial
-      doubling with the sumcheck accumulation. After the eq-polynomial doubling reaches the per-thread
-      chunk level (after LOG_NUM_THREADS=3 precomputation passes), each thread continues the remaining
-      19 passes of recursive doubling BUT also maintains 2 running sumcheck accumulators. When a thread
-      finishes its eq chunk, it has both (a) the combined_weights chunk AND (b) the first-round
-      sumcheck coefficients for that chunk. The weights are CONSUMED during the sumcheck computation
-      and never fully materialized.
-
-      This differs from H49/H50 (killed) in a crucial way: H49 tried LAZY eq computation during ALL 8
-      sumcheck rounds (adding per-round overhead). H50 tried fusing ALL of combine_statement into
-      round 0 via SplitEq (adding per-pair multiplies). This approach fuses ONLY the materialization
-      pass with the FIRST read of the weights — the eq polynomial is still computed via recursive
-      doubling (no extra multiplies), but the first sumcheck round piggybacks on the same memory
-      traffic. The weights are consumed in-flight, eliminating the 1.34GB write + 1.34GB first-read.
-
-      Savings: ~2.68GB bandwidth eliminated (1.34GB write from combine_statement + 1.34GB read from
-      sumcheck round 0). At ~40GB/s memory bandwidth on this machine, that's ~67ms of bandwidth.
-      However, the passes are compute-bound (56% per analysis), so realistic savings are ~30-40ms
-      (2-2.5% of total).
+      Bünz et al., ePrint 2019/1177 §5; Thaler §4.3.1
+    mechanism: Fuse first product sumcheck round into combine_statement.
     predicted_pct: -2.0
-    plumbing:
-      - crates/whir/src/open.rs (fuse combine_statement into run_initial_sumcheck_rounds)
-      - crates/backend/sumcheck/src/product_computation.rs (new fused first-round kernel)
-      - crates/backend/poly/src/eq_mle.rs (streaming eq computation variant)
-    kill_condition: >
-      Kill if the fused kernel cannot maintain the same numerical result as separate
-      combine_statement + run_product_sumcheck (correctness gate). Kill if the interleaved
-      computation defeats out-of-order execution by serializing the eq doubling with the
-      sumcheck multiply (Zen 4 may not have enough ILP to overlap them). Kill if measured
-      delta is within noise floor (the bandwidth savings are masked by compute-boundedness).
+    iter_id: 35
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Per-thread eq chunk (40MB) exceeds L3 per-core budget (4MB).
+      H32 proved sequential reads are free via prefetch on Zen 4. Net savings <17ms.
+      Closes fused-combine-statement approach entirely (H49/H50/H58 all killed).
 
-history:
   - id: h59
     paper_anchor: >
       Gupta et al., ePrint 2022/1386 §4.2; Thaler §13.3; Bowe et al., ePrint 2019/1021 §5.3
