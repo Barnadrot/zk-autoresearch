@@ -1,3 +1,450 @@
-current_pool: []
+current_pool:
+  - id: h60
+    paper_anchor: >
+      Cooley & Tukey, "An Algorithm for the Machine Calculation of Complex Fourier Series,"
+      Mathematics of Computation 1965 §2 (butterfly decomposition);
+      Plonky3, "radix_2_small_batch.rs" (reference DFT implementation).
+    mechanism: >
+      Eliminate redundant twiddle multiplications in the DFT initial layers by exploiting the
+      twiddle-free butterfly at position 0 of each block. Currently, the initial_layers phase
+      (6 layers, L1-cache-local) uses dft_layer which special-cases i==0 to use TwiddleFreeEvalsButterfly
+      (0 multiplies instead of 1). But the parallel triple-layer groups (4 groups × 3 layers = 12 layers)
+      do NOT use this optimization — fft_triple_layer_single_twiddle applies the same butterfly to
+      all 4 pairs in a block, including index 0.
 
-history: []
+      For each triple-layer group, 1 out of every 8 butterflies at the finest layer is at index 0
+      and could use TwiddleFree. Similarly, 1 out of 4 at the middle layer, and 1 out of 2 at the
+      coarsest layer. Total per 8 elements: 3 skippable twiddle muls out of 12 = 25% reduction.
+
+      HOWEVER: looking at the EvalsButterfly for evaluations-DFT specifically, the butterfly is
+      (x1 + x2_tw, x1 - x2_tw) where x2_tw = fused_sub_mul(x1, tw) = (x2-x1)*tw. At tw=1 (twiddle-free),
+      this becomes (x2, 2*x1 - x2). The current TwiddleFreeEvalsButterfly already implements this
+      (line 553: (x2, x1.double() - x2)). The question is whether the triple-layer code path
+      actually encounters tw=1 butterflies that aren't being optimized.
+
+      KILL CHECK: Need to verify that the triple-layer twiddle tables actually contain 1.0 entries
+      at the expected positions. If the twiddle table is reindexed to exclude them, no savings exist.
+    predicted_pct: -1.5
+    plumbing:
+      - crates/whir/src/dft.rs (add twiddle-free checks in triple-layer butterfly groups)
+    kill_condition: >
+      Kill if twiddle tables don't contain 1.0 entries (already optimized out during table construction).
+      Kill if branch prediction cost of checking tw==1 exceeds the multiplication savings.
+      Kill if measured delta is within noise floor.
+
+  - id: h58
+    paper_anchor: >
+      Bünz et al., "Proofs for Inner Pairing Products and Applications," ePrint 2019/1177 §5;
+      Thaler, "Proofs, Arguments, and Zero-Knowledge," §4.3.1 (eq polynomial recursion);
+      Intel, "Zen 4 Microarchitecture," AMD PPR §2.7.2 (memory bandwidth).
+    mechanism: >
+      Fuse the first product sumcheck round into combine_statement by interleaving the eq-polynomial
+      recursive doubling with the product sumcheck's half-element accumulation.
+
+      Currently combine_statement (135ms) materializes the full 2^22 EFPacking combined_weights buffer
+      via 22 passes of recursive doubling. Then run_product_sumcheck Round 0 (specialized BasePacked ×
+      ExtensionPacked path) reads this 1.34GB buffer twice — once for lo elements and once for hi —
+      performing 2 multiplies per pair across 2^21 pairs.
+
+      The fused approach: instead of materializing combined_weights, interleave the eq-polynomial
+      doubling with the sumcheck accumulation. After the eq-polynomial doubling reaches the per-thread
+      chunk level (after LOG_NUM_THREADS=3 precomputation passes), each thread continues the remaining
+      19 passes of recursive doubling BUT also maintains 2 running sumcheck accumulators. When a thread
+      finishes its eq chunk, it has both (a) the combined_weights chunk AND (b) the first-round
+      sumcheck coefficients for that chunk. The weights are CONSUMED during the sumcheck computation
+      and never fully materialized.
+
+      This differs from H49/H50 (killed) in a crucial way: H49 tried LAZY eq computation during ALL 8
+      sumcheck rounds (adding per-round overhead). H50 tried fusing ALL of combine_statement into
+      round 0 via SplitEq (adding per-pair multiplies). This approach fuses ONLY the materialization
+      pass with the FIRST read of the weights — the eq polynomial is still computed via recursive
+      doubling (no extra multiplies), but the first sumcheck round piggybacks on the same memory
+      traffic. The weights are consumed in-flight, eliminating the 1.34GB write + 1.34GB first-read.
+
+      Savings: ~2.68GB bandwidth eliminated (1.34GB write from combine_statement + 1.34GB read from
+      sumcheck round 0). At ~40GB/s memory bandwidth on this machine, that's ~67ms of bandwidth.
+      However, the passes are compute-bound (56% per analysis), so realistic savings are ~30-40ms
+      (2-2.5% of total).
+    predicted_pct: -2.0
+    plumbing:
+      - crates/whir/src/open.rs (fuse combine_statement into run_initial_sumcheck_rounds)
+      - crates/backend/sumcheck/src/product_computation.rs (new fused first-round kernel)
+      - crates/backend/poly/src/eq_mle.rs (streaming eq computation variant)
+    kill_condition: >
+      Kill if the fused kernel cannot maintain the same numerical result as separate
+      combine_statement + run_product_sumcheck (correctness gate). Kill if the interleaved
+      computation defeats out-of-order execution by serializing the eq doubling with the
+      sumcheck multiply (Zen 4 may not have enough ILP to overlap them). Kill if measured
+      delta is within noise floor (the bandwidth savings are masked by compute-boundedness).
+
+history:
+  - id: h59
+    paper_anchor: >
+      Gupta et al., ePrint 2022/1386 §4.2; Thaler §13.3; Bowe et al., ePrint 2019/1021 §5.3
+    mechanism: Mid-degree extraction in Poseidon16 AIR sumcheck (interpolate degree-3 intermediate state at skip points).
+    predicted_pct: -3.5
+    iter_id: 34
+    result: killed
+    diagnostic: >
+      +2.2% regression (1.692s vs 1.656s). Overhead of Lagrange coefficient computation, state
+      capture (4 boundaries × 16 width × 4 full points), and copy_from_slice restore at 6 skip
+      points exceeded savings from skipping second cube+MDS. The capture/restore bookkeeping adds
+      branch prediction misses and cache pressure in the hot inner loop. Closes mid-degree
+      extraction approach for AIR sumcheck.
+
+  - id: h55
+    paper_anchor: >
+      Arnon et al., "WHIR," ePrint 2024/1586 §5.3
+    mechanism: Increase WHIR_SUBSEQUENT_FOLDING_FACTOR from 5 to 6.
+    predicted_pct: -3.0
+    iter_id: 32
+    result: killed
+    diagnostic: >
+      +49% regression (2.464s vs 1.656s). Self-referential compilation jumped 18→19 iterations —
+      adding num_chunks=40 case to decompose_and_verify_merkle_batch grew bytecode past a 2^n
+      threshold. All WHIR folding factor changes now exhausted except initial 8→9 (H57).
+
+  - id: h56
+    paper_anchor: >
+      Frigo et al., FOCS 1999 §2
+    mechanism: DFT zero-column elimination.
+    predicted_pct: -0.4
+    iter_id: 31
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Savings 6.2ms (0.4%), below noise floor.
+
+  - id: h52
+    paper_anchor: >
+      Thaler, §4.3.1; Setty, Spartan §5.2
+    mechanism: Batch sparse statements by point in combine_statement.
+    predicted_pct: -1.0
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1 (confirmed by agent analysis). Sparse statement processing is <5ms total.
+      Statements already bundle all same-point values into single SparseStatement::new calls.
+      No batching opportunity exists. The 2 full-domain statements dominate at ~130ms.
+
+  - id: h48
+    paper_anchor: >
+      Thaler, §4.3.1; Vu et al., IEEE S&P 2013 §5.1
+    mechanism: Batch parallel post-GKR column evaluations (evaluate_sequential + outer par_iter).
+    predicted_pct: -1.5
+    iter_id: 30
+    result: killed
+    diagnostic: >
+      +0.02% (p=0.91, n=12). Pre-collected unique column indices per table, batch-evaluated all
+      via par_iter + evaluate_sequential, parallelized top-3 large evaluations via rayon::join.
+      Zero measurable improvement. Post-GKR evaluation total time is <10ms, making the optimization
+      below noise floor. The original sequential evaluate() with internal PARALLEL=true was already
+      efficient. Closes post-GKR parallelization approach.
+
+  - id: h53
+    paper_anchor: >
+      Thaler, §4.3.1; Blelloch §3.2
+    mechanism: Parallelize top-3 large evaluations in post-GKR (complementary to H48).
+    predicted_pct: -0.3
+    iter_id: 30
+    result: killed
+    diagnostic: >
+      Tested jointly with H48 (iter 30). Combined result: +0.02% (p=0.91, n=12). The 3 large
+      evaluations (memory 2^20, memory_acc 2^20, bytecode_acc 2^18) take <5ms total — rayon::join
+      overhead negates any parallelism benefit at this scale. Closes post-GKR evaluation
+      parallelization line entirely.
+
+  - id: h50
+    paper_anchor: >
+      Thaler, §4.3.1; §13.1
+    mechanism: Fuse combine_statement into first product sumcheck round (streaming eq weights).
+    predicted_pct: -3.0
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. On-the-fly per-element eq evaluation requires O(n_vars × 2^n_vars) work
+      vs recursive doubling's O(2^(n_vars+1)). For n_vars=22: per-element is 10x more compute.
+      SplitEq decomposition (hi/lo split) saves 135ms from combine_statement but adds ~205ms of
+      extra EFPacking multiplies in the product sumcheck inner loop (4 muls/pair vs 2 muls/pair).
+      Net regression. No streaming approach can beat the materialized recursive-doubling eq
+      computation for this buffer size. Closes fused-combine-statement approach.
+
+  - id: h42
+    paper_anchor: >
+      Blelloch, "Programming Parallel Algorithms," §3.2
+    mechanism: MADV_POPULATE_WRITE pre-fault for stacked polynomial 268MB allocation.
+    predicted_pct: -1.0
+    iter_id: 26
+    result: killed
+    diagnostic: >
+      -0.33% (p=0.243, n=24). Pre-faulted all 65,536 pages via MADV_POPULATE_WRITE. No measurable
+      impact: zk-alloc's arena keeps pages warm from prior proof iterations. Warm-proof page faults
+      are not the bottleneck. Closes page-fault pre-faulting approach.
+
+  - id: h51
+    paper_anchor: >
+      Blelloch & Gibbons 2004 §2; Thaler §13.1
+    mechanism: Pipeline overlap — memory_acc construction with stacking copy.
+    predicted_pct: -1.5
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Dependency analysis failure: memory_acc is consumed by BOTH
+      stack_polynomials_and_commit AND prove_generic_logup. No independent computation
+      to overlap with. Revised mechanism (fuse into stacking buffer) saves <1ms.
+      Closes pipeline overlap approach for prove_execution.
+
+  - id: h49
+    paper_anchor: >
+      Thaler, §4.3.1; Chiesa et al., Marlin §4.1
+    mechanism: Lazy weight evaluation in product sumcheck (eliminate 1.28GB combined_weights materialization).
+    predicted_pct: -3.0
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. The eq-polynomial materialization (compute_eval_eq_packed_dual) is ~56%
+      compute-bound, ~44% bandwidth-bound. Lazy on-the-fly evaluation during the product sumcheck
+      would save ~60ms bandwidth but add ~48ms compute (8 rounds × 6ms per round for on-the-fly
+      eq computation). Net savings: ~12ms (0.7%), below noise floor. Additionally, the lazy approach
+      requires maintaining scalar eq tables (2 × 2^26 × 20B = 2.68GB) that are LARGER than the
+      current packed combined_weights (1.34GB). Closes lazy-weight-evaluation approach.
+
+  - id: h46
+    paper_anchor: >
+      Frigo et al., "Cache-Oblivious Algorithms," FOCS 1999, §4
+    mechanism: Cache-blocked tiled transpose for prepare_evals_for_fft_unpacked.
+    predicted_pct: -2.0
+    iter_id: 25
+    result: killed
+    diagnostic: >
+      -0.30% (p=0.08, n=24). L2-aware tiling (32 cols × 4K rows per tile) did not improve over
+      rayon's default par_iter chunking. rayon distributes contiguous output ranges to threads,
+      providing adequate spatial locality. The stride-2^18 random reads are absorbed by L3 and
+      hardware prefetch in the parallel setting. Combined with H44's result (fused transpose also
+      failed), this conclusively closes the DFT prep transpose optimization line.
+
+  - id: h47
+    paper_anchor: >
+      Multiple (see analysis)
+    mechanism: Multiple attempted hypotheses — Merkle tiling, NT stores, column interleaving — all self-killed during analysis.
+    predicted_pct: -1.5
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Three successive replacement hypotheses were generated and analyzed:
+      (1) L3-tiled Merkle leaf hashing: killed because par_iter already distributes contiguous
+      row blocks to threads, and the row-major DFT output has perfect sequential locality.
+      (2) Non-temporal stores for stacking: killed because glibc memcpy already auto-selects
+      NT stores for >256KB copies on Zen 4.
+      (3) Interleaved column buffers for AIR sumcheck: killed because copy cost (3ms) exceeds
+      pointer indirection savings (2ms), and OoO execution hides the indirection anyway.
+
+  - id: h45
+    paper_anchor: >
+      Blelloch & Gibbons, "Effectively Adequate Parallelism," IEEE Computer 2004, §2;
+      Thaler, "Proofs, Arguments, and Zero-Knowledge," §13.1 (prover compute optimization).
+    mechanism: Interpolate high-degree constraint results from n_full=4 evaluation points to skip 5 AIR evals with skip_low.
+    predicted_pct: -1.8
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. The math is fundamentally wrong: each high-degree constraint is degree 9
+      in z (because point[k] is linear in z and the constraint polynomial is degree 9 in the point
+      values). The accumulated acc_high(z) is therefore a degree-9 polynomial in z. Interpolating a
+      degree-9 polynomial requires 10 evaluation points, but Phase 1 only provides n_full=4 points.
+      You'd need ALL 10 points to interpolate, which is exactly what the code already computes.
+
+  - id: h41
+    paper_anchor: >
+      Thaler, §4.6.2 (GKR layer folding)
+    mechanism: Fuse consecutive GKR sum_quotients_2_by_2 layers.
+    predicted_pct: -1.5
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Forward-phase layer construction is O(n) total and fast.
+      The backward-phase sumcheck is the cost, already has fold+compute fusion.
+
+  - id: h43
+    paper_anchor: >
+      Grassi et al., USENIX Security 2021, §3.1 (S-box evaluation)
+    mechanism: CSE in Poseidon16 constraint evaluation.
+    predicted_pct: -2.0
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. The constraint evaluation uses monomorphic dispatch with SIMD packing.
+      No symbolic expression trees, no redundant computation. Already optimal.
+
+  - id: h40
+    paper_anchor: >
+      Thaler, §4.3.1; Vu et al., IEEE S&P 2013 §5
+    mechanism: Fused fold+compute in product sumcheck.
+    predicted_pct: -2.0
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. Already implemented via fold_and_sumcheck_compute (prove.rs:186).
+
+  - id: h38
+    paper_anchor: >
+      Arnon et al., "WHIR," ePrint 2024/1586 §5.3
+    mechanism: WHIR subsequent folding factor 5→10 (eliminate one WHIR round).
+    predicted_pct: -2.0
+    iter_id: null
+    result: killed
+    diagnostic: >
+      Killed in Phase 1. After H39's result (-0.20%), protocol parameter changes are known to
+      cascade through the recursion circuit, nearly exactly offsetting direct savings.
+
+  - id: h39
+    paper_anchor: >
+      Thaler, §4.6.3; Haböck, ePrint 2023/1284 §4.2
+    mechanism: Increase N_VARS_TO_SEND_GKR_COEFFS from 5 to 8.
+    predicted_pct: -2.5
+    iter_id: 23
+    result: killed
+    diagnostic: >
+      -0.20% (p=0.086, n=6). Recursion circuit cascade offsets GKR layer savings.
+
+  - id: h35
+    paper_anchor: >
+      Gabizon & Williamson, "plookup," ePrint 2020/315 §3
+    mechanism: Eliminate 32 output_state columns from Blake3 constrained table.
+    predicted_pct: -4.0
+    iter_id: 22
+    result: killed
+    diagnostic: >
+      -0.21% (p=0.13, n=4). Column reduction on the wrong table.
+
+  - id: h36
+    paper_anchor: >
+      Blelloch et al., SPAA 2019 §3
+    mechanism: Parallelize memory_acc with thread-local accumulators.
+    predicted_pct: -1.0
+    iter_id: null
+    result: killed
+    diagnostic: Killed in Phase 1. memory_acc is 25ms (1.5%), below noise floor.
+
+  - id: h37
+    paper_anchor: >
+      Thaler, "Proofs, Arguments, and Zero-Knowledge," §4.3.1
+    mechanism: Batch column evaluations in LogUp.
+    predicted_pct: -1.0
+    iter_id: null
+    result: killed
+    diagnostic: Killed in Phase 1. eval_claims time is 29ms (0.8%).
+
+  - id: h32
+    paper_anchor: >
+      Bowe et al., "Halo," ePrint 2019/1021 §5.2
+    mechanism: Batched single-pass eval_eq accumulation in combine_statement.
+    predicted_pct: -2.5
+    iter_id: 21
+    result: killed
+    diagnostic: +0.41% (p=0.043, n=16). Hardware streaming prefetch makes sequential reads free.
+
+  - id: h33
+    paper_anchor: >
+      Thaler, §4.3.1
+    mechanism: Degree-split for Blake3 constrained table.
+    predicted_pct: -1.0
+    iter_id: null
+    result: killed
+    diagnostic: Killed in Phase 1. For degree_air=3, no meaningful degree-split savings.
+
+  - id: h34
+    paper_anchor: >
+      Gabizon & Williamson, ePrint 2020/315 §4
+    mechanism: Reduce DFT work via domain size reduction.
+    predicted_pct: -3.0
+    iter_id: null
+    result: killed
+    diagnostic: Killed in Phase 1. DFT domain size is protocol-determined by soundness parameters.
+
+  - id: h29
+    paper_anchor: Barrett, 1986
+    mechanism: Delayed modular reduction for first WHIR product sumcheck round.
+    predicted_pct: -2.0
+    iter_id: 20
+    result: killed
+    diagnostic: +0.14% (p=0.36, n=12). Zen 4 OoO hides Barrett reduction latency.
+
+  - id: h30
+    paper_anchor: Blumberg et al., ePrint 2014/846 §3.2
+    mechanism: Delayed modular reduction in GKR pair_coeffs.
+    predicted_pct: -2.0
+    iter_id: null
+    result: killed
+    diagnostic: Killed without implementation. Same mechanism as H29.
+
+  - id: h31
+    paper_anchor: Knuth, TAOCP vol 2 §4.3.1
+    mechanism: Delayed modular reduction in product sumcheck fold+compute.
+    predicted_pct: -1.5
+    iter_id: null
+    result: killed
+    diagnostic: Killed without implementation. Same mechanism as H29.
+
+  - id: h27
+    paper_anchor: Drepper, §6.2.2
+    mechanism: L1 cache set padding for AIR sumcheck.
+    predicted_pct: -3.0
+    iter_id: 19
+    result: killed
+    diagnostic: -0.15% (p=0.32, n=12). Zen 4 OoO hides L1→L2 latency.
+
+  - id: h28
+    paper_anchor: Fog, §12.7
+    mechanism: Software prefetch in AIR sumcheck.
+    predicted_pct: -2.0
+    iter_id: 18
+    result: killed
+    diagnostic: +0.13% (p=0.37, n=12). Prefetch ineffective due to L1 eviction within row.
+
+  - id: h17
+    paper_anchor: Chiesa et al., "Marlin," §4.2
+    mechanism: Parallelize AIR sumcheck sessions via rayon::scope.
+    predicted_pct: -1.8
+    iter_id: 17
+    result: killed
+    diagnostic: +0.18% (p=0.18, n=12). Nested rayon doesn't reduce barrier overhead.
+
+  - id: h22
+    paper_anchor: Grassi et al., USENIX Security 2021 §4.1
+    mechanism: Poseidon degree reduction via 64 intermediate witness columns.
+    predicted_pct: -5.0
+    iter_id: 16
+    result: killed
+    diagnostic: +49.8%. Column-count amplification through recursion circuit dominates.
+
+  - id: h19
+    paper_anchor: O'Connor et al., "BLAKE3," 2020, §5.1
+    mechanism: Direct compress_in_place for internal Merkle nodes.
+    predicted_pct: -0.3
+    iter_id: 15
+    result: killed
+    diagnostic: 0.0% (p>0.5, n=12). Below noise floor.
+
+  - id: h18
+    paper_anchor: O'Connor et al., "BLAKE3," 2020, §5.1
+    mechanism: Direct compress_in_place for leaf hashing.
+    predicted_pct: -2.0
+    iter_id: 14
+    result: keep
+    diagnostic: -1.09% (p=1.7e-05, n=12). Bypassed blake3::hash() API for leaf hashing.
+
+  - id: h16
+    paper_anchor: Hunter et al., OSDI 2021 §6
+    mechanism: MAP_HUGETLB hot/cold slab split.
+    predicted_pct: -5.0
+    iter_id: 13
+    result: killed
+    diagnostic: +80% regression. L3 cache set coloring conflict.
+
+  - id: h13
+    paper_anchor: Hunter et al., OSDI 2021 §4-5
+    mechanism: MADV_HUGEPAGE for THP-based TLB reduction.
+    predicted_pct: -5.0
+    iter_id: 12
+    result: killed
+    diagnostic: THP non-functional on this hardware.
