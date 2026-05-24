@@ -20,7 +20,7 @@ Target: [Plonky3](https://github.com/Plonky3/Plonky3) — ZK proving framework. 
 |-----------|-------------|--------|--------|
 | [NTT butterfly (PR #1492)](https://github.com/Plonky3/Plonky3/pull/1492) | Butterfly micro-optimizations for Radix2DitParallel | **2.1%–10.4%** across sizes | **Merged** |
 | [Bench fix (PR #1575)](https://github.com/Plonky3/Plonky3/pull/1575) | `iter_batched` to exclude clone cost from DFT measurement | 42% of measured time was `Vec::clone`, not FFT | **Merged** |
-| [AVX-512 Montgomery + butterfly (PR #1555)](https://github.com/Plonky3/Plonky3/pull/1555) | `vpminud` reduction, drop `confuse_compiler`, manual unroll | **~3.3%** faster `coset_lde_batch` on Zen 4 | *Pending* |
+| [AVX-512 Montgomery + butterfly (PR #1555)](https://github.com/Plonky3/Plonky3/pull/1555) | `vpminud` reduction, drop `confuse_compiler`, manual unroll | **~3.96%** faster `coset_lde_batch` on Zen 4 | **MERGED** |
 
 ### leanMultisig
 
