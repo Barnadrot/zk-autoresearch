@@ -1,0 +1,21 @@
+current_pool:
+  - id: h1
+    paper_anchor: ""
+    mechanism: ""
+    predicted_pct: 0
+    plumbing: []
+    kill_condition: ""
+  - id: h2
+    paper_anchor: ""
+    mechanism: ""
+    predicted_pct: 0
+    plumbing: []
+    kill_condition: ""
+  - id: h3
+    paper_anchor: ""
+    mechanism: ""
+    predicted_pct: 0
+    plumbing: []
+    kill_condition: ""
+
+history: []
