@@ -1,0 +1,128 @@
+# Pool reset after iter 7 review — structural hypotheses only.
+# See report/METHODOLOGY_REDIRECT.md
+
+current_pool:
+  - id: s2
+    paper_anchor: "Ben-Sasson et al., ePrint 2018/740 §5.2 (Merkle PCS); Thaler, Springer 2013 §3.2 (sumcheck evaluation cost ∝ degree)"
+    mechanism: |
+      Split WHIR commitment for hash-dominant tables: prove Blake3-constrained rows and Poseidon16
+      rows with table-specific effective heights so stacked_pcs does not pad hash tables to
+      global stacked_n_vars driven by memory/bytecode — reduces DFT encode + Merkle leaf work
+      proportional to (2^n_vars reduction) on hash slices. pw5 h31 showed ~4% from 5% column
+      width drop; n_vars is exponential in column budget.
+    predicted_pct: -8.0
+    plumbing:
+      - crates/sub_protocols/src/stacked_pcs.rs
+      - crates/sub_protocols/src/prove/verify_execution.rs
+      - crates/whir/src/open.rs
+    kill_condition: "stacked_n_vars unchanged in prove log; OR InvalidProof; OR pw5 h44-style regression (extra WHIR rounds from column split)."
+
+  - id: s3
+    paper_anchor: "Arnon et al., ePrint 2024/1586 §6.1 (constraint-degree tradeoffs); Gabizon et al., ePrint 2020/315 §3 (witness width vs eval cost)"
+    mechanism: |
+      Pack Poseidon16+Blake3 control flags (permute, half_output, hardcoded_left) into existing
+      precompile_data encodings and remove dedicated committed flag columns from trace layout
+      where production xmss never sets permute=1 — narrows total trace width → lower
+      stacked_n_vars / Merkle / fold cost (pw5 h31 −4% from 8 cols; similar magnitude if
+      4–6 flag/index cols removed without new constraints).
+    predicted_pct: -6.0
+    plumbing:
+      - crates/lean_vm/src/tables/poseidon_16/mod.rs:90-120,378-396
+      - crates/lean_vm/src/tables/blake3/mod.rs:18-30,178-200
+      - crates/sub_protocols/src/stacked_pcs.rs:197-220
+    kill_condition: "Constraint folder mismatch in correctness; OR n_columns unchanged; OR degree_air increases."
+
+  - id: s6
+    paper_anchor: "Grassi et al., ePrint 2019/458 §3 (Poseidon1 width-16); Arnon et al., ePrint 2024/1586 §6.1"
+    mechanism: |
+      Remove Poseidon16 flag_permute + outputs_right columns when bytecode never calls poseidon16_permute
+      (xmss_aggregate.py grep shows zero permute). pw5 h31 removed 8 dead outputs_right cols for −4%;
+      permute flag still committed — if logup allows encoding permute in precompile_data only,
+      drop 1 flag + 8 output cols (~9 cols × 2^17 ≈ 1.2M cells); may need paired logup change.
+    predicted_pct: -4.0
+    plumbing:
+      - crates/lean_vm/src/tables/poseidon_16/mod.rs
+      - crates/sub_protocols/src/logup.rs
+    kill_condition: "conditional_inactive breaks; OR n_columns unchanged; OR correctness fails."
+
+history:
+  - id: s1
+    iter_id: 8
+    result: killed
+    measured_pct: null
+    rationale: "Phase 0 recon: xmss_aggregate.py poseidon16-only; native Blake3 precompile invalid for XMSS."
+  - id: s4
+    iter_id: 8
+    result: discard
+    measured_pct: 0.12
+    rationale: "flag_active AIR gating; degree fix required; +0.12% noise — table not on hot path."
+  - id: s5
+    iter_id: 9
+    result: killed
+    measured_pct: null
+    rationale: "WIP reverted: lean_compiler cannot compile recursion with if-wrapped DynArray.push; rust PCS skip needs matching in-circuit verifier."
+  - id: s10
+    iter_id: 10
+    result: discard
+    measured_pct: -0.41
+    rationale: "bytecode_acc pad removal; correctness OK; -0.41% p=0.17 noise."
+  - id: h1
+    iter_id: 0
+    result: discard
+    measured_pct: -0.07
+    rationale: "micro: API unify"
+  - id: h3
+    iter_id: 1
+    result: discard
+    measured_pct: 24.9
+    rationale: "micro: hash_many batch"
+  - id: h4
+    iter_id: 2
+    result: discard
+    measured_pct: 9.1
+    rationale: "micro: column-wise absorb"
+  - id: h2
+    iter_id: 3
+    result: discard
+    measured_pct: 1.17
+    rationale: "micro: mds_fft trace_gen"
+  - id: h8
+    iter_id: 4
+    result: discard
+    measured_pct: -0.05
+    rationale: "micro: utils compress_in_place"
+  - id: h9
+    iter_id: 5
+    result: discard
+    measured_pct: 0.1
+    rationale: "micro: thread_local Platform"
+  - id: h10
+    iter_id: 6
+    result: discard
+    measured_pct: -0.16
+    rationale: "micro: hoist sparse refs"
+  - id: h5
+    iter_id: 7
+    result: discard
+    measured_pct: -0.52
+    rationale: "micro: fixed-size sparse arrays"
+  - id: h11
+    iter_id: null
+    result: killed
+    measured_pct: null
+    rationale: "blake3::hash 0.03% — below micro threshold"
+  - id: h12
+    iter_id: null
+    result: cancelled
+    measured_pct: null
+    rationale: "pre-redirect micro: sumcheck skip (pw5 h59 +2.2%)"
+  - id: h13
+    iter_id: null
+    result: cancelled
+    measured_pct: null
+    rationale: "pre-redirect micro: shared zero-suffix init"
+  - id: h14
+    iter_id: null
+    result: cancelled
+    measured_pct: null
+    rationale: "pre-redirect micro: permute dispatch"

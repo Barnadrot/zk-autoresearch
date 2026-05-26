@@ -16,11 +16,27 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 1) Always specify the security regime and strengthen it with citations
 2) Do not modify tests or anything that affects the correctness or the benchmarking methodology. 
 5) No candidate is too big to implement. 
-6) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. 
+6) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. If your hypothesis only speeds up `compress_in_place`, `blake3_hash_raw`, or table constant lookups without changing trace layout, AIR degree, WHIR statements, or VM instruction count, discard it in Phase 1. 
 
 ## Your Goal
 
-Max out the current hybrid Blake3 x Poseidon hashing implemented for LeanMultisig. It was added recently and previous attempts showed strong evidence that the setup will yield significant speedup for the codebase. 
+Max out the current hybrid Blake3 × Poseidon hashing implemented for LeanMultisig. It was added recently and previous attempts showed strong evidence that the setup will yield significant speedup for the codebase.
+
+### What “hash behavior” means (read this before Phase 1)
+
+Optimize **how the SuperSpartan + WHIR prover uses hashing** — not the hash primitive’s inner implementation.
+
+| In scope (structural) | Out of scope (micro — do not propose) |
+|----------------------|----------------------------------------|
+| Trace width / committed columns for Blake3 or Poseidon tables | `Platform::detect`, `hash_many`, `thread_local`, column-wise par_iter |
+| `degree_air`, constraint count, conditional lookups | Hoisting `&'static` sparse tables, `mds_fft` vs `mds_circ` on trace_gen alone |
+| WHIR Merkle hybrid semantics (leaf vs internal), statement count | `blake3::hash` vs `compress_in_place` when profile shows `blake3::hash` <0.1% |
+| In-circuit precompile semantics (instruction count in aggregation VM) | Fiat-Shamir sponge swap unless modeled as full transcript change |
+| `stacked_n_vars`, PCS commitment surface, sumcheck degree | Knob tuning, `with_min_len`, allocator tweaks |
+
+**Reference level:** pw5 Hetzner keeps (−20% hybrid WHIR leaves, −25% Poseidon degree 9, −4% dead columns) and pw6 native Blake3 precompile (−18% secure bytecode path). See `report/METHODOLOGY_REDIRECT.md` after iter 7.
+
+**Gate for hypothesis quality:** predicted \|Δ\| ≥ 5% *or* explicit cost model tying columns/degree/statements to DFT+Merkle+sumcheck. If profile shows target symbol <0.5% of productive time, kill in Phase 1 without implementing.
 
 ## Autoresearch Loop
 

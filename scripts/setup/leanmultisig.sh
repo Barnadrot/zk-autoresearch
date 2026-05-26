@@ -73,6 +73,11 @@ cargo build --release
 # On CPU-only servers it fails to link. Clone is kept for source reference — agent reads files.
 # To build SP1: install succinct toolchain + CUDA toolkit first.
 
+echo "=== Setting up executor CLAUDE.md ==="
+cd ~/zk-autoresearch
+git update-index --skip-worktree CLAUDE.md
+cp CLAUDE_executor.md CLAUDE.md
+
 echo "=== Setting git identity ==="
 git config --global user.name "Barnadrot"
 git config --global user.email "kbarna.drot@gmail.com"
