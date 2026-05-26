@@ -6,10 +6,10 @@ You are an agent dispatched to optimize or profile a ZK proving system. Your pro
 
 Two experiment shapes; different git discipline for each.
 
-### Shape A — Autoresearcher (commit-eval-decide loop)
+### Shape A — Optimization (commit-eval-decide loop)
 
-1. **Find your branch.** Read your queue entry's `branch` field. Coordinator has already checked it out in the **target repo** (e.g., `~/zk-autoresearch/leanMultisig`), not in `~/zk-autoresearch` itself. Check with `cd <target_repo> && git rev-parse --abbrev-ref HEAD`.
-2. **Never commit to `main` in the target repo.** If the target repo is on `main`, stop and report — something is wrong. The orchestration repo (`~/zk-autoresearch`) stays on `main` — that's normal, don't check it.
+1. **Find your branch.** Read your queue entry's `branch` field. Coordinator has already checked it out before launching you.
+2. **Never commit to `main`.** If `git rev-parse --abbrev-ref HEAD` returns `main`, stop and report — something is wrong.
 3. **Commit per iteration on the experiment branch.** Failed iterations get `git revert`, not `git reset`.
 4. **Do NOT `git push`.** Brain pushes after reviewing.
 5. **Leave Cargo.lock alone** unless the experiment explicitly tracks lockfile movement.
@@ -20,6 +20,26 @@ Two experiment shapes; different git discipline for each.
 2. **Bulky raw data (>1 MB) goes in `report/`** subfolder of the experiment dir (gitignored, rsynced by coordinator).
 3. **Do NOT `git push`.**
 
+### Both shapes
+
+If program.md contradicts this protocol, follow this protocol and note the conflict in your verdict.
+
+## Key Conventions
+
+- **RUSTFLAGS:** Always `RUSTFLAGS="-C target-cpu=native"` when benchmarking. Without it, no AVX-512 — measurements silently 2x slower.
+- **One change per iteration.** Isolation is critical for attribution.
+- **Correctness is non-negotiable.** Always run the correctness gate before the performance gate.
+- **Commit-eval-decide.** Make one change, commit, run correctness then performance gates, keep or revert. Every commit is either a kept improvement or a reverted attempt.
+- **cargo nextest** for Jolt (never cargo test). Standard cargo test for Plonky3 and leanMultisig.
+- **Experiment logs are append-only.** Never delete or modify past iters.tsv entries.
+
+## Agentic Principles
+
+1. Profile before optimizing. Every assumption skipped profiling on was wrong.
+2. The bottleneck determines the approach. Memory-bound vs compute-bound dictates everything. Identify which before choosing a strategy.
+3. Measure, don't assume. Every received wisdom gets a benchmark.
+4. Negative results are results. A null result on the right system validates the theory.
+5. Don't chase convergence. If optimizing X makes your system look like Y, you're rebuilding Y poorly. Find the local optimum for your architecture.
 
 ---
 
