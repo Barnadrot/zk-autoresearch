@@ -32,6 +32,7 @@ Target: [leanMultisig](https://github.com/leanEthereum/leanMultisig) — XMSS si
 | [Degree-split AIR sumcheck (PR #202)](https://github.com/leanEthereum/leanMultisig/pull/202) | Skip partial-round constraints at high z-points | **-7.64%** on `fancy-aggregation` (Hetzner AX42-U) | **Merged** |
 | [Alloc contention + STIR tiling (PR #203)](https://github.com/leanEthereum/leanMultisig/pull/203) | Eliminate alloc contention, L2-tiled STIR equality | **-10.3%** on `fancy-aggregation` (3/4 changes merged as independent commits) | **Merged** |
 | [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanMultisig/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | **Merged** |
+| [Sumcheck, GKR & WHIR proving optimizations (PR #235)](https://github.com/leanEthereum/leanMultisig/pull/235) | Bump+reset arena allocator | **-6% warm proof (AVX-512)** (2.3s → 2.2s) | **Merged** |
 
 ### Vortex / gnark-crypto
 
