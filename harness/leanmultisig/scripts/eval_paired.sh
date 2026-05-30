@@ -155,8 +155,8 @@ fi
 if [[ "$SKIP_NOISE_CHECK" != "1" ]]; then
   (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
   log "noise floor check (A-vs-A, also serves as thermal warmup)..."
-  NOISE_CSV_A=$(mktemp /tmp/eval_noise_a.XXXXXX.csv)
-  NOISE_CSV_B=$(mktemp /tmp/eval_noise_b.XXXXXX.csv)
+  NOISE_CSV_A=$(mktemp /tmp/eval_noise_a_XXXXXX)
+  NOISE_CSV_B=$(mktemp /tmp/eval_noise_b_XXXXXX)
   drop_caches
   run_pinned /tmp/prove_loop_base "$N_PROOFS" > "$NOISE_CSV_A" 2>/dev/null
   drop_caches
@@ -202,9 +202,9 @@ fi
 
 # ------------------------------ MEASURE --------------------------------------
 
-ALL_BASE_TIMES=$(mktemp /tmp/eval_base_times.XXXXXX.txt)
-ALL_CAND_TIMES=$(mktemp /tmp/eval_cand_times.XXXXXX.txt)
-ROUND_LOG=$(mktemp /tmp/eval_round_log.XXXXXX.txt)
+ALL_BASE_TIMES=$(mktemp /tmp/eval_base_times_XXXXXX)
+ALL_CAND_TIMES=$(mktemp /tmp/eval_cand_times_XXXXXX)
+ROUND_LOG=$(mktemp /tmp/eval_round_log_XXXXXX)
 : > "$ALL_BASE_TIMES"
 : > "$ALL_CAND_TIMES"
 : > "$ROUND_LOG"
@@ -212,8 +212,8 @@ ROUND_LOG=$(mktemp /tmp/eval_round_log.XXXXXX.txt)
 for ((round=1; round<=N; round++)); do
   log "=== round $round / $N ==="
 
-  BASE_CSV=$(mktemp /tmp/eval_base.XXXXXX.csv)
-  CAND_CSV=$(mktemp /tmp/eval_cand.XXXXXX.csv)
+  BASE_CSV=$(mktemp /tmp/eval_base_XXXXXX)
+  CAND_CSV=$(mktemp /tmp/eval_cand_XXXXXX)
 
   # Counterbalanced ordering: odd rounds base→cand, even rounds cand→base
   if (( round % 2 == 1 )); then

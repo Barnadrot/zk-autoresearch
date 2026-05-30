@@ -44,7 +44,11 @@ if [[ -f "$INTEGRITY_FILE" ]]; then
     echo "[correctness] Current branch: $(cd ~/zk-autoresearch/leanMultisig && git branch --show-current 2>/dev/null || echo 'detached')"
     exit 3
   fi
-  CURRENT_HASH=$(cd ~/zk-autoresearch/leanMultisig && sha256sum "$TEST_FILE" | awk '{print $1}')
+  if command -v sha256sum &>/dev/null; then
+    CURRENT_HASH=$(cd ~/zk-autoresearch/leanMultisig && sha256sum "$TEST_FILE" | awk '{print $1}')
+  else
+    CURRENT_HASH=$(cd ~/zk-autoresearch/leanMultisig && shasum -a 256 "$TEST_FILE" | awk '{print $1}')
+  fi
   EXPECTED_HASH=$(grep "quintic_extension/tests.rs" "$INTEGRITY_FILE" 2>/dev/null | awk '{print $1}' || echo "none")
   if [[ "$CURRENT_HASH" != "$EXPECTED_HASH" && "$EXPECTED_HASH" != "none" ]]; then
     echo "[correctness] INTEGRITY VIOLATION: $TEST_FILE was modified!"
@@ -54,6 +58,15 @@ if [[ -f "$INTEGRITY_FILE" ]]; then
   fi
   echo "[correctness] Layer 0 PASSED — test files unmodified."
 fi
+
+# -----------------------------------------------------------------------
+# Layer 0.5: Structural soundness invariants (~1s)
+# Checks that bus-referenced columns have PCS binding (LOGUP soundness),
+# shift columns are committed, and column counts are consistent.
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.5: Structural soundness invariants..."
+cargo test -p lean_vm --release -- tables::table_enum::tests::committed_columns_cover_bus_referenced_columns tables::table_enum::tests::shift_columns_are_committed 2>&1
 
 # -----------------------------------------------------------------------
 # Layer 1: Field arithmetic + backend primitive tests (~15s)
@@ -100,6 +113,20 @@ if [[ "$REPEAT" -gt 1 ]]; then
   fi
   echo "[correctness] Layer 4 PASSED — $REPEAT runs agree."
 fi
+
+# -----------------------------------------------------------------------
+# Layer 5: Proof-transcript mutation fuzzer (~3s)
+# Generates one valid proof, mutates random bytes, checks the verifier
+# rejects every mutation. Catches verifier bugs introduced by code changes.
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 5: Proof-transcript mutation fuzzer (200 mutations, ~3s)..."
+BENCH_CRATE="${SHARED_DIR}/../bench"
+(
+  cd "$BENCH_CRATE"
+  cargo build --release --bin fuzz_proof_rejection 2>&1 | tail -1
+  ./target/release/fuzz_proof_rejection --mutations 200 --seed "$RANDOM" 2>&1
+)
 
 echo ""
 echo "[correctness] ALL PASSED."

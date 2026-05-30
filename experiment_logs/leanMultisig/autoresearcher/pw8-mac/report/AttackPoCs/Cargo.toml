@@ -1,0 +1,11 @@
+[package]
+name = "h44-virtual-col-poc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lean_vm = { path = "/Users/m1/zk-autoresearch/leanMultisig/crates/lean_vm" }
+backend = { path = "/Users/m1/zk-autoresearch/leanMultisig/crates/backend" }
+sub_protocols = { path = "/Users/m1/zk-autoresearch/leanMultisig/crates/sub_protocols" }
+utils = { path = "/Users/m1/zk-autoresearch/leanMultisig/crates/utils" }
+rand = "0.10.0"

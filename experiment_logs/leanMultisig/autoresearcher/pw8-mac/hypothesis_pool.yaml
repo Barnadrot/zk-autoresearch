@@ -1,3 +1,704 @@
-current_pool: []
+current_pool:
+  - id: h61
+    status: reverted_for_soundness
+    predicted_pct: -7.0
+    breadth: cross-crate (sub_protocols + lean_prover + lean_vm + rec_aggregation)
+    paper_anchor: >
+      Wiese "Twist and Shout via logup*" (Powdr Labs, October 2025, §5.1 — Shout via
+      logup* for read-only memory with address decomposition); Soukhanov (eprint 2025/946
+      — LOGUP* for indexed lookups with small pushforward).
+    mechanism: >
+      Shout via logup* for memory lookups. REVERTED: reducing Poseidon N_COMMITTED to 5 and
+      Extension to 14 was UNSOUND — memory-bus-referenced value columns (inputs, outputs,
+      v_a/v_b/res) lack PCS binding. The structural test exception `is_memory_value` allowed
+      virtual memory columns without any binding protocol (no Shout implementation). Attack:
+      prover sees LOGUP challenge c BEFORE constructing GKR, then chooses fake value column
+      polynomials that satisfy both bus balance (1 equation, ~16M free variables) and AIR
+      constraints (by also faking intermediate columns). Memory is committed but values are
+      compositions that can't be derived from point evaluations.
+      REVERTED to N_COMMITTED=37 (Poseidon) and N_COMMITTED=29 (Extension), matching h55.
+      The Shout binding protocol with d=2 address decomposition is viable but requires:
+      (1) new committed addr_hi/addr_lo columns per memory group (+8 Poseidon, +6 Extension),
+      (2) AIR decomposition constraints, (3) trace gen changes, (4) recursion circuit updates.
+      Emile plans to implement a draft. Defer to Emile's implementation.
+    measured: >
+      Before revert: 1.555s (unsound). After revert: 1.82s (sound). Performance regression
+      of 265ms from re-committing memory value columns. Still faster than h55 baseline (2.04s)
+      thanks to h56's LOGUP* bytecode binding (Execution N_COMMITTED 20→8).
 
-history: []
+  - id: h62
+    status: queued
+    predicted_pct: -2.0
+    breadth: cross-crate (sub_protocols + quotient_gkr)
+    paper_anchor: >
+      Wiese "Twist and Shout via logup*" (Powdr Labs, October 2025, §4 — implicit commitment
+      for one-hot row matrices, integrated into existing GKR); Emile's cost_of_logup_star.pdf
+      (15.5 × 2^v GKR cost analysis).
+    mechanism: >
+      Integrated LOGUP* GKR for h56 binding (eliminate 35ms separate GKR overhead). Instead
+      of running two SEPARATE GKR quotients for the pushforward well-formedness, integrate
+      the LOGUP* equation into the existing LOGUP-GKR numerators/denominators. The blocker
+      identified in WIP7 was extension-field numerators in the GKR initial layer. Resolution:
+      convert pushforward P (extension) to 5 base-field coordinate arrays, each as a separate
+      GKR section. The 5 sections have 2^18 entries each — adding 5×2^18 = 1.3M entries to
+      the existing GKR (currently ~4M total). Cost: +33% GKR time vs +100% for separate GKR.
+      Net savings vs current h56: 35ms binding overhead → ~12ms integrated overhead = ~23ms.
+      1.664s → 1.641s.
+    plumbing:
+      - crates/sub_protocols/src/logup.rs (add 5 base-field bytecode sections to GKR)
+      - crates/sub_protocols/src/quotient_gkr/mod.rs (no change — uses existing base-field GKR)
+      - crates/lean_prover/src/prove_execution.rs (remove separate binding GKR call)
+    kill_condition: >
+      If the 5 base-field sections add MORE GKR cost than the 2 separate ext-field GKRs,
+      this is worse than the current approach. Check: 5 × O(2^18) × 15.5 (ee) vs
+      O(2^20 + 2^18) × 15.5 (ee) with ext numerators.
+
+  - id: h63
+    status: queued
+    predicted_pct: -10.0
+    breadth: cross-crate (sub_protocols + whir + lean_prover + rec_aggregation)
+    paper_anchor: >
+      Plonky3 "MerkleTreeMmcs" (merkle-tree/src/merkle_tree.rs — mixed matrix commitment
+      scheme for tables at different heights); Thaler "Sum-check Is All You Need" (eprint
+      2025/2041, §5.2 — reducing commitment size via structured polynomial batching).
+    mechanism: >
+      MMCS-style separate table commitments. Instead of stacking ALL tables into one polynomial
+      (nv=25, effective_n_cols=109, perms/leaf=14), commit each table SEPARATELY:
+      - Execution (8 cols × 2^20): nv=23, eff=8, perms=1 → 2^16 leaves × 1 perm
+      - Poseidon (37 cols × 2^18): nv=23, eff=37, perms=5 → 2^16 × 5
+      - Extension (29 cols × 2^15): nv=20, eff=29, perms=4 → 2^13 × 4
+      - Memory+acc: nv=23 (separate WHIR)
+      Total Merkle: ~0.4M perms (vs current 7.3M perms) = 98% fewer Merkle hashes.
+      Each table has its own WHIR (commit+open). 4 WHIRs at nv≤23: ~4×150ms = 600ms total.
+      Current single WHIR: ~680ms. Net Merkle savings: ~280ms. Net total: -280+600-680 = -360ms?
+      Wait — need to account for 4 product sumchecks vs 1 larger one. Unclear net.
+      This is a FUNDAMENTAL architecture change — effectively re-implementing stacked_pcs.rs.
+      But Plonky3 already has this design (MerkleTreeMmcs). Potential: -200ms to -400ms.
+    plumbing:
+      - crates/sub_protocols/src/stacked_pcs.rs (REWRITE: separate commits per table)
+      - crates/whir/src/commit.rs (support multiple WHIR instances)
+      - crates/lean_prover/src/prove_execution.rs (multiple commit+prove phases)
+      - crates/lean_prover/src/verify_execution.rs (multiple verify phases)
+      - crates/rec_aggregation/zkdsl_implem/recursion.py (verify multiple WHIRs)
+    kill_condition: >
+      If 4 separate WHIRs are MORE expensive than 1 stacked WHIR (due to product sumcheck
+      overhead per WHIR), the net is negative. The product sumcheck cost scales with nv,
+      not with data size — 4 WHIRs at nv=23 might cost 4× more than 1 at nv=25.
+      Also: recursion circuit complexity increases with 4 WHIR verifications.
+      Estimate carefully before implementing.
+
+  - id: h60
+    status: queued
+    predicted_pct: -5.0
+    breadth: cross-crate (lean_prover + sub_protocols + whir)
+    paper_anchor: >
+      Dao and Thaler "Speeding Up Sum-Check Proving" (eprint 2025/1117, §5 —
+      reduce polynomial size via structured sparsity); Thaler "Sum-check Is All
+      You Need" (eprint 2025/2041, §3.2 — smaller sumcheck for sparse polynomials).
+    mechanism: >
+      Sparse product sumcheck. The stacked polynomial at nv=25 has offset=28.5M
+      out of 2^25=33.5M capacity (85% utilization, 15% zero padding). The product
+      sumcheck operates on ALL 2^25 elements including 5M zeros. For pairs where
+      BOTH lo and hi evaluations are zero (deep in the padding region), the
+      sumcheck_quadratic computes 0×weight = 0 but still reads weights from DRAM.
+      By splitting the product sumcheck loop into active pairs (offset/2) and
+      padding pairs (skip entirely), we avoid ~15% of the work.
+      At nv=25 product sumcheck ~140ms: 15% savings = ~21ms = -1.3%.
+      Combined with nv=25: 1.624 - 0.021 = 1.603s.
+    plumbing:
+      - crates/backend/sumcheck/src/product_computation.rs (split loop at active_len)
+      - crates/whir/src/open.rs (pass active_len to product sumcheck)
+    kill_condition: >
+      The h52 analysis showed c2 = (y1-y0)×(x1-x0) is NOT zero when x1=0 but x0≠0.
+      However, for pairs where BOTH x0=0 AND x1=0 (deep padding), BOTH c0 and c2 are
+      zero. The trick is identifying which pairs have both entries zero. If the loop
+      split overhead exceeds the savings, kill.
+    predicted_pct: -4.0
+    breadth: cross-crate (sub_protocols + backend)
+    paper_anchor: >
+      Dao and Thaler "Speeding Up Sum-Check Proving" (eprint 2025/1117, §4 — packed sumcheck
+      with deferred extension-field conversion); Habock "Packed Sumcheck over Fields of Small
+      Characteristic" (eprint 2025/719 — keeping sumcheck rounds in base field longer).
+    mechanism: >
+      Extended base-field AIR sumcheck. Currently the AIR sumcheck Phase 1 operates on packed
+      base-field columns (PFPacking) but the constraint folder accumulates in EFPacking
+      (extension field). The partial_eq factor forces extension because eq(r,x) has extension
+      coordinates. By factoring eq into a base-field prefix (for chunk-bits) and extension
+      suffix (for individual bits), the first few sumcheck rounds can accumulate constraints
+      in PFPacking and multiply by the extension eq factor ONCE per pair instead of per
+      constraint. This reduces the per-constraint cost from 5 base muls (EFPacking×PFPacking)
+      to 1 base mul (PFPacking×PFPacking) for the first few rounds.
+      Estimated savings: 50-80ms from AIR sumcheck (29% of total) = -2.4% to -3.9%.
+    plumbing:
+      - crates/backend/air/src/constraint_folder/packed.rs (base-field accumulator variant)
+      - crates/sub_protocols/src/air_sumcheck.rs (factored eq with base-field prefix)
+    kill_condition: >
+      If the eq factor cannot be cleanly factored into base × extension components, the
+      approach fails. If PFPacking constraint accumulation loses precision (overflow in
+      KoalaBear 31-bit field), soundness is compromised. Check: max constraint value ×
+      n_constraints × max_alpha_power fits in the field.
+
+  - id: h59
+    status: queued
+    predicted_pct: -3.0
+    breadth: cross-crate (sub_protocols + whir + lean_prover)
+    paper_anchor: >
+      Soukhanov "Logup*" (eprint 2025/946, §3 — LOGUP* integrated into existing GKR by
+      modifying bytecode bus numerators/denominators); Papini & Haböck (eprint 2023/1284,
+      §4 — GKR quotient for pushforward well-formedness).
+    mechanism: >
+      Integrated LOGUP* GKR for bytecode bus. Instead of running a SEPARATE GKR for pushforward
+      well-formedness (estimated +98ms overhead), modify the bytecode section of the existing
+      LOGUP-GKR to use the LOGUP* equation directly. The bytecode bus currently contributes:
+      num=bytecode_acc, den=c-fingerprint(instr,PC). With LOGUP*, it contributes:
+      left: num=eq_r, den=c-PC; right: num=P, den=c-j. The existing GKR quotient infrastructure
+      (prove_gkr_quotient) handles both sides. No additional GKR needed — the pushforward
+      well-formedness is proved AS PART OF the existing LOGUP-GKR. Cost: ~0ms additional GKR
+      (same GKR, different data). Plus small WHIR for pushforward commitment (~7ms).
+      Net overhead: ~12ms (vs ~98ms for separate GKR). Sound LOGUP* with minimal performance cost.
+    plumbing:
+      - crates/sub_protocols/src/logup.rs (modify bytecode section numerators/denominators)
+      - crates/sub_protocols/src/stacked_pcs.rs (no change — pushforward committed via small WHIR)
+      - crates/lean_prover/src/prove_execution.rs (add small WHIR commit/prove for pushforward)
+      - crates/lean_prover/src/verify_execution.rs (add small WHIR verify for pushforward)
+      - crates/whir/src/commit.rs (reuse existing WhirConfig at nv=18)
+    kill_condition: >
+      If the modified bytecode bus numerators/denominators don't compose correctly with the
+      existing memory/table bus sections in the GKR, kill. If the GKR quotient structure
+      changes (equation 1 has DIFFERENT degree than the standard bus balance), the GKR may
+      need modification. Check that the GKR quotient degree is still 2 (sum of fractions).
+
+  - id: h50
+    status: killed_at_analysis
+    predicted_pct: -2.0
+    breadth: cross-crate (lean_prover + sub_protocols + whir)
+    paper_anchor: >
+      Dao and Thaler "Speeding Up Sum-Check Proving" (eprint 2025/1117, §5 — fused
+      computation passes for avoiding redundant memory traversals); Bootle et al. "Sumcheck
+      Arguments and their Applications" (eprint 2021/333, §3 — efficient multilinear
+      evaluation with combined folding).
+    mechanism: >
+      Fused fold + round-compute for AIR sumcheck. Currently process_challenge (line 268
+      in air_sumcheck.rs) folds ALL multilinears via fold_at_bit, which traverses all 109
+      columns × 2^(nv-round) elements. Then compute_raw_poly_degree_split reads the folded
+      columns again for the next round. This is TWO full passes over column data per round.
+      By fusing the fold into the round-compute kernel (similar to fold_and_compute_round_packed
+      in quotient_gkr/sumcheck_utils.rs), we eliminate one full pass. At round r with fold_bit=2:
+      each column has 2^(12-r) packed elements. For the Poseidon table (109 cols × 2^10 = 22MB
+      at round 0), saving one pass saves ~22MB DRAM read. Over 10 rounds (geometric decrease):
+      ~44MB total. At ~60GB/s DDR5: ~0.7ms. BUT the bigger win is L2 cache: the fused pass
+      accesses each element ONCE (fold + evaluate), keeping it in L2 for the constraint eval.
+      Two-pass accesses it TWICE (fold then re-read), potentially evicting from L2 between
+      passes. Estimated L2 cache benefit: ~40ms from reduced L2 misses in the Poseidon AIR.
+    plumbing:
+      - crates/sub_protocols/src/air_sumcheck.rs:268-290 (process_challenge — fuse fold into compute)
+      - crates/sub_protocols/src/air_sumcheck.rs:403-557 (compute_raw_poly_degree_split — accept pre-fold data)
+      - crates/lean_prover/src/prove_execution.rs (no change)
+    kill_condition: >
+      If the fused fold+compute kernel is significantly more complex than the separate
+      fold+compute and the compiler can't optimize it well, the overhead may exceed savings.
+      If fold_at_bit already uses cache-efficient streaming (sequential access), the L2
+      benefit is zero. Check whether fold_at_bit's access pattern is sequential or strided.
+
+history:
+  - id: h53
+    status: keep
+    iter: 15
+    measured_pct: -1.16
+    keep_reason: >
+      KEEP. Iter 15: delta=-1.16%, p=4e-06, t=-6.35. Baseline: 1.6162s → 1.5974s.
+      Virtual Extension value columns: n_committed=14, 15 value cols excluded from
+      stacked PCS. effective_n_cols 116→111, Merkle perms/leaf 15→14.
+
+  - id: h48
+    status: keep
+    iter: 14
+    measured_pct: -29.26
+    keep_reason: >
+      KEEP. Iter 14: delta=-29.26%, p=0.0, t=-206.2, df=36.6. Rock-solid across 5 rounds.
+      Baseline: 2.3055s → Candidate: 1.6309s (savings: 675ms). Virtual execution instruction
+      columns: n_committed_columns()=8, instruction cols (8-19) excluded from stacked PCS.
+      Stacked offset 42.1M→29.5M, nv 26→25. Halved DFT, Merkle, product sumcheck, and
+      memory allocation. Exceeded predicted -15.1% by 2x due to compound effects of halved
+      polynomial size. Sound because instruction column values are constrained by LOGUP bus
+      fingerprint against known bytecode polynomial + AIR constraint evaluation.
+
+  - id: h50
+    status: killed_at_analysis
+    kill_reason: >
+      MICRO-OPTIMIZATION. The fold pass for AIR sumcheck is 0.025% of compute cost.
+      DO NOT REATTEMPT fold+compute fusion — the fold is not the bottleneck.
+
+  - id: h45
+    status: killed_at_analysis
+    kill_reason: >
+      FIAT-SHAMIR ORDERING PREVENTS CONCURRENCY. The LOGUP challenge c = prover_state.sample()
+      is drawn AFTER stack_polynomials_and_commit completes (line 138 of prove_execution.rs).
+      The commit adds the Merkle root to the Fiat-Shamir transcript before c is sampled.
+      The LOGUP fill needs c to compute fingerprints (c - finger_print_packed). Therefore
+      LOGUP fill CANNOT start before COMMIT finishes. The kill condition "verify the
+      Fiat-Shamir ordering first" was correct — the ordering is COMMIT → sample c → LOGUP.
+      DO NOT REATTEMPT concurrent LOGUP+COMMIT unless the Fiat-Shamir ordering changes.
+
+  - id: h48
+    status: killed_at_analysis
+    kill_reason: >
+      KILL CONDITION TRIGGERED. ONE_BUSES_ALL_COLS for execution table includes instruction
+      column indices 8-19. These are Multiplicity::One bus columns that become WHIR opening
+      claims via stacked_pcs_global_statements. Removing instruction columns from stacked PCS
+      would create invalid WHIR claim positions. Fixing this requires changing how ONE_BUSES
+      column claims are handled — separating "committed WHIR claims" from "LOGUP advice" —
+      which is a deep architectural change across prover, verifier, and recursion circuit.
+      DO NOT REATTEMPT without first separating the WHIR claim path from the LOGUP column
+      evaluation path in stacked_pcs_global_statements.
+
+  - id: h47
+    status: discarded
+    iter: 13
+    kill_reason: >
+      NO EFFECT. delta=+0.51%, p=0.11. Adding 64 virtual checkpoint columns increased
+      n_columns from 109 to 173. The 64 extra multilinear reads per pair per eval point
+      create cache pressure that offsets ALU savings from fewer eval points. The degree-split
+      skip optimization was already optimal — it avoids reading full columns at skip points.
+      DO NOT REATTEMPT degree reduction via extra virtual columns.
+
+  - id: h44
+    status: keep
+    iter: 12
+    measured_pct: -9.56
+    keep_reason: >
+      KEEP. Iter 12: delta=-9.56%, p=0.0, t=-46.16, df=34.6. Consistent across 5 rounds.
+      Baseline: 2.3205s → Candidate: 2.0987s (savings: 222ms). Exceeded predicted -6.4% by
+      50%. Virtual Poseidon intermediates: reordered struct to separate 41 committed cols from
+      68 virtual, added n_committed_columns() to Air trait, updated stacking + WHIR claims +
+      recursion circuit. Phase A of h47 arc complete.
+
+  - id: h46
+    status: killed_at_analysis
+    kill_reason: >
+      EXCEEDS nv=26 BOUNDARY. Adding 48 mid-round checkpoint columns requires 12.6M
+      additional stacked elements. Current headroom is only 7.2M (2^26 - 59.9M). Total
+      offset would be 72.5M > 2^26 = 67.1M, pushing nv to 27 which DOUBLES DFT, Merkle,
+      and sumcheck costs — catastrophic net regression. The degree reduction IS viable but
+      ONLY after first creating headroom via virtual columns (see h47 combined approach).
+      DO NOT REATTEMPT degree reduction without first reducing stacked polynomial size.
+
+  - id: h28
+    status: killed_at_analysis
+    kill_reason: >
+      MICRO-OPTIMIZATION. After 11 failed iterations, fusing LOGUP fill_num_from +
+      fill_denoms predicted only -1.2%. LOGUP fill total is ~30-40ms; halving memory
+      traffic saves at most ~15ms = -0.7%. Below gate threshold even with optimistic
+      estimates. Missing paper_anchor field. Superseded by h45 (concurrent execution).
+
+  - id: h43
+    status: killed_at_analysis
+    kill_reason: >
+      MICRO-OPTIMIZATION overlapping with h28. Fused LOGUP fill predicted -1.5% but
+      estimated savings of 15-20ms from scheduling overhead reduction are below gate
+      threshold. LOGUP fill is only 30-40ms of 280ms LOGUP total; the GKR proof (240ms)
+      is the actual bottleneck. Superseded by h45 (concurrent execution).
+
+  - id: h42
+    status: killed_at_analysis
+    kill_reason: >
+      MICRO-OPTIMIZATION. pair_coeffs optimization predicted -1.5% but the 6 muls per pair
+      are already near-optimal. LLVM's common subexpression elimination likely already shares
+      operands. The GKR sumcheck is not the bottleneck (only ~60ms for bottom layer). Even
+      perfect operand sharing saves <10ms. Below gate threshold.
+
+  - id: h41
+    status: killed_at_analysis
+    kill_reason: >
+      HOMOGENEOUS PART EXTRACTION REQUIRED. Eval-at-infinity computes h(∞) = the leading
+      coefficient of the round polynomial. For AIR constraints of degree d applied to linear
+      col_k(X) = lo_k + X*diff_k, the leading coefficient is the HOMOGENEOUS degree-d part
+      of constraint(diff), NOT the full constraint(diff). Example: if constraint = x*y + x,
+      the leading coeff is diff_x*diff_y (degree-2 part only), not diff_x*diff_y + diff_x.
+      Evaluating the full Air::eval on diff values gives the wrong leading coefficient.
+      Extracting only the homogeneous part requires modifying every Air implementation
+      (Poseidon, Execution, Extension) to expose a separate degree-d-only evaluation — an
+      invasive architectural change that would not be a net simplification. For degree-2
+      product sumcheck, sumcheck_quadratic already computes the leading coefficient directly.
+      DO NOT REATTEMPT eval-at-infinity for high-degree AIR sumcheck without a homogeneous
+      constraint extraction mechanism.
+    mechanism: >
+      Eval-at-infinity round polynomial for AIR sumcheck and generic sumcheck.
+
+  - id: h40
+    status: discarded
+    iter_id: 11
+    measured_pct: +0.54
+    kill_reason: >
+      NO EFFECT. delta=+0.54%, p=0.067, noise_floor=0.22% (reliable). The 1.28GB weight table
+      far exceeds all M4 Pro cache levels. Even immediate round-0 computation after combine_statement
+      is DRAM-bound — no cache warmth to exploit at 2^24+ packed elements.
+      DO NOT REATTEMPT cache-locality fusion for the product sumcheck at this scale.
+    mechanism: >
+      Fused combine_statement + product sumcheck round 0 for cache-warm weight access.
+
+  - id: h36
+    status: killed_at_analysis
+    kill_reason: >
+      INCOMPATIBLE REPRESENTATION. Monomial-basis fold (lo + r*hi) only works when data is
+      stored as monomial COEFFICIENTS, not as evaluations at {0,1}^n. The stacked PCS data
+      is inherently in evaluation form. Converting evaluation→coefficient form via Möbius
+      transform costs O(n·2^n) = 26 × 2^26 ≈ 1.7 billion operations ≈ 170ms, which exceeds
+      the fold savings (~50ms). The eq polynomial also doesn't simplify without full conversion.
+      h36's claim of "prover-only change with identical round polynomial" is WRONG — the fold
+      produces DIFFERENT intermediate polynomials in coefficient vs evaluation form. The round
+      polynomial IS the same mathematical object, but computing it requires the entire protocol
+      to be reformulated in coefficient form, including the verifier's round identity check
+      (which changes from p(0)+p(1)=sum to p(0)+p(∞)=sum). This would require recursion
+      circuit changes. DO NOT REATTEMPT monomial-basis fold on evaluation-form data.
+    mechanism: >
+      Monomial-basis fold for AIR sumcheck and WHIR product sumcheck.
+
+  - id: h39
+    status: discarded
+    iter_id: 10
+    measured_pct: -0.02
+    kill_reason: >
+      NO EFFECT. Product sumcheck is DRAM-bandwidth bound at 2^24 packed elements, not
+      ALU-bound. Delayed Montgomery saves ~6 NEON instructions per K=8 tile but the loop
+      stalls on cache misses. Plonky3 -28% was a cache-fitting microbenchmark.
+      DO NOT REATTEMPT delayed-reduction tiling for product sumcheck at this data scale.
+    mechanism: >
+      Tiled mixed_dot_product<8> with coordinate-wise delayed Montgomery reduction.
+
+  - id: h38
+    status: discarded
+    iter_id: 9
+    measured_pct: +0.14
+    kill_reason: >
+      NO EFFECT. Clean measurement: delta=+0.14%, p=0.54, noise_floor=0.25% (reliable).
+      The O(n*n_cols) transpose cost (~184MB allocation+copy per round) exceeds any cache
+      locality benefit. Existing SoA access with rayon par_iter already achieves good locality.
+      DO NOT REATTEMPT SoA→AoS transpose for AIR sumcheck.
+    mechanism: >
+      Row-major (AoS) column layout for AIR sumcheck inner loop.
+
+  - id: h37
+    status: killed_at_analysis
+    kill_reason: >
+      TRIGGERS RECURSION CASCADE. The recursion circuit in hashing.py:66-75 hardcodes
+      sponge absorption with DIGEST_LEN=8 (RATE) elements per poseidon16_compress call.
+      DO NOT REATTEMPT any hash mode change.
+
+  - id: h35
+    status: killed_at_analysis
+    kill_reason: >
+      ALREADY IMPLEMENTED. low_degree_block + cached_state in ConstraintFolderPacked already
+      caches partial-round state at z=0,2 and skips the 20-constraint block at higher z. Full
+      rounds operate in PFPacking (cheap base-field) and have degree 10 = overall degree, so
+      they CANNOT be interpolated from fewer points.
+      DO NOT REATTEMPT column interpolation caching for AIR constraints.
+    mechanism: >
+      Pre-cached column interpolation for Poseidon AIR constraint evaluation.
+
+  - id: h34
+    status: killed_at_analysis
+    kill_reason: >
+      SVO from eprint 2026/587 provides <15ms = -0.6% savings. Codebase already uses sb
+      (base×ext) fast path in ConstraintFolderPacked::assert_zero and product sumcheck round 0.
+      eq expansion is memory-bandwidth limited.
+      DO NOT REATTEMPT SVO — base×ext fast path already in use everywhere.
+    mechanism: >
+      Small-value optimization for sumcheck proving.
+
+  - id: h27
+    status: discarded
+    iter_id: 8
+    measured_pct: +0.22
+    kill_reason: >
+      LAYERS_PER_GROUP=4 quad-layer DFT butterfly. delta=+0.22%, p=0.30. The 15-way
+      par_chunks_exact_mut zip and larger rayon work items add scheduling overhead that
+      offsets the memory pass reduction from 6→4 passes. Existing LAYERS_PER_GROUP=3 is
+      already optimal for the 2^20×580 matrix dimensions on M4 Pro.
+      DO NOT REATTEMPT higher LAYERS_PER_GROUP — diminishing returns from batching.
+    mechanism: >
+      16-sub-block quad-layer butterfly pass replacing 8-sub-block triple-layer.
+
+  - id: h32
+    status: killed_at_analysis
+    kill_reason: >
+      GKR quotient layer construction takes only 30-45ms (measured). Halving memory passes
+      saves 15-22ms = -0.9% max. Below gate threshold. The GKR sumcheck verification (not
+      layer construction) dominates the 237-304ms LOGUP time.
+      DO NOT REATTEMPT GKR layer batching.
+
+  - id: h31
+    status: killed_at_analysis
+    kill_reason: >
+      ALREADY IMPLEMENTED. compute_raw_poly_degree_split in air_sumcheck.rs:403-450 already
+      splits evaluation into low_zs (z=0,2,...,d_low+1) and hi_zs (z=d_low+2,...,degree),
+      with Lagrange interpolation to reconstruct the full polynomial. The low_degree_air()
+      method in Poseidon table (mod.rs:303) already provides the degree-3 split info.
+      DO NOT REATTEMPT degree-split AIR sumcheck — it's already the production path.
+
+  - id: h30
+    status: killed_at_analysis
+    kill_reason: >
+      Quick test: RAYON_NUM_THREADS=10 (P-cores only) shows no improvement (2466ms vs
+      2475ms baseline). RAYON_NUM_THREADS=8 regresses to ~2700ms. The default 14-thread
+      config is already optimal — E-cores contribute useful parallel work without
+      significant scheduling overhead. DO NOT REATTEMPT thread count tuning.
+
+
+  - id: h26
+    status: killed_at_analysis
+    kill_reason: >
+      Dao-Thaler Small-Value Sumcheck (eprint 2025/1117). Product sumcheck operates on
+      2^24 packed elements (1.28GB weights + 256MB evals). Algorithm 4 accumulators at
+      l_0=1 would need 3 × 1.28GB = 3.84GB extra memory. On 16GB M4 Pro with 4-5GB
+      already used by stacked polynomial + DFT matrix + Merkle, this would cause swapping.
+      Even the minimal l_0=1 case is unviable. DO NOT REATTEMPT unless data size decreases.
+
+  - id: h29
+    status: killed_at_analysis
+    kill_reason: >
+      Merged Merkle first internal layer into leaf computation. Internal layers
+      total ~20ms. Even merging the first layer (2^19 compressions) saves <10ms
+      = -0.4%. Below gate threshold.
+
+  - id: h25
+    status: discarded
+    iter_id: 7
+    measured_pct: +0.53
+    kill_reason: >
+      Interleaved 2x Poseidon sponge chains for Merkle leaf hashing. Implemented
+      round-level interleaving of two packed Poseidon permutations in compress_in_place_2x.
+      Measured +0.53% (regression). The M4 Pro's OOO engine already partially overlaps
+      sequential compress_mut calls. Round-level interleaving doubles register pressure
+      (2×16 PackedKB = 32 values for the 32 NEON 128-bit register file), causing spills
+      that offset ILP gains. The existing InternalLayer16 split already provides internal
+      ILP between S-box and dot-product paths.
+      DO NOT REATTEMPT sponge interleaving — register file is fully utilized by single permutation.
+    mechanism: >
+      Process 2 packed leaf groups (8 rows) with round-level interleaved Poseidon
+      permutations via compress_in_place_2x.
+
+  - id: h24
+    status: killed_at_analysis
+    kill_reason: >
+      Predicted savings -0.5% (12ms from fused AIR fold+compute). Below gate threshold.
+      AIR fold accounts for only 60ms total across all 20 rounds. Fusing would save one
+      memory pass per round, ~6ms at peak (round 3), geometrically decreasing.
+
+  - id: h21
+    status: killed_at_analysis
+    kill_reason: >
+      Detailed profiling shows fold allocations account for <60ms total in AIR sumcheck
+      and <10ms in WHIR product sumcheck. In-place folding saves at most 20% of fold time
+      = 14ms total = -0.6%. Below gate threshold. The compute phase (constraint evaluation)
+      dominates at ~560ms in AIR, not the fold.
+
+  - id: h22
+    status: killed_at_analysis
+    kill_reason: >
+      compute_eval_eq_packed_dual already parallelizes across NUM_THREADS_PADDED=16 chunks
+      (lines 969-979 of eq_mle.rs). Each thread processes 2^24/16=2^20 packed elements = 84MB,
+      which achieves good cache locality after ~3 recursive levels (84→42→21→10.5MB, L2=28MB).
+      The 150ms is within 2× of memory-bandwidth theoretical minimum for 1.34GB of output.
+      Additional cache blocking within already-84MB threads would save at most 10-15ms.
+
+  - id: h23
+    status: killed_at_analysis
+    kill_reason: >
+      WHIR round "rest" (30-43ms at round 0) is dominated by pow_grinding (34ms total across
+      all WHIR rounds, ~15ms at round 0) which cannot be optimized without changing security
+      parameters (16-bit grinding is hardcoded). Remaining ~15ms in rest is OOD eval + STIR
+      queries + Merkle opening — all O(2^14)-O(2^19) operations, already fast.
+      add_new_base_equality is called with batched challenges and processes them in a single
+      parallel pass. No room for improvement.
+
+history:
+  - id: h18
+    status: killed_at_analysis
+    kill_reason: >
+      Poseidon1-16 round counts are hardcoded at ISA level via the recursion circuit.
+      poseidon16_compress in zkDSL (crates/rec_aggregation/zkdsl_implem/hashing.py) is a
+      primitive from snark_lib. Changing Poseidon round count would change the recursion
+      circuit bytecode, triggering the self-referential recompilation cascade described
+      in CLAUDE.md. Same category as WHIR parameter changes.
+
+  - id: h19
+    status: killed_at_analysis
+    kill_reason: >
+      Predicted savings <1%. Internal Merkle compression layers account for only ~20ms
+      (2.5% of 799ms total Merkle time). The first digest layer (leaf hashing) dominates
+      at ~600ms. Cache-aware optimization of internal layers would save at most 30% of
+      20ms = 6ms. Not worth the complexity.
+
+  - id: h20
+    status: killed_at_analysis
+    kill_reason: >
+      ALREADY IMPLEMENTED. The Algebra<PF> trait correctly dispatches EFPacking × PFPacking
+      to the 5-multiply base×ext path (packed_extension.rs:488-501). In sumcheck_quadratic,
+      when called with F=PFPacking and EF=EFPacking, the multiplies y_0*x_0 and (y_1-y_0)*(x_1-x_0)
+      both use the cheap Mul<PF> impl (5 NEON muls, not 25). Round 0 of the product sumcheck
+      already benefits from this. After round 0 fold, data becomes extension field, so later
+      rounds correctly use full EFPacking × EFPacking (25 muls).
+      The dead-code compute_product_sumcheck_polynomial_base_ext_packed (line 168) uses scalar
+      u64 delayed reduction — this is what h2/h5 tried and measured at -0.02% because scalar
+      forfeits NEON SIMD parallelism.
+      DO NOT REATTEMPT base×ext optimization — it's already in the NEON fast path.
+
+  - id: h15
+    status: killed_at_analysis
+    kill_reason: >
+      PROFILING ERROR: h15 was based on the claim that combine_statement takes "~1000ms, 47% of
+      wall time." Actual wall-clock measurement shows combine_statement = 147ms (6% of total).
+      The 47% figure came from flamegraph CPU-cycle attribution of eq_mle which includes parallel
+      work, not wall-clock time. With combine_statement at 147ms and the product sumcheck at 181ms,
+      the total WHIR init is 328ms (13%). SVO preprocessing costs ~2.2s (step2=1.0s, rounds=1.1s,
+      fold=0.13s) — nearly 7× MORE than the code it replaces. The SVO approach is fundamentally
+      wrong for this codebase because: (1) base→extension conversion of 2^24 packed elements is
+      extremely expensive (each of 11 compress calls copies 1.3 GB); (2) the is_next entries require
+      mirror extraction with exponential coefficient growth; (3) the existing combine_statement uses
+      highly optimized dual eq computation that's hard to beat.
+      DO NOT REATTEMPT SVO for this codebase's product sumcheck weights — the base→extension
+      conversion overhead dominates any savings from deferred eq materialization.
+
+  - id: h16
+    status: killed_at_analysis
+    kill_reason: >
+      h16 predicted -1% from GKR delayed reduction. After correcting the profiling, GKR is 11%
+      of total time. Even a 20% GKR improvement = 2.2% total = below gate threshold.
+      Furthermore, the GKR layer computation already uses NEON-packed operations.
+
+  - id: h17
+    status: killed_at_analysis
+    kill_reason: >
+      h17 predicted -3% from parallel compress_stacked. This was predicated on h15 being
+      implemented first, which is now killed. Without SVO, there is no compress_stacked to
+      parallelize. The stacking phase itself is a simple memory copy that takes <10ms.
+
+  - id: h12
+    status: killed_at_analysis
+    kill_reason: >
+      Predicted only -3% from AIR sumcheck loop unrolling. After discovering SVO (h15) which
+      targets the 47% eq_mle bottleneck for -40%, the AIR sumcheck at 16% is a secondary target.
+      The unrolling mechanism is valid but too small for gate passage. Could revisit after h15
+      if AIR sumcheck becomes the new bottleneck.
+    mechanism: >
+      Widen AIR sumcheck inner loop to process 2 pairs per iteration with shared SplitEq prefix.
+
+  - id: h13
+    status: killed_at_analysis
+    kill_reason: >
+      GKR quotient unpacking optimization predicted only -2%. The GKR quotient is 5-7% of total
+      time. After h15 reduces eq_mle from 47% to ~2%, GKR becomes relatively larger but the
+      absolute savings are still small. Superseded by h16 which targets GKR with delayed reduction.
+    mechanism: >
+      Extend packed GKR quotient operations past the ENDIANNESS_PIVOT to eliminate bulk unpack.
+
+  - id: h14
+    status: killed_at_analysis
+    kill_reason: >
+      Cache-blocked folding predicted -3%. With SVO (h15) eliminating the need for fold_multilinear
+      on the full 2^24 eq table, the primary use case for cache-blocked folding disappears.
+      The remaining fold operations (in subsequent WHIR rounds on 2^19 data) are small enough
+      to fit in L3 cache, making blocking unnecessary.
+    mechanism: >
+      Cache-blocked fold_multilinear for product sumcheck weight table.
+
+  - id: h9
+    status: discarded
+    iter_id: 6
+    measured_pct: +0.59
+    kill_reason: >
+      Inner par_iter in compute_raw_poly_degree_split already saturates all cores. Running
+      3 sessions concurrently via par_iter adds scheduling overhead and thread contention.
+      The 4/10 core utilization is an average across sequential phases (Fiat-Shamir, eq setup,
+      folding) — during hot compute loops, cores ARE saturated. Cross-session parallelism is
+      counterproductive when inner-session parallelism uses all cores.
+      DO NOT REATTEMPT outer-level table parallelism.
+    mechanism: >
+      Parallelize batched AIR sumcheck across tables with concurrent compute_bare_round_poly.
+
+  - id: h13_neon_ntt
+    status: killed_at_analysis
+    kill_reason: >
+      DFT butterfly already uses NEON-specialized fused_sub_mul (packing.rs:609-619) which
+      avoids intermediate modular reduction. The Montgomery multiply compiles to 7 NEON
+      instructions (sqdmulh, mul, mul, sqdmulh, shsub, cmgt, mls) with throughput 1.75 cyc/vec.
+      Barrett multiplication from eprint 2021/986 is essentially equivalent to the existing
+      Montgomery+sqdmulh technique. No room for improvement at the butterfly level.
+    mechanism: >
+      Replace generic radix-2 DFT butterfly with KoalaBear-specialized NEON intrinsic kernel
+      using Barrett reduction and merged multiply-subtract.
+
+  - id: h4
+    status: killed_at_analysis
+    kill_reason: >
+      DFT uses in-place radix-2 butterfly requiring random access to arbitrary pairs of rows
+      at each layer. Streaming DFT output rows to Merkle leaf hashing is impossible without
+      complete algorithmic redesign.
+    mechanism: >
+      Fuse DFT output production with Merkle tree first-layer hashing.
+
+  - id: h2
+    status: killed_by_h5_measurement
+    kill_reason: >
+      h5 tested the core mechanism. Scalar u64 forfeits NEON SIMD parallelism.
+    mechanism: Activate dead-code delayed-reduction base×ext sumcheck kernel.
+
+  - id: h5
+    status: discarded
+    iter_id: 2
+    measured_pct: -0.02
+    kill_reason: >
+      Delayed-reduction via scalar u64 arithmetic forfeits NEON SIMD parallelism.
+    mechanism: Activate dead-code delayed-reduction base×ext sumcheck kernel for round 0.
+
+  - id: h1
+    status: discarded
+    iter_id: 1
+    measured_pct: +10.67
+    kill_reason: >
+      SplitEq per-element reconstruction is more expensive than flat table reads. DO NOT
+      REATTEMPT SplitEq-based factoring for the product sumcheck weights.
+    mechanism: Factor eq polynomial via SplitEq in WHIR product sumcheck round 0.
+
+  - id: h3
+    status: killed_at_formation
+    kill_reason: >
+      Adding 64 intermediate Poseidon columns pushes stacked_n_vars from 26 to 27.
+    mechanism: Reduce Poseidon AIR degree from 10 to 4 by adding intermediate columns.
+
+  - id: h10
+    status: discarded
+    iter_id: 4
+    measured_pct: +7.4
+    kill_reason: >
+      Iterative approach has 12× more memory traffic than recursive. DO NOT REATTEMPT.
+    mechanism: Iterative level-by-level eq table construction.
+
+  - id: h8
+    status: killed_at_analysis
+    kill_reason: >
+      c2 cross-terms prevent fused eq+sumcheck with full thread parallelism.
+    mechanism: Fused eq-table generation + round-0 sumcheck at recursive descent base cases.
+
+  - id: h7
+    status: killed_at_analysis
+    kill_reason: >
+      DFT zero-column skipping already implemented.
+    mechanism: Tiled DFT with zero-skipping + streaming Merkle fusion.
+
+  - id: h11
+    status: discarded
+    iter_id: 5
+    measured_pct: -0.07
+    kill_reason: >
+      Corrections table is full-size. DO NOT REATTEMPT factored eq on this codebase.
+    mechanism: Factored eq polynomial with tiled product sumcheck.
+
+  - id: h6
+    status: discarded
+    iter_id: 3
+    measured_pct: +19.15
+    kill_reason: >
+      Halving thread parallelism caused +19.15% regression. DO NOT REATTEMPT lo/hi pairing.
+    mechanism: Fused eq-table generation + round-0 sumcheck dot product.
