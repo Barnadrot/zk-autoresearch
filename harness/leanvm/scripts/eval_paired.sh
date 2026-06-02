@@ -207,9 +207,13 @@ fi
 
 ALL_BASE_TIMES=$(mktemp /tmp/eval_base_times_XXXXXX)
 ALL_CAND_TIMES=$(mktemp /tmp/eval_cand_times_XXXXXX)
+ALL_BASE_KIBS=$(mktemp /tmp/eval_base_kibs_XXXXXX)
+ALL_CAND_KIBS=$(mktemp /tmp/eval_cand_kibs_XXXXXX)
 ROUND_LOG=$(mktemp /tmp/eval_round_log_XXXXXX)
 : > "$ALL_BASE_TIMES"
 : > "$ALL_CAND_TIMES"
+: > "$ALL_BASE_KIBS"
+: > "$ALL_CAND_KIBS"
 : > "$ROUND_LOG"
 
 for ((round=1; round<=N; round++)); do
@@ -238,13 +242,13 @@ for ((round=1; round<=N; round++)); do
   fi
 
   # --- extract warm proof times and per-round summary ---
-  python3 - "$BASE_CSV" "$CAND_CSV" "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG" "$round" <<'PY'
+  python3 - "$BASE_CSV" "$CAND_CSV" "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ALL_BASE_KIBS" "$ALL_CAND_KIBS" "$ROUND_LOG" "$round" <<'PY'
 import sys
 
-base_csv, cand_csv, base_out, cand_out, round_log, rnd = sys.argv[1:]
+base_csv, cand_csv, base_out, cand_out, base_kibs_out, cand_kibs_out, round_log, rnd = sys.argv[1:]
 
 def parse_warm(path):
-    times = []
+    times, kibs = [], []
     for line in open(path):
         line = line.strip()
         if line.startswith("proof,"):
@@ -255,10 +259,12 @@ def parse_warm(path):
         idx, secs = int(parts[0]), float(parts[1])
         if idx >= 1:
             times.append(secs)
-    return times
+            if len(parts) >= 4:
+                kibs.append(int(parts[3]))
+    return times, kibs
 
-base_times = parse_warm(base_csv)
-cand_times = parse_warm(cand_csv)
+base_times, base_kibs = parse_warm(base_csv)
+cand_times, cand_kibs = parse_warm(cand_csv)
 
 if not base_times or not cand_times:
     print(f"round {rnd}: FAILED to extract warm proof times", file=sys.stderr)
@@ -270,6 +276,12 @@ with open(base_out, "a") as f:
 with open(cand_out, "a") as f:
     for t in cand_times:
         f.write(f"{t:.6f}\n")
+with open(base_kibs_out, "a") as f:
+    for k in base_kibs:
+        f.write(f"{k}\n")
+with open(cand_kibs_out, "a") as f:
+    for k in cand_kibs:
+        f.write(f"{k}\n")
 
 base_avg = sum(base_times) / len(base_times)
 cand_avg = sum(cand_times) / len(cand_times)
@@ -304,7 +316,7 @@ PY
     if [[ "$DRIFT_DECISION" == ABORT* ]]; then
       err "drift detected within run: $DRIFT_DECISION"
       err "machine state changed mid-measurement. Clean env (env_preflight + tmux + thermal) and retry."
-      rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
+      rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ALL_BASE_KIBS" "$ALL_CAND_KIBS" "$ROUND_LOG"
       exit 2
     fi
   fi
@@ -429,7 +441,7 @@ print(json.dumps(summary, indent=2))
 PY
 
 # Cleanup temp files
-rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
+rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ALL_BASE_KIBS" "$ALL_CAND_KIBS" "$ROUND_LOG"
 
 # ------------------------------ RECURSION REGRESSION CHECK -------------------
 # Paired A/B: run recursion on both baseline and candidate, compare.
@@ -477,34 +489,21 @@ fi
 
 log ""
 log "proof size check..."
-PROOF_SIZE_DECISION=$(python3 - <<'PY'
-import json
+PROOF_SIZE_DECISION=$(python3 - "$ALL_BASE_KIBS" "$ALL_CAND_KIBS" "$PROOF_SIZE_CEILING_PCT" "$PROOF_SIZE_PENALTY_MULTIPLIER" "$KEEP_THRESHOLD_PCT" <<'PY'
+import sys, json
+from statistics import mean
+
+base_kibs_path, cand_kibs_path = sys.argv[1], sys.argv[2]
+ceiling = float(sys.argv[3])
+multiplier = float(sys.argv[4])
+threshold = float(sys.argv[5])
+
+base_kibs = [int(x) for x in open(base_kibs_path) if x.strip()]
+cand_kibs = [int(x) for x in open(cand_kibs_path) if x.strip()]
 
 s = json.load(open("/tmp/eval_paired_summary.json"))
 
-# Parse proof_kib from the last round's CSV files (if available)
-# prove_loop now outputs: proof,seconds,rss_mb,proof_kib
-import glob, os
-base_kibs, cand_kibs = [], []
-for f in glob.glob("/tmp/eval_base_*"):
-    try:
-        for line in open(f):
-            parts = line.strip().split(",")
-            if len(parts) >= 4 and parts[0] != "proof":
-                base_kibs.append(int(parts[3]))
-    except Exception:
-        pass
-for f in glob.glob("/tmp/eval_cand_*"):
-    try:
-        for line in open(f):
-            parts = line.strip().split(",")
-            if len(parts) >= 4 and parts[0] != "proof":
-                cand_kibs.append(int(parts[3]))
-    except Exception:
-        pass
-
 if base_kibs and cand_kibs:
-    from statistics import mean
     base_kib = mean(base_kibs)
     cand_kib = mean(cand_kibs)
     size_pct = (cand_kib - base_kib) / base_kib * 100 if base_kib > 0 else 0
@@ -512,9 +511,6 @@ if base_kibs and cand_kibs:
     s["proof_size_base_kib"] = round(base_kib, 1)
     s["proof_size_cand_kib"] = round(cand_kib, 1)
     s["proof_size_delta_pct"] = round(size_pct, 2)
-
-    ceiling = float(os.environ.get("PROOF_SIZE_CEILING_PCT", "20"))
-    multiplier = float(os.environ.get("PROOF_SIZE_PENALTY_MULTIPLIER", "3"))
 
     if size_pct > ceiling:
         s["decision"] = "discard"
@@ -524,16 +520,16 @@ if base_kibs and cand_kibs:
         throughput_pct = -s["delta_pct"]
         net = throughput_pct - multiplier * size_pct
         s["proof_size_net_pct"] = round(net, 2)
-        if net < float(os.environ.get("KEEP_THRESHOLD_PCT", "1.0")):
+        if net < threshold:
             s["decision"] = "discard"
-            s["discard_reason"] = f"net={net:.2f}% (throughput {throughput_pct:.2f}% - {multiplier}x proof_size {size_pct:.2f}%) below threshold"
+            s["discard_reason"] = f"net={net:.2f}% after proof size penalty"
             print(f"DISCARD: net={net:.2f}% below threshold after proof size penalty")
         else:
             print(f"OK: net={net:.2f}% (throughput {throughput_pct:.2f}% - {multiplier}x size {size_pct:.2f}%)")
     else:
-        print(f"OK: proof size delta {size_pct:+.2f}%")
+        print(f"OK: proof size {size_pct:+.2f}%")
 else:
-    print("SKIP: no proof size data in CSV (old prove_loop format?)")
+    print("SKIP: prove_loop CSV missing proof_kib column (pre-update binary)")
 
 json.dump(s, open("/tmp/eval_paired_summary.json", "w"), indent=2)
 PY
