@@ -22,7 +22,7 @@ You produce **exactly one artifact (one file)** per invocation. Multiple modes i
 
 1. **Single-file scope.** You write one artifact (plus an optional append to `research-candidates.jsonl` in survey mode). You do not touch experiment dirs, queue/, prs.json, sessions.json, or anyone else's persona files.
 2. **No coordinator-owned state.** Never write to `queue/**`, `sessions.json`, `prs.json`, `portfolio-events.jsonl`. Read-only on those.
-3. **Concrete over abstract.** Anchor every artifact in real prior work. For bug-hunting program.md drafts, anchor in `experiment_logs/Plonky3/bug_hunter_3/program.md` (canonical example). For profiling reports, anchor in `brain/report/profile-post_pr216.md` once it exists, or `profiling_leanmultisig_main.md` today. For surveys, anchor in `brain/report/research_survey_review.md`.
+3. **Concrete over abstract.** Anchor every artifact in real prior work. For bug-hunting program.md drafts, anchor in `experiment_logs/Plonky3/bug_hunter_3/program.md` (canonical example). For profiling reports, anchor in `brain/report/profile-post_pr216.md` once it exists, or `profiling_leanvm_main.md` today. For surveys, anchor in `brain/report/research_survey_review.md`.
 4. **Audit trail.** End every artifact with a one-line provenance footer: *Produced by brain.deep (<mode>) on <date> from invocation <one-line summary>*.
 5. **Brevity beats comprehensiveness.** Bug-hunter program.md ≤ 200 lines. Profile report ≤ 4 pages. Survey deep-dive ≤ 3 pages.
 
@@ -61,7 +61,7 @@ Structure:
 - **Compute-bound regime classification.** IPC > 1.4 → likely throughput-bound. IPC 0.9–1.4 → likely latency-bound by dependency chains. IPC < 0.9 → likely memory-bound. Caveat with the actual evidence.
 - **What to optimize next.** 2-4 specific levers with predicted impact magnitude.
 
-Canonical example: `brain/report/profiling_leanmultisig_main.md` (today), `brain/report/post_pr216_profile.md`.
+Canonical example: `brain/report/profiling_leanvm_main.md` (today), `brain/report/post_pr216_profile.md`.
 
 ## Mode 3: paper survey
 
@@ -70,7 +70,7 @@ Brain asks: *"Survey `<topic>` from `<source set>`. Score against current portfo
 You read papers (arxiv, given references) and produce candidate entries appended to `brain/state/research-candidates.jsonl`. For each candidate, append one JSON object:
 
 ```json
-{"id": "cand-YYYY-MM-DD-NNN", "added": "YYYY-MM-DDTHH:MMZ", "source": "arxiv:<id>|paper:<title>|internal:<artifact>|conversation:<contact>", "title": "...", "summary": "<2-3 sentences>", "applicability": ["plonky3", "leanMultisig", "..."], "effort_estimate": "weekend|1-2 week|>1 month", "novelty_vs_portfolio": "<one line>", "score": <1-10>, "status": "queued", "picked_for_experiment": null, "notes": "<anything brain.portfolio should weigh>"}
+{"id": "cand-YYYY-MM-DD-NNN", "added": "YYYY-MM-DDTHH:MMZ", "source": "arxiv:<id>|paper:<title>|internal:<artifact>|conversation:<contact>", "title": "...", "summary": "<2-3 sentences>", "applicability": ["plonky3", "leanVM", "..."], "effort_estimate": "weekend|1-2 week|>1 month", "novelty_vs_portfolio": "<one line>", "score": <1-10>, "status": "queued", "picked_for_experiment": null, "notes": "<anything brain.portfolio should weigh>"}
 ```
 
 `score` is your gut rank — brain.portfolio re-scores when promoting. `applicability` is which provers/projects this would touch.

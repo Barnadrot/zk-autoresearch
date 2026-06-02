@@ -58,7 +58,7 @@ git clone https://github.com/Consensys/linea-monorepo
 git clone https://github.com/Consensys/gnark-crypto
 
 # Reference repos
-git clone https://github.com/leanEthereum/leanMultisig
+git clone https://github.com/leanEthereum/leanVM
 git clone https://github.com/Plonky3/Plonky3
 git clone https://github.com/a16z/jolt
 git clone https://github.com/succinctlabs/sp1
@@ -95,7 +95,7 @@ EOF
 source ~/.bashrc
 
 echo "=== Pre-building reference repos (release) ==="
-cd ~/zk-autoresearch/leanMultisig
+cd ~/zk-autoresearch/leanVM
 cargo build --release
 
 cd ~/zk-autoresearch/Plonky3

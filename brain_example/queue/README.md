@@ -19,7 +19,7 @@ State is implicit in the parent directory. State transitions = `mv` between subd
 ```json
 {
   "id": "<project>-<topic>-YYYY-MM-DD",
-  "project": "leanMultisig|Plonky3|zk-alloc|jolt|...",
+  "project": "leanVM|Plonky3|zk-alloc|jolt|...",
   "experiment_dir": "experiment_logs/<project>/<experiment>",
   "program_path": "experiment_logs/<project>/<experiment>/program.md",
   "hardware_tag": "avx512|aarch64|gpu",

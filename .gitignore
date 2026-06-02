@@ -1,7 +1,7 @@
 # Target repos ��� clone separately per setup scripts
 /Plonky3/
 /plonky3/
-/leanMultisig/
+/leanVM/
 /jolt/
 /sp1/
 
@@ -64,6 +64,6 @@ harness/*/bench/target/
 harness/*/correctness/target/
 
 # Profiling data (large, ephemeral)
-harness/leanmultisig/bench/perf*.data*
-harness/leanmultisig/bench/heaptrack.*
-harness/leanmultisig/bench/dhat.*
+harness/leanvm/bench/perf*.data*
+harness/leanvm/bench/heaptrack.*
+harness/leanvm/bench/dhat.*

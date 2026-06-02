@@ -10,7 +10,7 @@ harness/                          Benchmark + correctness tooling (per target re
 │   ├── bench/                    Rust crate: Poseidon1, Poseidon2, Keccak benchmark bins
 │   ├── correctness/              Rust crate: bitwise-identical DFT validator
 │   └── scripts/                  eval.sh, correctness.sh
-├── leanmultisig/
+├── leanvm/
 │   ├── bench/                    Rust crate: prove_loop binary + Criterion benchmarks
 │   ├── correctness/              correctness.sh, test_integrity.sha256
 │   └── scripts/                  eval_paired.sh, eval_gate.sh, eval_iai.sh, config.env
@@ -23,17 +23,17 @@ experiment_logs/                  Audit trail — append-only
 ├── Plonky3/NTT/                  NTT/DFT butterfly + Montgomery arithmetic experiments
 │   ├── active/CLAUDE.md          Current agent instructions for Plonky3 experiments
 │   └── experiment_*/             Completed experiment data
-├── leanMultisig/                 Sumcheck, Poseidon, LogUp, allocator experiments
+├── leanVM/                 Sumcheck, Poseidon, LogUp, allocator experiments
 ├── linea/                        Vortex/KoalaBear experiments
 └── zk-alloc/                     Arena allocator research (cross-prover)
-    ├── multi-prover-bench/       Results: Plonky3, leanMultisig, Jolt
+    ├── multi-prover-bench/       Results: Plonky3, leanVM, Jolt
     └── report/                   Analysis docs (future_optimum.md, multiprover-sunday.md)
 
 scripts/
 ├── setup/                        Server provisioning scripts
 │   ├── server.sh                 Base: Rust, build tools, Claude CLI
 │   ├── zk_alloc.sh              zk-alloc experiments: cgroups, reference repos
-│   ├── leanmultisig.sh          leanMultisig: clone, build, bench crate
+│   ├── leanvm.sh          leanVM: clone, build, bench crate
 │   └── linea.sh                 Linea/Vortex: clone, Go toolchain
 ├── run_benchmark.sh              Cross-branch Criterion comparison (CRITICAL: uses -C target-cpu=native)
 └── watch.py                      Live experiment monitor (reads iters.tsv or experiments.jsonl)
@@ -49,7 +49,7 @@ These are the target repos being optimized. They are NOT part of this repo — c
 | Directory | Repo | Purpose |
 |-----------|------|---------|
 | `plonky3/` | Plonky3/Plonky3 | ZK proving framework (BabyBear, FRI) |
-| `leanMultisig/` | maceip/leanMultisig | XMSS aggregation prover (Plonky3/WHIR) |
+| `leanVM/` | leanEthereum/leanVM | XMSS aggregation prover (Plonky3/WHIR) |
 | `jolt/` | a16z/jolt | Jolt zkVM (sumcheck/Dory, BN254) |
 | `zk-alloc/` | Barnadrot/zk-alloc | Bump+reset arena allocator crate |
 | `mimalloc/`, `snmalloc/`, `glibc-malloc/` | — | Reference allocator source for study |
@@ -101,7 +101,7 @@ Every experiment defines correctness and performance gates:
 
 1. **Correctness gate** — Must pass before any benchmark runs. Binary: pass or discard.
    - Plonky3: `harness/plonky3/correctness/` (Rust crate, bitwise comparison)
-   - leanMultisig: `harness/leanmultisig/correctness/correctness.sh`
+   - leanVM: `harness/leanvm/correctness/correctness.sh`
    - Vortex: `harness/vortex/correctness/correctness.sh`
 
 2. **Performance gate** — Paired A/B wall-clock or IAI (instruction count) comparison.
@@ -120,7 +120,7 @@ Every experiment defines correctness and performance gates:
   This produces a linear, reviewable history where every commit is either a kept improvement or a reverted attempt. No uncommitted experiments, no squash-and-pray.
 
 - **RUSTFLAGS:** Always `RUSTFLAGS="-C target-cpu=native"` when benchmarking. Without it, no AVX-512 — measurements silently 2x slower.
-- **cargo nextest** for Jolt (never cargo test). Standard cargo test for Plonky3 and leanMultisig.
+- **cargo nextest** for Jolt (never cargo test). Standard cargo test for Plonky3 and leanVM.
 - **Experiment logs are append-only.** Never delete or modify past experiment data.
 - **One change per iteration.** Agent proposes one targeted change, eval gates decide keep/discard.
 - **Reports stay local.** `report/` folders are gitignored — saved to Nextcloud manually, never committed.

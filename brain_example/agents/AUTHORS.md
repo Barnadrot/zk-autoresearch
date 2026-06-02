@@ -30,7 +30,7 @@ Live copies at `brain/repo_context/<repo>.md` (gitignored) — the public scaffo
 Update protocol: bundles are updated whenever a new profiling baseline lands or a known-no-go shifts. Edit the bundle directly + commit. Bundles ARE the source of truth for "what the target repo looks like right now."
 
 Current bundles:
-- `leanmultisig.md` — leanMultisig XMSS aggregation prover
+- `leanvm.md` — leanVM XMSS aggregation prover
 - `plonky3.md` — Plonky3 ZK proving framework
 - `zkalloc.md` — zk-alloc arena allocator crate
 
@@ -47,7 +47,7 @@ Agent(
   model: "opus",                           # PIN THIS — never inherit
   prompt: <full persona file contents> + "\n\n" +
           "## This invocation\n" +
-          "Repo: <leanmultisig | plonky3 | zkalloc>\n" +
+          "Repo: <leanvm | plonky3 | zkalloc>\n" +
           "Experiment dir: <absolute path>\n" +
           "Focus: <one paragraph of what this experiment is about>\n" +
           "Hardware: <hetzner-ax42u | m2-asahi | m4m-macos | etc.>\n" +

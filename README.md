@@ -22,17 +22,17 @@ Target: [Plonky3](https://github.com/Plonky3/Plonky3) — ZK proving framework. 
 | [Bench fix (PR #1575)](https://github.com/Plonky3/Plonky3/pull/1575) | `iter_batched` to exclude clone cost from DFT measurement | 42% of measured time was `Vec::clone`, not FFT | **Merged** |
 | [AVX-512 Montgomery + butterfly (PR #1555)](https://github.com/Plonky3/Plonky3/pull/1555) | `vpminud` reduction, drop `confuse_compiler`, manual unroll | **~3.96%** faster `coset_lde_batch` on Zen 4 | **Merged** |
 
-### leanMultisig
+### leanVM
 
-Target: [leanMultisig](https://github.com/leanEthereum/leanMultisig) — XMSS signature aggregation prover (Plonky3/WHIR-based, BabyBear field).
+Target: [leanVM](https://github.com/leanEthereum/leanVM) — XMSS signature aggregation prover (Plonky3/WHIR-based, BabyBear field).
 
 | Experiment | Optimization | Result | Status |
 |-----------|-------------|--------|--------|
-| [Inline quintic extension (PR #197)](https://github.com/leanEthereum/leanMultisig/pull/197) | `#[inline(always)]` on quintic field arithmetic | **-3.6%** on `xmss_leaf_1400sigs` | **Merged** |
-| [Degree-split AIR sumcheck (PR #202)](https://github.com/leanEthereum/leanMultisig/pull/202) | Skip partial-round constraints at high z-points | **-7.64%** on `fancy-aggregation` (Hetzner AX42-U) | **Merged** |
-| [Alloc contention + STIR tiling (PR #203)](https://github.com/leanEthereum/leanMultisig/pull/203) | Eliminate alloc contention, L2-tiled STIR equality | **-10.3%** on `fancy-aggregation` (3/4 changes merged as independent commits) | **Merged** |
-| [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanMultisig/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | **Merged** |
-| [Sumcheck, GKR & WHIR proving optimizations (PR #235)](https://github.com/leanEthereum/leanMultisig/pull/235) | Bump+reset arena allocator | **-6% warm proof (AVX-512)** (2.3s → 2.2s) | **Merged** |
+| [Inline quintic extension (PR #197)](https://github.com/leanEthereum/leanVM/pull/197) | `#[inline(always)]` on quintic field arithmetic | **-3.6%** on `xmss_leaf_1400sigs` | **Merged** |
+| [Degree-split AIR sumcheck (PR #202)](https://github.com/leanEthereum/leanVM/pull/202) | Skip partial-round constraints at high z-points | **-7.64%** on `fancy-aggregation` (Hetzner AX42-U) | **Merged** |
+| [Alloc contention + STIR tiling (PR #203)](https://github.com/leanEthereum/leanVM/pull/203) | Eliminate alloc contention, L2-tiled STIR equality | **-10.3%** on `fancy-aggregation` (3/4 changes merged as independent commits) | **Merged** |
+| [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanVM/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | **Merged** |
+| [Sumcheck, GKR & WHIR proving optimizations (PR #235)](https://github.com/leanEthereum/leanVM/pull/235) | Bump+reset arena allocator | **-6% warm proof (AVX-512)** (2.3s → 2.2s) | **Merged** |
 
 ### Vortex / gnark-crypto
 
@@ -56,7 +56,7 @@ zk-autoresearch/
 │   │   ├── bench/                 Plonky3 benchmark crate (Poseidon1/2, Keccak)
 │   │   ├── correctness/           Bitwise-identical DFT validation crate
 │   │   └── scripts/               eval.sh, correctness.sh
-│   ├── leanmultisig/
+│   ├── leanvm/
 │   │   ├── bench/                 prove_loop + Criterion benchmarks
 │   │   ├── correctness/           correctness.sh, test_integrity.sha256
 │   │   └── scripts/               eval_paired.sh, eval_gate.sh, config.env, ...
@@ -67,7 +67,7 @@ zk-autoresearch/
 │
 ├── experiment_logs/               Audit trail — append-only, never delete
 │   ├── Plonky3/NTT/              NTT/DFT optimization experiments
-│   ├── leanMultisig/             Sumcheck, Poseidon, LogUp, allocator experiments
+│   ├── leanVM/             Sumcheck, Poseidon, LogUp, allocator experiments
 │   ├── linea/                    Vortex/KoalaBear experiments
 │   └── zk-alloc/                 Arena allocator research (multi-prover)
 │
@@ -84,7 +84,7 @@ zk-autoresearch/
 | Directory | Repo | Role |
 |-----------|------|------|
 | `plonky3/` | Plonky3/Plonky3 | Optimization target |
-| `leanMultisig/` | leanEthereum/leanMultisig | Optimization target |
+| `leanVM/` | leanEthereum/leanVM | Optimization target |
 | `linea-monorepo/` | Consensys/linea-monorepo | Optimization target |
 | `gnark-crypto/` | Consensys/gnark-crypto | Optimization target (upstream dependency) |
 | `jolt/` | a16z/jolt | Benchmarked (zk-alloc null result) |

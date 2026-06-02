@@ -6,8 +6,8 @@
 # What this sets up:
 #   - System packages + Rust toolchain
 #   - zk-autoresearch repo (experiment logs, bench crate, reference repos)
-#   - leanMultisig on zk-alloc-integration branch
-#   - zk-alloc crate (standalone git repo under leanMultisig/)
+#   - leanVM on zk-alloc-integration branch
+#   - zk-alloc crate (standalone git repo under leanVM/)
 #   - Reference repos: mimalloc, snmalloc (shallow clones)
 #   - cgroup for 16GB memory pressure simulation
 #   - Criterion + eval_paired.sh benchmarking infrastructure
@@ -62,18 +62,18 @@ if [ ! -d "$WORK_DIR" ]; then
 fi
 cd "$WORK_DIR"
 
-# leanMultisig (upstream + myfork)
-if [ ! -d "$WORK_DIR/leanMultisig" ]; then
-    git clone git@github.com:Barnadrot/leanMultisig.git "$WORK_DIR/leanMultisig"
+# leanVM (upstream + myfork)
+if [ ! -d "$WORK_DIR/leanVM" ]; then
+    git clone git@github.com:Barnadrot/leanVM.git "$WORK_DIR/leanVM"
 fi
-cd "$WORK_DIR/leanMultisig"
-git remote add myfork git@github.com:Barnadrot/leanMultisig.git 2>/dev/null || true
+cd "$WORK_DIR/leanVM"
+git remote add myfork git@github.com:Barnadrot/leanVM.git 2>/dev/null || true
 git fetch myfork
 git checkout zk-alloc-integration 2>/dev/null || git checkout -b zk-alloc-integration myfork/zk-alloc-integration
 
-# zk-alloc (standalone repo, lives under leanMultisig/)
-if [ ! -d "$WORK_DIR/leanMultisig/zk-alloc" ]; then
-    git clone git@github.com:Barnadrot/zk-alloc.git "$WORK_DIR/leanMultisig/zk-alloc"
+# zk-alloc (standalone repo, lives under leanVM/)
+if [ ! -d "$WORK_DIR/leanVM/zk-alloc" ]; then
+    git clone git@github.com:Barnadrot/zk-alloc.git "$WORK_DIR/leanVM/zk-alloc"
 fi
 
 # Reference repos (shallow, read-only)
@@ -90,11 +90,11 @@ echo "  Repos ready."
 # ── 4. Git config ───────────────────────────────────────────────────────────
 echo ""
 echo "[4/9] Configuring git..."
-cd "$WORK_DIR/leanMultisig"
+cd "$WORK_DIR/leanVM"
 git config user.email "autoresearch@local" || true
 git config user.name "ZK Autoresearch" || true
 
-cd "$WORK_DIR/leanMultisig/zk-alloc"
+cd "$WORK_DIR/leanVM/zk-alloc"
 git config user.email "autoresearch@local" || true
 git config user.name "ZK Autoresearch" || true
 
@@ -148,8 +148,8 @@ fi
 
 # ── 7. Pre-compile ──────────────────────────────────────────────────────────
 echo ""
-echo "[7/9] Pre-compiling leanMultisig (first build is slow — ~3min)..."
-cd "$WORK_DIR/leanMultisig"
+echo "[7/9] Pre-compiling leanVM (first build is slow — ~3min)..."
+cd "$WORK_DIR/leanVM"
 
 # Build without zkalloc (glibc baseline)
 echo "  Building glibc baseline..."
@@ -164,14 +164,14 @@ echo ""
 echo "[8/9] Running correctness tests..."
 
 echo "  zk-alloc unit tests..."
-cd "$WORK_DIR/leanMultisig/zk-alloc"
+cd "$WORK_DIR/leanVM/zk-alloc"
 cargo test 2>&1 | tail -3
 
-echo "  leanMultisig integration tests (glibc)..."
-cd "$WORK_DIR/leanMultisig"
+echo "  leanVM integration tests (glibc)..."
+cd "$WORK_DIR/leanVM"
 cargo test --release --test test_lean_multisig 2>&1 | tail -3
 
-echo "  leanMultisig integration tests (zkalloc)..."
+echo "  leanVM integration tests (zkalloc)..."
 cargo test --release --features zkalloc --test test_lean_multisig 2>&1 | tail -3
 
 # ── 9. Python environment for experiment loop ───────────────────────────────
@@ -192,15 +192,15 @@ echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Repos:"
-echo "  leanMultisig:  $WORK_DIR/leanMultisig (branch: zk-alloc-integration)"
-echo "  zk-alloc:      $WORK_DIR/leanMultisig/zk-alloc"
+echo "  leanVM:  $WORK_DIR/leanVM (branch: zk-alloc-integration)"
+echo "  zk-alloc:      $WORK_DIR/leanVM/zk-alloc"
 echo "  experiment logs: $WORK_DIR/experiment_logs/zk-alloc/"
 echo "  mimalloc (ref):  $WORK_DIR/mimalloc"
 echo "  snmalloc (ref):  $WORK_DIR/snmalloc"
 echo ""
 echo "Benchmarking:"
 echo "  # Criterion (glibc baseline vs zk-alloc)"
-echo "  cd leanMultisig && N=3 bash ../leanMultisig-bench/eval_paired.sh"
+echo "  cd leanVM && N=3 bash ../leanVM-bench/eval_paired.sh"
 echo ""
 echo "  # Production (glibc vs zk-alloc)"
 echo "  bash reproduce_prod.sh"

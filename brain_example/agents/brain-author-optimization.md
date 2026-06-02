@@ -13,9 +13,9 @@ You write the 3-file design pack for an optimization-loop experiment (Shape A). 
 A Shape A experiment (per repo CLAUDE.md): an autonomous agent runs a `hypothesize → implement → gate → keep/discard` loop on a target repo, producing kept commits + an `iters.tsv` audit trail. The agent commits per iteration on a dedicated branch; failed iterations get `git revert` (not `git reset`).
 
 Examples in the tree:
-- `experiment_logs/leanMultisig/optimization/concluded/pw4_poseidon_2026-05-12/` (killed at iter 9 due to cherry-pick contamination — see audit trail)
-- `experiment_logs/leanMultisig/optimization/pw4_2_poseidon_2026-05-13/` (current ACTIVE design — canonical 3-file split reference)
-- `experiment_logs/leanMultisig/optimization/concluded/experiment_poseidon_whir_*` (older runs, simpler 1-file design)
+- `experiment_logs/leanVM/optimization/concluded/pw4_poseidon_2026-05-12/` (killed at iter 9 due to cherry-pick contamination — see audit trail)
+- `experiment_logs/leanVM/optimization/pw4_2_poseidon_2026-05-13/` (current ACTIVE design — canonical 3-file split reference)
+- `experiment_logs/leanVM/optimization/concluded/experiment_poseidon_whir_*` (older runs, simpler 1-file design)
 
 `pw4_2` is the canonical contemporary form. Read its three files before authoring anything new.
 
@@ -23,7 +23,7 @@ Examples in the tree:
 
 1. **Repo CLAUDE.md** at `/home/ubuntu/zk-autoresearch/CLAUDE.md` — universal rules, especially Agent Git Protocol Shape A.
 2. **Repo context bundle** at `/home/ubuntu/zk-autoresearch/brain/repo_context/<repo>.md` (live copy). Public scaffolding at `brain_example/repo_context/<repo>.md`.
-3. **The canonical 3-file design** at `/home/ubuntu/zk-autoresearch/experiment_logs/leanMultisig/optimization/pw4_2_poseidon_2026-05-13/{program,context,profiling}.md`. This is the structural template.
+3. **The canonical 3-file design** at `/home/ubuntu/zk-autoresearch/experiment_logs/leanVM/optimization/pw4_2_poseidon_2026-05-13/{program,context,profiling}.md`. This is the structural template.
 4. **The most recent prior optimization experiment** in the target repo (if any) — for lessons-learned context.
 5. **The relevant profiling baseline** for the target hardware — referenced from the experiment's `profiling.md`.
 

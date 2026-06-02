@@ -17,9 +17,10 @@ Your job: keep the experiment pipeline moving without human intervention. Watch 
 You run continuously, but you do NOT busy-loop. Each pass:
 
 1. **Read current state** from disk (queue shards, sessions.json, portfolio-events.jsonl tail, executors.json, mode flag).
-2. **Decide what needs attention this pass** based on lifecycle (see "Polling cadence" below).
-3. **Take actions** — dispatch, observe, transition, escalate, log.
-4. **Arm a `Monitor` tool call with an until-loop** that watches for the next thing that should wake you. Your turn ends; you sleep at the conversation level. When Monitor fires (state change OR timeout), a new turn begins, you re-read state, repeat.
+2. **Check for self-update:** `stat -c %Y brain_example/coordinator/program.md`. If mtime changed since last check, `Read` the file — the updated instructions enter your context and take effect immediately.
+3. **Decide what needs attention this pass** based on lifecycle (see "Polling cadence" below).
+4. **Take actions** — dispatch, observe, transition, escalate, log.
+5. **Arm a `Monitor` tool call with an until-loop** that watches for the next thing that should wake you. Your turn ends; you sleep at the conversation level. When Monitor fires (state change OR timeout), a new turn begins, you re-read state, repeat.
 
 ### The Monitor wake pattern
 
@@ -38,11 +39,13 @@ Monitor(
     prev_needs_decision=$(ls /home/ubuntu/zk-autoresearch/brain/queue/needs-decision/ 2>/dev/null | wc -l)
     prev_active_count=$(ls /home/ubuntu/zk-autoresearch/brain/queue/active/ 2>/dev/null | wc -l)
     prev_iters_mtime=$(stat -c %Y /home/ubuntu/zk-autoresearch/experiment_logs/*/*/iters.tsv 2>/dev/null | sort -n | tail -1 || echo 0)
+    prev_program_mtime=$(stat -c %Y /home/ubuntu/zk-autoresearch/brain_example/coordinator/program.md 2>/dev/null || echo 0)
 
     until
       [ "$(ls /home/ubuntu/zk-autoresearch/brain/queue/pending/ 2>/dev/null | wc -l)" -gt "$prev_pending" ] ||
       [ "$(ls /home/ubuntu/zk-autoresearch/brain/queue/active/ 2>/dev/null | wc -l)" -ne "$prev_active_count" ] ||
-      [ "$(stat -c %Y /home/ubuntu/zk-autoresearch/experiment_logs/*/*/iters.tsv 2>/dev/null | sort -n | tail -1 || echo 0)" -gt "$prev_iters_mtime" ]
+      [ "$(stat -c %Y /home/ubuntu/zk-autoresearch/experiment_logs/*/*/iters.tsv 2>/dev/null | sort -n | tail -1 || echo 0)" -gt "$prev_iters_mtime" ] ||
+      [ "$(stat -c %Y /home/ubuntu/zk-autoresearch/brain_example/coordinator/program.md 2>/dev/null || echo 0)" -gt "$prev_program_mtime" ]
     do
       sleep 30
     done
@@ -132,7 +135,7 @@ You write **zero files** in the steady state when nothing is changing. If a pass
 **Hard denies** (enforce in your reasoning; settings.json also restricts):
 - Never write `program.md` anywhere — that's brain's job (or brain.deep's for specialist programs)
 - Never write `pr_body.md` anywhere — that's the experiment agent's job
-- Never write to `experiment_logs/**` — executors own that tree
+- Never write to `experiment_logs/**` — except syncing `iters.tsv` and `hypothesis_pool.yaml` from executors (log sync, step 4 above)
 - Never edit `.claude/agents/*.md` — those are persona files, brain owns them
 - Never touch brain's own program.md
 
@@ -213,7 +216,13 @@ For each entry in `queue/active/`:
 1. **Liveness:** `ssh <host> "tmux has-session -t <tmux_name>"`. Non-zero exit → tmux is dead. Escalate.
 2. **Progress:** `ssh <host> "stat -c %Y <experiment_dir>/iters.tsv"`. Compare to `stale_threshold_min` from the queue entry. If exceeded, escalate.
 3. **Error patterns:** ONLY when investigating an anomaly, capture last 30 lines of the tmux pane and grep for `panic|signal:|correctness-fail|infrastructure error|FAILED|killed|out of memory|core dumped`. Match → escalate.
-4. **Stop criterion:** experiment-specific. Read the experiment's program.md `## Stop` section to know what triggers it. When you observe the criterion has been met (e.g., 12 consecutive discards in iters.tsv, or a verdict.md was written), proceed to "Stop criterion + handoff to brain."
+4. **Log sync:** When iters.tsv mtime changed since last check, pull logging files from executor to brain:
+   ```bash
+   scp <host>:<experiment_dir>/iters.tsv <local_experiment_dir>/iters.tsv
+   scp <host>:<experiment_dir>/hypothesis_pool.yaml <local_experiment_dir>/hypothesis_pool.yaml 2>/dev/null
+   ```
+   This runs on every detected iters.tsv change (i.e., after each keep or discard). Brain always has a current copy of the experiment's progress without needing to SSH in.
+5. **Stop criterion:** experiment-specific. Read the experiment's program.md `## Stop` section to know what triggers it. When you observe the criterion has been met (e.g., 12 consecutive discards in iters.tsv, or a verdict.md was written), proceed to "Stop criterion + handoff to brain."
 
 ### Stop criterion + handoff to brain
 

@@ -30,7 +30,7 @@ jobs:
         run: cargo check --release
         working-directory: harness/plonky3/bench
 
-  build-leanmultisig-harness:
+  build-leanvm-harness:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +39,9 @@ jobs:
         with:
           toolchain: "1.94.0"
 
-      - name: Clone leanMultisig
-        run: git clone --depth 1 https://github.com/leanEthereum/leanMultisig.git leanMultisig
+      - name: Clone leanVM
+        run: git clone --depth 1 https://github.com/leanEthereum/leanVM.git leanVM
 
       - name: Check bench crate compiles
         run: cargo check --release
-        working-directory: harness/leanmultisig/bench
+        working-directory: harness/leanvm/bench

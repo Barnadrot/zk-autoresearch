@@ -1,0 +1,298 @@
+current_pool:
+  - id: h34
+    paper_anchor: |
+      1. WHIR paper (Glinstein, Haböck, Papini eprint 2024/1586, §4.2):
+         Folding factor controls the FRI/WHIR round structure. Larger initial folding
+         reduces total WHIR rounds at the cost of wider FFT matrices.
+      2. leanMultisig WHIR config (crates/lean_prover/src/lib.rs:26-27):
+         WHIR_INITIAL_FOLDING_FACTOR=7, WHIR_SUBSEQUENT_FOLDING_FACTOR=5.
+         With n=26: 3 WHIR rounds + final at 4 vars.
+      3. CLAUDE.md (updated): "Changing WHIR parameters triggers bytecode recompilation
+         in the recursion circuit. This is expected — budget for recompilation time."
+    mechanism: |
+      Increase WHIR_INITIAL_FOLDING_FACTOR from 7 to 8.
+
+      Current: initial=7, subsequent=5 → n_rounds=3, final_sumcheck_rounds=4
+      Proposed: initial=8, subsequent=5 → n_rounds=2, final_sumcheck_rounds=8
+
+      This ELIMINATES one WHIR round entirely:
+        Round 2 currently costs: ~18ms Merkle + ~9ms FFT + ~2ms sumcheck + ~7ms misc = ~36ms
+        Plus: reduced opening work in round 1 (smaller eq polynomial, fewer queries)
+
+      The DFT matrix changes from 2^20 × 128 to 2^19 × 256 (same total 2^27 elements).
+      Merkle: 2^19 rows × 32 absorptions vs 2^20 rows × 16 absorptions = same 16M perms.
+
+      The initial product sumcheck runs 8 rounds instead of 7 (marginal ~15ms increase).
+      Net: -36ms (round elimination) - 20ms (reduced round 1) + 15ms (extra sumcheck round) ≈ -41ms = -2%.
+
+      BUT: the real savings may be larger because:
+        - Reduced proof size → less serialization overhead
+        - Fewer Merkle path openings → fewer hash computations in opening
+        - The recursion circuit with fewer rounds may be smaller
+
+      Requires: recursion circuit recompilation (budget ~30 min).
+    predicted_pct: -3
+    plumbing:
+      - crates/lean_prover/src/lib.rs:26 (WHIR_INITIAL_FOLDING_FACTOR = 8)
+      - crates/rec_aggregation/zkdsl_implem/main.py (update hardcoded round counts)
+      - crates/rec_aggregation/src/compilation.rs (recompile bytecode)
+    kill_condition: |
+      Kill if: (1) Recursion circuit fails to close after recompilation.
+      (2) Measured savings < 1%. (3) Proof size increases > 20%.
+
+  - id: h35
+    paper_anchor: |
+      1. Zeilberger "Khatam" (eprint 2024/1843, §3-4): Tighter proximity gaps for
+         Reed-Solomon codes yield same soundness with smaller expansion factor.
+      2. WHIR paper (eprint 2024/1586, §5): Security analysis for WHIR with
+         Johnson bound. The expansion factor (log_inv_rate) directly controls
+         DFT size, Merkle size, and query count.
+      3. Haböck & Papini "Improved Proximity Gaps" (eprint 2025/2046):
+         State-of-the-art proximity gap analysis.
+    mechanism: |
+      Increase RS_DOMAIN_INITIAL_REDUCTION_FACTOR from 5 to 6.
+
+      This reduces the RS domain after round 0 by an additional factor of 2.
+      After round 0: log_inv_rate goes from 1+7-5=3 to 1+7-6=2.
+      This halves the domain for all subsequent WHIR rounds.
+
+      Round 1 DFT: 2^{19+3}=2^22 → 2^{19+2}=2^21 elements (50% reduction)
+      Round 1 Merkle: 2^{22}/32 rows → 2^{21}/32 rows (50% reduction)
+      Round 2 similarly halved.
+
+      Round 1 currently: ~92ms (FFT ~20ms, Merkle ~72ms).
+      50% reduction: ~46ms saved.
+      Round 2 similarly: ~15ms saved.
+      Total: ~61ms = -3%.
+
+      BUT: requires security verification. The reduction factor affects the
+      soundness guarantee. Need to verify the security budget allows this.
+    predicted_pct: -3
+    plumbing:
+      - crates/lean_prover/src/lib.rs:28 (RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 6)
+      - crates/whir/src/config.rs (verify security computation accepts new params)
+      - crates/rec_aggregation/ (recompile if round structure changes)
+    kill_condition: |
+      Kill if: (1) Security computation shows insufficient soundness.
+      (2) Recursion circuit doesn't close. (3) Measured savings < 1%.
+
+  - id: h31
+    paper_anchor: |
+      1. Dao & Thaler "Speeding Up Sum-Check Proving" (eprint 2025/1117, §3):
+         Tiled delayed-reduction inner loops for sumcheck, processing K elements per
+         iteration to amortize Montgomery reductions across the tile.
+      2. Plonky3 WHIR implementation (whir/src/sumcheck/strategy.rs:52-69):
+         chunk_round_step with K=8, using mixed_dot_product::<K> to accumulate K
+         products before a single Montgomery reduction.
+      3. Montgomery "Modular Multiplication Without Trial Division" (Math. Comput. 1985):
+         Montgomery reduction is the dominant per-operation overhead in prime fields.
+    mechanism: |
+      Tile the GKR sumcheck inner loop (compute_round_packed) with K=8 batching.
+
+      Current flow (quotient_gkr/sumcheck_utils.rs:429-437):
+        for inner in 0..quarter:
+          coeffs = pair_coeffs(...)   // 3 sumcheck_quadratic calls = 6 ext muls
+          local += coeffs * eq_within[inner]   // 4 ext muls
+        // Total: 10 ext muls per element, each with full Montgomery reduction chain
+
+      Proposed flow:
+        Process K=8 elements at a time:
+        for chunk in 0..quarter/K:
+          // Accumulate K pair_coeffs into unreduced accumulators
+          // Single Montgomery reduction per K elements
+          // eq_within multiplication batched similarly
+
+      Each quintic ext mul = 5 dot_product_4 = 5×16.5 = 82.5 cycles on Zen4.
+      10 ext muls × 82.5 = 825 cycles/element. With K=8 tiling, reduce Montgomery
+      reductions from 5×10=50/element to 50/8≈6.25/element. Each Montgomery reduction
+      ≈ 4 cycles on Zen4. Savings: (50-6.25)×4 = 175 cycles/element = 21% of inner loop.
+
+      GKR is 330ms. Inner loop dominates (~70% = 230ms). 21% of 230ms = ~48ms savings.
+      Predicted: -48ms / 2120ms = -2.3%.
+
+      REVISED: Actually the Montgomery reductions are already amortized WITHIN each
+      dot_product_4 (4 products → 1 reduction). The per-element overhead is the
+      quintic_mul dispatch, not raw reductions. Real savings from K=8 tiling would
+      come from reducing loop overhead and improving instruction scheduling.
+      Revised estimate: -1.5% to -3%.
+    predicted_pct: -2
+    plumbing:
+      - crates/sub_protocols/src/quotient_gkr/sumcheck_utils.rs:403-442 (compute_round_packed — tile inner loop)
+      - crates/backend/sumcheck/src/product_computation.rs:302-311 (sumcheck_quadratic — batch variant)
+      - crates/backend/koala-bear/src/quintic_extension/packed_extension.rs (batch multiply)
+    kill_condition: |
+      Kill if: (1) K=8 tiling causes register spill on Zen4 (32 ZMM registers, need
+      8×5×2=80 lanes for accumulators — may spill). (2) Measured savings < 1%.
+      (3) Loop unrolling defeats auto-vectorization.
+
+  - id: h32
+    paper_anchor: |
+      1. Setty "Spartan: Efficient and general-purpose zkSNARKs without trusted setup"
+         (eprint 2019/550, §5): Separate AIR sumcheck from product opening sumcheck;
+         they share the same folding challenges but can partially overlap.
+      2. Thaler "Proofs, Arguments, and Zero-Knowledge" (2022, §13):
+         Pipeline stages with known data dependencies can overlap at granularity
+         finer than whole stages.
+      3. Observation: AIR sumcheck (385ms) and GKR (330ms) have distinct data inputs
+         but feed into the same Fiat-Shamir transcript sequentially. Within each,
+         individual round polynomials must be sequential, but rounds across different
+         polynomial instances within a batch can be interleaved.
+    mechanism: |
+      Overlap DFT with Merkle compress layers using a producer-consumer pipeline.
+
+      Current flow:
+        DFT writes full output matrix (2^20 × 115 cols, ~470MB)  → 160ms
+        Merkle reads full matrix for first_digest_layer            → 390ms (417ms raw, overlaps)
+        Sequential: total ≈ 550ms
+
+      Proposed: Pipeline DFT and Merkle compress.
+      The DFT output has 2^20 rows. Partition into C chunks of 2^20/C rows each.
+      For each chunk:
+        Thread pool A: compute DFT butterflies for this chunk → write to shared buffer
+        Thread pool B: hash completed rows from previous chunk → produce digest layer
+
+      With C=8 chunks on 8 cores:
+        DFT chunk = 160/8 = 20ms per chunk
+        Merkle chunk = 390/8 = 49ms per chunk
+        Pipeline: max(DFT, Merkle) + ramp = ~49ms × 8 + 20ms ≈ 412ms (vs 550ms serial)
+        Savings: ~138ms = -6.5%
+
+      BUT: the machine has 8 physical cores. Both DFT and Merkle already use all cores
+      via rayon. Overlapping them means SHARING cores, not ADDING parallelism. Net effect
+      depends on whether the workloads have complementary resource profiles.
+
+      DFT: compute-bound (butterfly arithmetic), moderate memory
+      Merkle first_digest: Poseidon-compute-bound, streaming memory access
+      Both are compute-bound on the same FMA units. Overlap gains nothing.
+
+      REVISED approach: Overlap DFT with Merkle COMPRESS layers (not first_digest).
+      compress_layer is 53ms and is largely memory-bound (reading/writing digests).
+      DFT is compute-bound. These COULD benefit from overlap.
+      Savings: overlap ~40ms of compress with DFT → -40ms / 2120ms = -1.9%.
+
+      Conservative estimate: -1.5% accounting for synchronization overhead.
+    predicted_pct: -1.5
+    plumbing:
+      - crates/whir/src/merkle.rs:59-87 (build_merkle_tree_koalabear — accept chunked first layer)
+      - crates/whir/src/dft.rs:127-141 (dft_layer_par_triple — signal chunk completion)
+      - crates/whir/src/commit.rs:63-100 (commit — orchestrate pipelined execution)
+      - NEW: shared ring buffer or crossbeam channel for chunk handoff
+    kill_condition: |
+      Kill if: (1) Synchronization overhead exceeds savings. (2) Core contention causes
+      both DFT and Merkle to slow down (check with perf stat). (3) Measured < 1%.
+
+history:
+  - id: h30
+    paper_anchor: "Dao & Thaler eprint 2025/1117 §5; Plonky3 whir/src/sumcheck/svo.rs"
+    mechanism: "SVO-based opening replacing combine_statement + product sumcheck"
+    predicted_pct: -16
+    status: killed
+    kill_reason: |
+      Architectural incompatibility. SVO requires per-statement accumulator precomputation
+      before batching — Plonky3 builds SVO accumulators per-opening then batches with alpha.
+      leanMultisig's combine_statement batches all 15 statements into a single weight buffer
+      first, then runs product sumcheck. Retrofitting SVO requires rewriting the entire
+      opening phase architecture (VariableOrder, SvoPoint, per-opening partial evaluations).
+      Additionally, the fused eq+sumcheck approach (compute_eval_eq_packed_dual_and_sumcheck)
+      produced correct weights but incorrect sumcheck accumulators due to an index correspondence
+      bug in the thread-pair processing of evals_base chunks. Multiple implementation attempts
+      (3 agents + 2 manual attempts) failed to produce correct results.
+
+  - id: h1
+    paper_anchor: "Intel 64 IA-32 §4.1 paging; Linux hugetlbfs"
+    mechanism: "MAP_HUGETLB hot slab per thread for arena allocator"
+    predicted_pct: -25
+    status: keep
+    iter_id: 1
+    result: "2.82s→2.10s warm avg, -25.5%. dTLB-load-misses -80%"
+
+  - id: h-quintuple
+    paper_anchor: "Frigo et al. FFTW (1998); Bailey 4-step FFT"
+    mechanism: "LAYERS_PER_GROUP=5 monolithic 32-way block decomposition"
+    predicted_pct: -8
+    status: killed
+    iter_id: 2
+    result: "0% improvement. 32 scattered streams overwhelm Zen4 prefetcher. Dead-end."
+
+  - id: h19_killed
+    paper_anchor: "Grassi et al. eprint 2019/458 §5.2; Bertoni et al. Sponge Functions 2008 §3"
+    mechanism: "Reduce DIGEST_ELEMS from 8 to 4, increase RATE from 8 to 12"
+    predicted_pct: -5.5
+    status: killed
+    kill_reason: "DIGEST_LEN=8 hardcoded in recursion circuit (hashing.py:4, copy_8 used throughout). Changing triggers forbidden bytecode recompilation cascade."
+
+  - id: h19
+    paper_anchor: "Dao & Thaler eprint 2025/1117 §3-5; Setty eprint 2019/550 §5.1"
+    mechanism: "Dao-Thaler small-field sumcheck optimizations for product sumcheck"
+    predicted_pct: -5.0
+    status: replaced
+    replace_reason: "Kill condition analysis: the base×extension optimization only applies to rounds 1-2 of run_product_sumcheck (product_computation.rs:72-77), not to the dominant AIR sumcheck or GKR sumcheck which operate entirely in extension field. Product sumcheck is ~2% of total, not ~10%. Replaced by h23."
+
+  - id: h21
+    paper_anchor: "Dao & Thaler eprint 2025/1117 §4; Thaler 2022 §13.3"
+    mechanism: "Skip linear constraints in Phase 1 AIR eval via interpolation from z=0,2"
+    predicted_pct: -3.0
+    status: replaced
+    replace_reason: "Replaced by h22 (fused DFT-Merkle) which has higher predicted impact (-8% vs -3%) and targets the dominant pipeline bottleneck (DFT+Merkle=62% of total)."
+
+  - id: h22
+    paper_anchor: "Ben-Sasson et al. DEEP-FRI eprint 2019/336; Haböck & Papini eprint 2025/1640"
+    mechanism: "Fused DFT-Merkle first layer"
+    predicted_pct: -1.5
+    status: superseded
+    supersede_reason: "h32 subsumes h22 with a broader DFT-Merkle pipeline approach. h22's conservative -1.5% estimate confirmed that first_digest is Poseidon-compute-bound, making single-layer fusion low-impact."
+
+  - id: h23
+    paper_anchor: "Ingonyama Multi-Scalar Poseidon (2024); Bertoni et al. Sponge Functions (2007)"
+    mechanism: "Dual-sponge Poseidon interleaving two independent permutations per rayon task for ILP"
+    predicted_pct: -7.0
+    status: killed
+    iter_id: 3
+    result: "+0.59% regression (p=0.0018). Single Poseidon already saturates Zen4 pipeline (2 FMA/cycle). Dual sponge adds register pressure without filling idle ports. IPC=0.88 confirms memory-bound, not compute-bound."
+
+  - id: h24
+    paper_anchor: "n/a"
+    mechanism: "Coarsen rayon par_chunks granularity from width(16) to width*batch(~1024)"
+    predicted_pct: -7.0
+    status: killed
+    iter_id: 4
+    result: "+0.68% slower. 14% rayon overhead in flamegraph is call-stack attribution, not synchronization waste."
+
+  - id: h25
+    paper_anchor: "n/a"
+    mechanism: "Replace rayon par_chunks with std::thread::scope static partitioning"
+    predicted_pct: -5.0
+    status: killed
+    iter_id: 5
+    result: "-0.43% (p=0.027, fails p<0.01 gate). Direction correct but effect too small."
+
+  - id: h26
+    paper_anchor: "n/a"
+    mechanism: "MADV_HUGEPAGE for cold slab THP"
+    predicted_pct: -3.0
+    status: killed
+    iter_id: 6
+    result: "+0.2% (p=0.365, pure noise). Warm proofs reuse already-faulted pages."
+
+  - id: h27
+    paper_anchor: "Barrett CRYPTO 1986; Dao & Thaler eprint 2025/1117 §3"
+    mechanism: "Delayed modular reduction (u128 accumulation) for base×ext product sumcheck round 1"
+    predicted_pct: -3.0
+    status: killed
+    iter_id: 8
+    result: "+8% regression. u128 scalar accumulation defeats AVX-512 SIMD (16-wide packed multiply ~12 cycles vs 16 scalar u128 multiplies ~64 cycles). Delayed reduction saves modular reduction but SIMD throughput loss dominates on Zen4."
+
+  - id: h29
+    paper_anchor: "Dao & Thaler eprint 2024/1210 §3-4; Gruen eprint 2024/1389 §3"
+    mechanism: "SplitEq lazy eq-polynomial for combine_statement OOD weights"
+    predicted_pct: -12
+    status: killed
+    iter_id: 7
+    result: "+10.8% regression (2.13s→2.36s). SplitEq get_packed does 1 packed mul per element vs butterfly's incremental-add. Sparse buffer still 1.3GB (selectors cover full range). Per-element compute cost exceeds memory bandwidth savings."
+
+  - id: h20
+    paper_anchor: "Grassi et al. Poseidon2 eprint 2023/323; Keller & Rosemarin HADES MiMC eprint 2019/1107"
+    mechanism: "Fuse consecutive partial rounds into 2-round super-steps"
+    predicted_pct: -4.0
+    status: discarded
+    discard_reason: "Tracing reveals Poseidon permutation is compute-bound at IPC=0.88. Fusing partial rounds only saves intermediate state materialization (~30 memory ops per pair × 10 pairs = 300 fewer per permutation). With 937 cycles/permutation already, 300 memory ops at 4 cycles each = 1200 cycles saved = -0.13%. Below gate threshold. Dead-end for this workload's IPC regime."
