@@ -33,8 +33,7 @@ fn simple_rng(state: &mut u64) -> u64 {
 }
 
 fn random_ef(state: &mut u64) -> EF {
-    let limbs: [F; 5] = std::array::from_fn(|_| F::from_u64(simple_rng(state)));
-    EF::from_slice(&limbs)
+    EF::from(F::from_u64(simple_rng(state)))
 }
 
 fn eval_constraints_for_table(
