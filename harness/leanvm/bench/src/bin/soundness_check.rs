@@ -155,15 +155,28 @@ fn check_table(table: &Table, rng: &mut u64) -> bool {
     // from baseline. The matrix rows are (C(c, v_k) - C(c, v_0)) for k=1..N_TRIALS.
     // The rank of this matrix = number of independent constraint directions
     // controlled by virtual columns.
+    eprintln!(
+        "[soundness]   debug: n_actual_constraints={} c0_nonzero={}",
+        n_actual_constraints,
+        c0.iter().filter(|&&x| x != EF::ZERO).count(),
+    );
+
     let mut diff_matrix: Vec<Vec<EF>> = Vec::new();
 
-    for _ in 0..N_TRIALS {
-        baseline_virtual = (0..n_virtual).map(|_| random_ef(rng)).collect();
+    for trial in 0..N_TRIALS {
+        let trial_virtual: Vec<EF> = (0..n_virtual).map(|_| random_ef(rng)).collect();
         let mut flat_k = committed.clone();
-        flat_k.extend_from_slice(&baseline_virtual);
+        flat_k.extend_from_slice(&trial_virtual);
         let ck = eval_constraints_for_table(table, &flat_k, &shift, &extra_data);
 
         let diff: Vec<EF> = ck.iter().zip(c0.iter()).map(|(a, b)| *a - *b).collect();
+        let n_nonzero_diff = diff.iter().filter(|&&x| x != EF::ZERO).count();
+        if trial == 0 {
+            eprintln!(
+                "[soundness]   debug: trial 0 — ck.len()={} diff_nonzero={}",
+                ck.len(), n_nonzero_diff,
+            );
+        }
         diff_matrix.push(diff);
     }
 
