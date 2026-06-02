@@ -61,7 +61,7 @@ fn report(label: &str, before: (u64, u64, u64, u64), elapsed_ms: u128) {
 }
 
 use mt_koala_bear::KoalaBear;
-use rec_aggregation::{init_aggregation_bytecode, aggregate_type_1};
+use rec_aggregation::{init_aggregation_bytecode, aggregate_single_msg_signatures};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
@@ -76,7 +76,7 @@ fn main() {
 
     // Warmup
     let data = raw_xmss.clone();
-    let _ = aggregate_type_1(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+    let _ = aggregate_single_msg_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     eprintln!("--- warmup done ---");
 
     // Measured run
@@ -85,7 +85,7 @@ fn main() {
     let s = snapshot();
     let t = Instant::now();
     let data = raw_xmss.clone();
-    let _ = aggregate_type_1(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+    let _ = aggregate_single_msg_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed = t.elapsed().as_millis();
-    report("FULL aggregate_type_1", s, elapsed);
+    report("FULL aggregate_single_msg_signatures", s, elapsed);
 }

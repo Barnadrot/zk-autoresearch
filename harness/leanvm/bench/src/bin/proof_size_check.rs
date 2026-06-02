@@ -9,7 +9,7 @@
 
 use backend::precompute_dft_twiddles;
 use mt_koala_bear::KoalaBear;
-use rec_aggregation::{aggregate_type_1, init_aggregation_bytecode};
+use rec_aggregation::{aggregate_single_msg_signatures, init_aggregation_bytecode};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 
 // Smaller than prove_loop's 1550 to keep this fast (~5-10s vs ~2s/proof at 1550).
@@ -24,15 +24,13 @@ fn main() {
     let raw: Vec<_> = get_benchmark_signatures()[..N_SIGS].to_vec();
     let msg = message_for_benchmark();
 
-    let sig = match aggregate_type_1(&[], raw, msg, BENCHMARK_SLOT, LOG_INV_RATE) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("proof_size_check: aggregate_type_1 failed: {e:?}");
+    let sig = aggregate_single_msg_signatures(&[], raw, msg, BENCHMARK_SLOT, LOG_INV_RATE)
+        .unwrap_or_else(|e| {
+            eprintln!("proof_size_check: aggregate_single_msg_signatures failed: {e:?}");
             std::process::exit(1);
-        }
-    };
+        });
 
-    let bytes = match postcard::to_allocvec(&sig) {
+    let bytes: Vec<u8> = match postcard::to_allocvec(&sig) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("proof_size_check: postcard serialize failed: {e:?}");

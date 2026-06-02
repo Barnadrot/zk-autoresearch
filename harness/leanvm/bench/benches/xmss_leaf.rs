@@ -14,7 +14,7 @@ static GLOBAL: zk_alloc::ZkAllocator = zk_alloc::ZkAllocator;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mt_koala_bear::KoalaBear;
-use rec_aggregation::{init_aggregation_bytecode, aggregate_type_1};
+use rec_aggregation::{init_aggregation_bytecode, aggregate_single_msg_signatures};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
@@ -40,7 +40,7 @@ fn bench_xmss_leaf(c: &mut Criterion) {
                 raw_xmss.clone()
             },
             |data| {
-                let result = aggregate_type_1(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+                let result = aggregate_single_msg_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
                 #[cfg(feature = "zkalloc_global")]
                 zk_alloc::end_phase();
                 result

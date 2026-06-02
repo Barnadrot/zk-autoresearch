@@ -10,7 +10,7 @@
 use backend::precompute_dft_twiddles;
 use mt_koala_bear::KoalaBear;
 use rec_aggregation::{
-    TypeOneMultiSignature, aggregate_type_1, init_aggregation_bytecode, verify_type_1,
+    SingleMessageAggregateSignature, aggregate_single_msg_signatures, init_aggregation_bytecode, verify_single_message_aggregate,
 };
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 
@@ -48,13 +48,13 @@ fn main() {
     let raws = signatures[0..3].to_vec();
 
     eprintln!("[fuzz] generating valid proof (3 signatures)...");
-    let valid_sig = aggregate_type_1(&[], raws, message, slot, 2).unwrap();
+    let valid_sig = aggregate_single_msg_signatures(&[], raws, message, slot, 2).unwrap();
     let valid_bytes = valid_sig.compress();
     eprintln!("[fuzz] proof size: {} bytes", valid_bytes.len());
 
     // Sanity: valid proof passes verification
-    let recovered = TypeOneMultiSignature::decompress(&valid_bytes).unwrap();
-    verify_type_1(&recovered).unwrap();
+    let recovered = SingleMessageAggregateSignature::decompress(&valid_bytes).unwrap();
+    verify_single_message_aggregate(&recovered).unwrap();
     eprintln!("[fuzz] valid proof passes verification ✓");
 
     // --- Mutation loop ---
@@ -101,12 +101,12 @@ fn main() {
         }
 
         // Try decompress + verify
-        match TypeOneMultiSignature::decompress(&mutated) {
+        match SingleMessageAggregateSignature::decompress(&mutated) {
             None => {
                 deser_fail += 1;
             }
             Some(sig) => {
-                match verify_type_1(&sig) {
+                match verify_single_message_aggregate(&sig) {
                     Ok(_) => {
                         accepted += 1;
                         eprintln!(
