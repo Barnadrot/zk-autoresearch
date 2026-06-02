@@ -444,36 +444,45 @@ PY
 rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
 
 # ------------------------------ RECURSION REGRESSION CHECK -------------------
-# Paired A/B: run recursion on both baseline and candidate, compare.
+# Uses the already-built baseline/candidate binaries (built during BUILD phase).
+# The lean-multisig binary is the same as prove_loop's workspace — just a
+# different bin target. Build both upfront, then run.
 
 log ""
 log "recursion regression check (baseline vs candidate)..."
 
+# Build lean-multisig for both baseline and candidate
 (cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
-REC_BASE_JSON=$( (cd "$LM_REPO" && cargo run --release -- recursion --n 2 --log-inv-rate 2 --json 2>/dev/null) || echo "")
+(cd "$LM_REPO" && cargo build --release --bin lean-multisig 2>&1 | tail -2 >&2)
+cp "$LM_REPO/target/release/lean-multisig" /tmp/lean_multisig_base 2>/dev/null
 
 (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
-REC_CAND_JSON=$( (cd "$LM_REPO" && cargo run --release -- recursion --n 2 --log-inv-rate 2 --json 2>/dev/null) || echo "")
+(cd "$LM_REPO" && cargo build --release --bin lean-multisig 2>&1 | tail -2 >&2)
+cp "$LM_REPO/target/release/lean-multisig" /tmp/lean_multisig_cand 2>/dev/null
 
-if [[ -n "$REC_BASE_JSON" && -n "$REC_CAND_JSON" ]]; then
-  REC_BASE_SECS=$(echo "$REC_BASE_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"]):.3f}')" 2>/dev/null || echo "0")
-  REC_CAND_SECS=$(echo "$REC_CAND_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"]):.3f}')" 2>/dev/null || echo "0")
-  REC_DELTA=$(python3 -c "b=$REC_BASE_SECS; c=$REC_CAND_SECS; print(f'{(c-b)/b*100:.2f}' if b > 0 else '0.00')")
-  log "recursion: baseline=${REC_BASE_SECS}s candidate=${REC_CAND_SECS}s Δ=${REC_DELTA}%"
+if [[ -x /tmp/lean_multisig_base && -x /tmp/lean_multisig_cand ]]; then
+  REC_BASE_JSON=$(/tmp/lean_multisig_base recursion --n 2 --log-inv-rate 2 --json 2>/dev/null || echo "")
+  REC_CAND_JSON=$(/tmp/lean_multisig_cand recursion --n 2 --log-inv-rate 2 --json 2>/dev/null || echo "")
 
-  REC_REGRESSED=$(python3 -c "import sys; sys.exit(0 if float('$REC_DELTA') > float('$RECURSION_MAX_REGRESSION_PCT') else 1)" 2>/dev/null && echo "1" || echo "0")
-  if [[ "$REC_REGRESSED" == "1" ]]; then
-    err "RECURSION REGRESSION: ${REC_DELTA}% exceeds ${RECURSION_MAX_REGRESSION_PCT}% max — forcing discard"
-    python3 -c "
+  if [[ -n "$REC_BASE_JSON" && -n "$REC_CAND_JSON" ]]; then
+    REC_BASE_SECS=$(echo "$REC_BASE_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"]):.3f}')" 2>/dev/null || echo "0")
+    REC_CAND_SECS=$(echo "$REC_CAND_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"]):.3f}')" 2>/dev/null || echo "0")
+    REC_DELTA=$(python3 -c "b=$REC_BASE_SECS; c=$REC_CAND_SECS; print(f'{(c-b)/b*100:.2f}' if b > 0 else '0.00')")
+    log "recursion: baseline=${REC_BASE_SECS}s candidate=${REC_CAND_SECS}s Δ=${REC_DELTA}%"
+
+    REC_REGRESSED=$(python3 -c "import sys; sys.exit(0 if float('$REC_DELTA') > float('$RECURSION_MAX_REGRESSION_PCT') else 1)" 2>/dev/null && echo "1" || echo "0")
+    if [[ "$REC_REGRESSED" == "1" ]]; then
+      err "RECURSION REGRESSION: ${REC_DELTA}% exceeds ${RECURSION_MAX_REGRESSION_PCT}% max — forcing discard"
+      python3 -c "
 import json
 s = json.load(open('/tmp/eval_paired_summary.json'))
 s['decision'] = 'discard'
 s['discard_reason'] = 'recursion regression ${REC_DELTA}% > ${RECURSION_MAX_REGRESSION_PCT}% ceiling'
 json.dump(s, open('/tmp/eval_paired_summary.json','w'), indent=2)
 "
-  fi
+    fi
 
-  python3 -c "
+    python3 -c "
 import json
 s = json.load(open('/tmp/eval_paired_summary.json'))
 s['recursion_base_secs'] = float('$REC_BASE_SECS')
@@ -481,9 +490,13 @@ s['recursion_cand_secs'] = float('$REC_CAND_SECS')
 s['recursion_delta_pct'] = float('$REC_DELTA')
 json.dump(s, open('/tmp/eval_paired_summary.json','w'), indent=2)
 " 2>/dev/null || true
+  else
+    log "WARNING: recursion binaries failed to produce JSON — skipping"
+  fi
 else
-  log "WARNING: recursion check failed to produce JSON — skipping"
+  log "WARNING: lean-multisig build failed for one or both refs — skipping recursion check"
 fi
+rm -f /tmp/lean_multisig_base /tmp/lean_multisig_cand
 
 # ------------------------------ PROOF SIZE CHECK -----------------------------
 
