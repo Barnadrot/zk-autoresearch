@@ -50,7 +50,6 @@ NOISE_FLOOR_WARN_PCT=${NOISE_FLOOR_WARN_PCT:-0.5}
 SKIP_NOISE_CHECK=${SKIP_NOISE_CHECK:-0}
 AUTO_STEADY_STATE_ON_KEEP=${AUTO_STEADY_STATE_ON_KEEP:-1}
 STEADY_STATE_THRESHOLD_PCT=${STEADY_STATE_THRESHOLD_PCT:-2.0}
-RECURSION_BASELINE_SECS=${RECURSION_BASELINE_SECS:-0}
 RECURSION_MAX_REGRESSION_PCT=${RECURSION_MAX_REGRESSION_PCT:-3}
 PROOF_SIZE_CEILING_PCT=${PROOF_SIZE_CEILING_PCT:-20}
 PROOF_SIZE_PENALTY_MULTIPLIER=${PROOF_SIZE_PENALTY_MULTIPLIER:-3}
@@ -433,41 +432,41 @@ PY
 rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
 
 # ------------------------------ RECURSION REGRESSION CHECK -------------------
+# Paired A/B: run recursion on both baseline and candidate, compare.
 
 log ""
-log "recursion regression check..."
+log "recursion regression check (baseline vs candidate)..."
+
+(cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
+REC_BASE_JSON=$( (cd "$LM_REPO" && cargo run --release -- recursion --n 2 --log-inv-rate 2 --json 2>/dev/null) || echo "")
+
 (cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
-REC_JSON=$( (cd "$LM_REPO" && cargo run --release -- recursion --n 2 --log-inv-rate 2 --json 2>/dev/null) || echo "")
+REC_CAND_JSON=$( (cd "$LM_REPO" && cargo run --release -- recursion --n 2 --log-inv-rate 2 --json 2>/dev/null) || echo "")
 
-if [[ -n "$REC_JSON" ]]; then
-  REC_SECS=$(echo "$REC_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{r.get(\"total_time_secs\", sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"])):.3f}')" 2>/dev/null || echo "0")
-  log "recursion time: ${REC_SECS}s"
+if [[ -n "$REC_BASE_JSON" && -n "$REC_CAND_JSON" ]]; then
+  REC_BASE_SECS=$(echo "$REC_BASE_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"]):.3f}')" 2>/dev/null || echo "0")
+  REC_CAND_SECS=$(echo "$REC_CAND_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'{sum(n[\"stats\"][\"time_secs\"] for n in r[\"nodes\"]):.3f}')" 2>/dev/null || echo "0")
+  REC_DELTA=$(python3 -c "b=$REC_BASE_SECS; c=$REC_CAND_SECS; print(f'{(c-b)/b*100:.2f}' if b > 0 else '0.00')")
+  log "recursion: baseline=${REC_BASE_SECS}s candidate=${REC_CAND_SECS}s Δ=${REC_DELTA}%"
 
-  if [[ "$RECURSION_BASELINE_SECS" != "0" ]]; then
-    REC_DELTA=$(python3 -c "b=$RECURSION_BASELINE_SECS; c=$REC_SECS; print(f'{(c-b)/b*100:.2f}')")
-    log "recursion: baseline=${RECURSION_BASELINE_SECS}s candidate=${REC_SECS}s Δ=${REC_DELTA}%"
-
-    REC_REGRESSED=$(python3 -c "import sys; sys.exit(0 if float('$REC_DELTA') > float('$RECURSION_MAX_REGRESSION_PCT') else 1)" 2>/dev/null && echo "1" || echo "0")
-    if [[ "$REC_REGRESSED" == "1" ]]; then
-      err "RECURSION REGRESSION: ${REC_DELTA}% exceeds ${RECURSION_MAX_REGRESSION_PCT}% max — forcing discard"
-      python3 -c "
+  REC_REGRESSED=$(python3 -c "import sys; sys.exit(0 if float('$REC_DELTA') > float('$RECURSION_MAX_REGRESSION_PCT') else 1)" 2>/dev/null && echo "1" || echo "0")
+  if [[ "$REC_REGRESSED" == "1" ]]; then
+    err "RECURSION REGRESSION: ${REC_DELTA}% exceeds ${RECURSION_MAX_REGRESSION_PCT}% max — forcing discard"
+    python3 -c "
 import json
 s = json.load(open('/tmp/eval_paired_summary.json'))
 s['decision'] = 'discard'
 s['discard_reason'] = 'recursion regression ${REC_DELTA}% > ${RECURSION_MAX_REGRESSION_PCT}% ceiling'
-s['recursion_secs'] = float('$REC_SECS')
-s['recursion_baseline_secs'] = float('$RECURSION_BASELINE_SECS')
-s['recursion_delta_pct'] = float('$REC_DELTA')
 json.dump(s, open('/tmp/eval_paired_summary.json','w'), indent=2)
 "
-    fi
   fi
 
-  # Add recursion timing to summary
   python3 -c "
 import json
 s = json.load(open('/tmp/eval_paired_summary.json'))
-s['recursion_secs'] = float('$REC_SECS')
+s['recursion_base_secs'] = float('$REC_BASE_SECS')
+s['recursion_cand_secs'] = float('$REC_CAND_SECS')
+s['recursion_delta_pct'] = float('$REC_DELTA')
 json.dump(s, open('/tmp/eval_paired_summary.json','w'), indent=2)
 " 2>/dev/null || true
 else
