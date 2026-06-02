@@ -99,21 +99,26 @@ run_pinned() {
   fi
 }
 
-build_prove_loop() {
-  local ref="$1" out="$2"
+build_binaries() {
+  local ref="$1" prove_loop_out="$2" lean_multisig_out="$3"
   (
     cd "$LM_REPO"
     git checkout --quiet "$ref" || { err "git checkout $ref failed"; exit 2; }
   )
   (
     cd "$BENCH_CRATE"
-    # Full release clean — path-dep rlibs can become inconsistent after git
-    # checkout if cargo's fingerprint cache misses a cross-crate mismatch.
     cargo clean --release >/dev/null 2>&1 || true
     cargo build --release --bin prove_loop --features zkalloc_global 2>&1 | tail -5 >&2 \
       || { err "cargo build --bin prove_loop failed at $ref"; exit 2; }
-    cp target/release/prove_loop "$out" \
+    cp target/release/prove_loop "$prove_loop_out" \
       || { err "prove_loop binary not found at $ref"; exit 2; }
+  )
+  (
+    cd "$LM_REPO"
+    cargo build --release --bin lean-multisig 2>&1 | tail -3 >&2 \
+      || { err "cargo build --bin lean-multisig failed at $ref"; }
+    cp target/release/lean-multisig "$lean_multisig_out" 2>/dev/null \
+      || log "WARNING: lean-multisig binary not found at $ref — recursion check will skip"
   )
 }
 
@@ -138,11 +143,11 @@ trap 'cd "$LM_REPO" && git checkout --quiet "$ORIG_BRANCH" 2>/dev/null || git ch
 
 # ------------------------------ BUILD ----------------------------------------
 
-log "building baseline prove_loop..."
-build_prove_loop "$BASELINE_SHA" /tmp/prove_loop_base
+log "building baseline (prove_loop + lean-multisig)..."
+build_binaries "$BASELINE_SHA" /tmp/prove_loop_base /tmp/lean_multisig_base
 
-log "building candidate prove_loop..."
-build_prove_loop "$CANDIDATE_SHA" /tmp/prove_loop_cand
+log "building candidate (prove_loop + lean-multisig)..."
+build_binaries "$CANDIDATE_SHA" /tmp/prove_loop_cand /tmp/lean_multisig_cand
 
 HASH_BASE=$(md5sum /tmp/prove_loop_base | awk '{print $1}')
 HASH_CAND=$(md5sum /tmp/prove_loop_cand | awk '{print $1}')
@@ -444,21 +449,10 @@ PY
 rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
 
 # ------------------------------ RECURSION REGRESSION CHECK -------------------
-# Uses the already-built baseline/candidate binaries (built during BUILD phase).
-# The lean-multisig binary is the same as prove_loop's workspace — just a
-# different bin target. Build both upfront, then run.
+# Uses lean-multisig binaries built during BUILD phase (no mid-flight builds).
 
 log ""
 log "recursion regression check (baseline vs candidate)..."
-
-# Build lean-multisig for both baseline and candidate
-(cd "$LM_REPO" && git checkout --quiet "$BASELINE_SHA")
-(cd "$LM_REPO" && cargo build --release --bin lean-multisig 2>&1 | tail -2 >&2)
-cp "$LM_REPO/target/release/lean-multisig" /tmp/lean_multisig_base 2>/dev/null
-
-(cd "$LM_REPO" && git checkout --quiet "$CANDIDATE_SHA")
-(cd "$LM_REPO" && cargo build --release --bin lean-multisig 2>&1 | tail -2 >&2)
-cp "$LM_REPO/target/release/lean-multisig" /tmp/lean_multisig_cand 2>/dev/null
 
 if [[ -x /tmp/lean_multisig_base && -x /tmp/lean_multisig_cand ]]; then
   REC_BASE_JSON=$(/tmp/lean_multisig_base recursion --n 2 --log-inv-rate 2 --json 2>/dev/null || echo "")
