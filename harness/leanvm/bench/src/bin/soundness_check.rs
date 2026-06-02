@@ -86,129 +86,135 @@ fn gaussian_rank(matrix: &[Vec<EF>]) -> usize {
     rank
 }
 
+/// Returns the number of columns the stacked PCS actually commits for this
+/// table. This mirrors the loop in `stack_polynomials_and_commit` which
+/// iterates `0..table.n_columns()`. If the codebase adds
+/// `n_committed_columns()` to the Air trait (as pw8/h44 did), the stacked
+/// PCS uses THAT instead, and this function must be updated to match.
+///
+/// The invariant: pcs_committed(table) == the column count the stacked PCS
+/// copies into the global polynomial for this table.
+fn pcs_committed(table: &Table) -> usize {
+    // On main: stacked_pcs.rs line 134 uses `table.n_columns()`
+    // If a branch overrides n_committed_columns(), it would be used there.
+    // We compile against whatever the target repo has.
+    table.n_columns()
+}
+
 fn check_table(table: &Table, rng: &mut u64) -> bool {
-    let n_committed = table.n_columns();
+    let n_pcs = pcs_committed(table);
     let n_total = table.n_columns_total();
-    let n_virtual = n_total - n_committed;
-    let n_constraints = table.n_constraints();
+    let n_uncommitted = n_total - n_pcs;
     let n_shift = table.n_shift_columns();
 
-    if n_virtual == 0 {
-        eprintln!(
-            "[soundness] {}: no virtual columns — PASS",
-            table.name()
-        );
+    eprintln!(
+        "[soundness] {}: pcs_committed={} total={} uncommitted={} constraints={} shift={}",
+        table.name(), n_pcs, n_total, n_uncommitted,
+        table.n_constraints(), n_shift,
+    );
+
+    if n_uncommitted == 0 {
+        eprintln!("[soundness]   PASS: all columns committed to PCS");
         return true;
     }
 
+    // Phase 1: Static check — any uncommitted column not referenced by bus?
     let bus_interactions = table.bus_interactions();
-    let mut bus_virtual_cols = std::collections::BTreeSet::new();
+    let mut bus_uncommitted_cols = std::collections::BTreeSet::new();
     for bus in &bus_interactions {
         if let BusMultiplicity::Column(c) = bus.multiplicity {
-            if c >= n_committed { bus_virtual_cols.insert(c); }
+            if c >= n_pcs { bus_uncommitted_cols.insert(c); }
         }
         if let Some(c) = bus.domainsep.column() {
-            if c >= n_committed { bus_virtual_cols.insert(c); }
+            if c >= n_pcs { bus_uncommitted_cols.insert(c); }
         }
         for d in &bus.data {
             if let Some(c) = d.column() {
-                if c >= n_committed { bus_virtual_cols.insert(c); }
+                if c >= n_pcs { bus_uncommitted_cols.insert(c); }
             }
         }
     }
-    let n_bus_accounted = bus_virtual_cols.len();
-    let n_free = n_virtual.saturating_sub(n_bus_accounted);
+    let n_bus_accounted = bus_uncommitted_cols.len();
+    let n_unbound = n_uncommitted.saturating_sub(n_bus_accounted);
 
-    // Static check: any virtual column not even referenced by bus?
-    if n_free > 0 {
-        let all_virtual: std::collections::BTreeSet<usize> = (n_committed..n_total).collect();
-        let unaccounted: Vec<_> = all_virtual.difference(&bus_virtual_cols).collect();
+    if n_unbound > 0 {
+        let all_uncommitted: std::collections::BTreeSet<usize> = (n_pcs..n_total).collect();
+        let unaccounted: Vec<_> = all_uncommitted.difference(&bus_uncommitted_cols).collect();
         eprintln!(
-            "[soundness] {}: {} virtual columns not referenced by ANY bus interaction!",
-            table.name(), n_free,
+            "[soundness]   STATIC FAIL: {} uncommitted columns not referenced by any bus interaction",
+            n_unbound,
         );
         eprintln!("[soundness]   unaccounted column indices: {:?}", unaccounted);
-        eprintln!("[soundness]   STATIC CHECK FAIL");
         return false;
     }
 
-    // Numerical check: evaluate constraints with varying virtual columns.
-    // If varying virtual columns changes constraint values in more independent
-    // directions than there are constraints binding them, the system is
-    // underdetermined and a malicious prover can forge proofs.
+    // Phase 2: Numerical check — evaluate AIR constraints with random column
+    // values. Fix PCS-committed columns, vary uncommitted columns.
+    // Compute the rank of the resulting constraint difference matrix.
+    //
+    // - rank == 0: constraints don't reference uncommitted columns at all.
+    //   The AIR eval recomputes derived values from committed columns.
+    //   This is SOUND — the constraints are self-contained.
+    //
+    // - 0 < rank < n_uncommitted: constraints DO reference uncommitted
+    //   columns but the system is underdetermined. A malicious prover
+    //   can choose (n_uncommitted - rank) column evaluations arbitrarily.
+    //   This is UNSOUND.
+    //
+    // - rank >= n_uncommitted: all uncommitted columns are fully constrained.
+    //   This is SOUND.
 
-    let n_alpha = n_constraints + 10;
+    let n_alpha = table.n_constraints() + 10;
     let alpha_powers: Vec<EF> = (0..n_alpha).map(|_| random_ef(rng)).collect();
     let logup_alphas: Vec<EF> = (0..64).map(|_| random_ef(rng)).collect();
     let extra_data = ExtraDataForBuses::new(logup_alphas, alpha_powers);
 
-    let committed: Vec<EF> = (0..n_committed).map(|_| random_ef(rng)).collect();
-    let shift: Vec<EF> = (0..n_shift).map(|_| random_ef(rng)).collect();
+    let committed_vals: Vec<EF> = (0..n_pcs).map(|_| random_ef(rng)).collect();
+    let shift_vals: Vec<EF> = (0..n_shift).map(|_| random_ef(rng)).collect();
 
-    let mut baseline_virtual: Vec<EF> = (0..n_virtual).map(|_| random_ef(rng)).collect();
-    let mut flat0 = committed.clone();
-    flat0.extend_from_slice(&baseline_virtual);
-    let c0 = eval_constraints_for_table(table, &flat0, &shift, &extra_data);
-    let n_actual_constraints = c0.len();
-
-    // For each trial, vary virtual columns and record the constraint DIFFERENCE
-    // from baseline. The matrix rows are (C(c, v_k) - C(c, v_0)) for k=1..N_TRIALS.
-    // The rank of this matrix = number of independent constraint directions
-    // controlled by virtual columns.
-    eprintln!(
-        "[soundness]   debug: n_actual_constraints={} c0_nonzero={}",
-        n_actual_constraints,
-        c0.iter().filter(|&&x| x != EF::ZERO).count(),
-    );
+    let baseline: Vec<EF> = (0..n_uncommitted).map(|_| random_ef(rng)).collect();
+    let mut flat0 = committed_vals.clone();
+    flat0.extend_from_slice(&baseline);
+    let c0 = eval_constraints_for_table(table, &flat0, &shift_vals, &extra_data);
 
     let mut diff_matrix: Vec<Vec<EF>> = Vec::new();
-
-    for trial in 0..N_TRIALS {
-        let trial_virtual: Vec<EF> = (0..n_virtual).map(|_| random_ef(rng)).collect();
-        let mut flat_k = committed.clone();
-        flat_k.extend_from_slice(&trial_virtual);
-        let ck = eval_constraints_for_table(table, &flat_k, &shift, &extra_data);
-
+    for _ in 0..N_TRIALS {
+        let trial: Vec<EF> = (0..n_uncommitted).map(|_| random_ef(rng)).collect();
+        let mut flat_k = committed_vals.clone();
+        flat_k.extend_from_slice(&trial);
+        let ck = eval_constraints_for_table(table, &flat_k, &shift_vals, &extra_data);
         let diff: Vec<EF> = ck.iter().zip(c0.iter()).map(|(a, b)| *a - *b).collect();
-        let n_nonzero_diff = diff.iter().filter(|&&x| x != EF::ZERO).count();
-        if trial == 0 {
-            eprintln!(
-                "[soundness]   debug: trial 0 — ck.len()={} diff_nonzero={}",
-                ck.len(), n_nonzero_diff,
-            );
-        }
         diff_matrix.push(diff);
     }
 
-    let affected_rank = gaussian_rank(&diff_matrix);
+    let rank = gaussian_rank(&diff_matrix);
 
+    if rank == 0 {
+        eprintln!(
+            "[soundness]   PASS: AIR constraints do not reference uncommitted columns \
+             (eval recomputes from committed columns)",
+        );
+        return true;
+    }
+
+    if rank >= n_uncommitted {
+        eprintln!(
+            "[soundness]   PASS: {} uncommitted columns fully constrained ({} independent directions)",
+            n_uncommitted, rank,
+        );
+        return true;
+    }
+
+    let free = n_uncommitted - rank;
     eprintln!(
-        "[soundness] {}: committed={} virtual={} constraints={} bus_accounted={} constraint_rank_from_virtual={}",
-        table.name(), n_committed, n_virtual, n_actual_constraints, n_bus_accounted, affected_rank,
+        "[soundness]   NUMERICAL FAIL: {} uncommitted columns in constraints but only {} \
+         independent directions bind them → {} free dimensions",
+        n_uncommitted, rank, free,
     );
-
-    if affected_rank == 0 {
-        eprintln!(
-            "[soundness]   PASS: constraints do not reference virtual columns — \
-             AIR eval recomputes derived values from committed columns (self-contained)",
-        );
-        return true;
-    }
-
-    if affected_rank >= n_virtual {
-        eprintln!(
-            "[soundness]   PASS: {} virtual columns fully constrained by {} independent constraint directions",
-            n_virtual, affected_rank,
-        );
-        return true;
-    }
-
-    let free_dims = n_virtual - affected_rank;
     eprintln!(
-        "[soundness]   NUMERICAL CHECK FAIL: {} virtual columns appear in constraints but only {} \
-         independent constraints bind them → {} free dimensions. A malicious prover can choose \
-         {} column evaluations arbitrarily at the AIR sumcheck endpoint.",
-        n_virtual, affected_rank, free_dims, free_dims,
+        "[soundness]   A malicious prover can choose {} column evaluations \
+         arbitrarily at the AIR sumcheck endpoint r_air.",
+        free,
     );
     false
 }
@@ -224,9 +230,9 @@ fn main() {
     }
 
     if all_ok {
-        eprintln!("[soundness] PASS — all virtual columns fully constrained.");
+        eprintln!("[soundness] PASS — all tables sound.");
     } else {
-        eprintln!("[soundness] FAIL — underdetermined virtual columns detected!");
+        eprintln!("[soundness] FAIL — underdetermined columns detected!");
         std::process::exit(1);
     }
 }
