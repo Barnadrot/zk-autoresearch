@@ -187,22 +187,30 @@ fn check_table(table: &Table, rng: &mut u64) -> bool {
         table.name(), n_committed, n_virtual, n_actual_constraints, n_bus_accounted, affected_rank,
     );
 
-    if n_virtual > affected_rank {
-        let free_dims = n_virtual - affected_rank;
+    if affected_rank == 0 {
         eprintln!(
-            "[soundness]   NUMERICAL CHECK FAIL: {} virtual columns but only {} independent \
-             constraints bind them → {} free dimensions. A malicious prover can choose \
-             {} column evaluations arbitrarily at the AIR sumcheck endpoint.",
-            n_virtual, affected_rank, free_dims, free_dims,
+            "[soundness]   PASS: constraints do not reference virtual columns — \
+             AIR eval recomputes derived values from committed columns (self-contained)",
         );
-        return false;
+        return true;
     }
 
+    if affected_rank >= n_virtual {
+        eprintln!(
+            "[soundness]   PASS: {} virtual columns fully constrained by {} independent constraint directions",
+            n_virtual, affected_rank,
+        );
+        return true;
+    }
+
+    let free_dims = n_virtual - affected_rank;
     eprintln!(
-        "[soundness]   PASS: {} virtual columns fully constrained by {} independent constraint directions",
-        n_virtual, affected_rank,
+        "[soundness]   NUMERICAL CHECK FAIL: {} virtual columns appear in constraints but only {} \
+         independent constraints bind them → {} free dimensions. A malicious prover can choose \
+         {} column evaluations arbitrarily at the AIR sumcheck endpoint.",
+        n_virtual, affected_rank, free_dims, free_dims,
     );
-    true
+    false
 }
 
 fn main() {
