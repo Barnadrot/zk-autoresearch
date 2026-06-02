@@ -440,8 +440,8 @@ summary['uptime'] = '$(uptime | sed "s/'/ /g" 2>/dev/null || echo unknown)'
 print(json.dumps(summary, indent=2))
 PY
 
-# Cleanup temp files
-rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ALL_BASE_KIBS" "$ALL_CAND_KIBS" "$ROUND_LOG"
+# Cleanup time/round files (kibs kept for proof size check below)
+rm -f "$ALL_BASE_TIMES" "$ALL_CAND_TIMES" "$ROUND_LOG"
 
 # ------------------------------ RECURSION REGRESSION CHECK -------------------
 # Paired A/B: run recursion on both baseline and candidate, compare.
@@ -535,6 +535,9 @@ json.dump(s, open("/tmp/eval_paired_summary.json", "w"), indent=2)
 PY
 )
 log "proof size: $PROOF_SIZE_DECISION"
+
+# Cleanup kibs temp files (after proof size check has read them)
+rm -f "$ALL_BASE_KIBS" "$ALL_CAND_KIBS"
 
 # Exit code
 dec=$(python3 -c 'import json; print(json.load(open("/tmp/eval_paired_summary.json")).get("decision","discard"))')
