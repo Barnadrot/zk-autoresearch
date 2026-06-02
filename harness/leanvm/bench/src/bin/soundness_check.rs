@@ -1,5 +1,6 @@
 use backend::*;
 use lean_vm::*;
+use std::collections::BTreeMap;
 
 const N_TRIALS: usize = 20;
 
@@ -57,7 +58,6 @@ fn gaussian_rank(matrix: &[Vec<EF>]) -> usize {
     let n_cols = matrix[0].len();
     let mut mat: Vec<Vec<EF>> = matrix.to_vec();
     let mut rank = 0;
-
     for col in 0..n_cols {
         let mut pivot = None;
         for row in rank..n_rows {
@@ -86,19 +86,35 @@ fn gaussian_rank(matrix: &[Vec<EF>]) -> usize {
     rank
 }
 
-/// Returns the number of columns the stacked PCS actually commits for this
-/// table. This mirrors the loop in `stack_polynomials_and_commit` which
-/// iterates `0..table.n_columns()`. If the codebase adds
-/// `n_committed_columns()` to the Air trait (as pw8/h44 did), the stacked
-/// PCS uses THAT instead, and this function must be updated to match.
+/// Columns the stacked PCS commits for this table.
+/// Mirrors stack_polynomials_and_commit: `for col_index in 0..table.n_columns()`.
 ///
-/// The invariant: pcs_committed(table) == the column count the stacked PCS
-/// copies into the global polynomial for this table.
+/// UPDATE THIS if the codebase introduces n_committed_columns() to the Air
+/// trait (as h44 did). The stacked PCS would then iterate
+/// `0..table.n_committed_columns()` and this function must match.
 fn pcs_committed(table: &Table) -> usize {
-    // On main: stacked_pcs.rs line 134 uses `table.n_columns()`
-    // If a branch overrides n_committed_columns(), it would be used there.
-    // We compile against whatever the target repo has.
     table.n_columns()
+}
+
+/// Cross-check: pcs_committed() must equal n_columns() for every table.
+/// If someone introduces n_committed_columns() < n_columns() (like h44
+/// did), this check fires and tells you to update pcs_committed().
+fn verify_pcs_consistency() -> bool {
+    let mut ok = true;
+    for table in &ALL_TABLES {
+        let pcs = pcs_committed(table);
+        let n_cols = table.n_columns();
+        if pcs != n_cols {
+            eprintln!(
+                "[soundness] PCS CONSISTENCY FAIL: {}: pcs_committed()={} but n_columns()={}. \
+                 The stacked PCS likely uses n_committed_columns() — update pcs_committed() \
+                 in soundness_check.rs.",
+                table.name(), pcs, n_cols,
+            );
+            ok = false;
+        }
+    }
+    ok
 }
 
 fn check_table(table: &Table, rng: &mut u64) -> bool {
@@ -118,51 +134,39 @@ fn check_table(table: &Table, rng: &mut u64) -> bool {
         return true;
     }
 
-    // Phase 1: Static check — any uncommitted column not referenced by bus?
+    // Phase 1: Static — every uncommitted column must be bus-referenced
     let bus_interactions = table.bus_interactions();
-    let mut bus_uncommitted_cols = std::collections::BTreeSet::new();
+    let mut bus_uncommitted = std::collections::BTreeSet::new();
     for bus in &bus_interactions {
         if let BusMultiplicity::Column(c) = bus.multiplicity {
-            if c >= n_pcs { bus_uncommitted_cols.insert(c); }
+            if c >= n_pcs { bus_uncommitted.insert(c); }
         }
         if let Some(c) = bus.domainsep.column() {
-            if c >= n_pcs { bus_uncommitted_cols.insert(c); }
+            if c >= n_pcs { bus_uncommitted.insert(c); }
         }
         for d in &bus.data {
             if let Some(c) = d.column() {
-                if c >= n_pcs { bus_uncommitted_cols.insert(c); }
+                if c >= n_pcs { bus_uncommitted.insert(c); }
             }
         }
     }
-    let n_bus_accounted = bus_uncommitted_cols.len();
-    let n_unbound = n_uncommitted.saturating_sub(n_bus_accounted);
+    let n_bus = bus_uncommitted.len();
+    let n_unbound = n_uncommitted.saturating_sub(n_bus);
 
     if n_unbound > 0 {
-        let all_uncommitted: std::collections::BTreeSet<usize> = (n_pcs..n_total).collect();
-        let unaccounted: Vec<_> = all_uncommitted.difference(&bus_uncommitted_cols).collect();
+        let all: std::collections::BTreeSet<usize> = (n_pcs..n_total).collect();
+        let missing: Vec<_> = all.difference(&bus_uncommitted).collect();
         eprintln!(
-            "[soundness]   STATIC FAIL: {} uncommitted columns not referenced by any bus interaction",
-            n_unbound,
+            "[soundness]   STATIC FAIL: {} uncommitted columns not bus-referenced: {:?}",
+            n_unbound, missing,
         );
-        eprintln!("[soundness]   unaccounted column indices: {:?}", unaccounted);
         return false;
     }
 
-    // Phase 2: Numerical check — evaluate AIR constraints with random column
-    // values. Fix PCS-committed columns, vary uncommitted columns.
-    // Compute the rank of the resulting constraint difference matrix.
-    //
-    // - rank == 0: constraints don't reference uncommitted columns at all.
-    //   The AIR eval recomputes derived values from committed columns.
-    //   This is SOUND — the constraints are self-contained.
-    //
-    // - 0 < rank < n_uncommitted: constraints DO reference uncommitted
-    //   columns but the system is underdetermined. A malicious prover
-    //   can choose (n_uncommitted - rank) column evaluations arbitrarily.
-    //   This is UNSOUND.
-    //
-    // - rank >= n_uncommitted: all uncommitted columns are fully constrained.
-    //   This is SOUND.
+    // Phase 2: Numerical — evaluate AIR with varying uncommitted columns.
+    // rank=0 → constraints ignore uncommitted cols (self-contained) → PASS
+    // 0<rank<n_uncommitted → underdetermined → FAIL
+    // rank>=n_uncommitted → fully constrained → PASS
 
     let n_alpha = table.n_constraints() + 10;
     let alpha_powers: Vec<EF> = (0..n_alpha).map(|_| random_ef(rng)).collect();
@@ -191,15 +195,13 @@ fn check_table(table: &Table, rng: &mut u64) -> bool {
 
     if rank == 0 {
         eprintln!(
-            "[soundness]   PASS: AIR constraints do not reference uncommitted columns \
-             (eval recomputes from committed columns)",
+            "[soundness]   PASS: constraints do not reference uncommitted columns",
         );
         return true;
     }
-
     if rank >= n_uncommitted {
         eprintln!(
-            "[soundness]   PASS: {} uncommitted columns fully constrained ({} independent directions)",
+            "[soundness]   PASS: {} uncommitted columns fully constrained (rank={})",
             n_uncommitted, rank,
         );
         return true;
@@ -207,24 +209,21 @@ fn check_table(table: &Table, rng: &mut u64) -> bool {
 
     let free = n_uncommitted - rank;
     eprintln!(
-        "[soundness]   NUMERICAL FAIL: {} uncommitted columns in constraints but only {} \
-         independent directions bind them → {} free dimensions",
+        "[soundness]   NUMERICAL FAIL: {} uncommitted columns, rank={} → {} free dimensions",
         n_uncommitted, rank, free,
-    );
-    eprintln!(
-        "[soundness]   A malicious prover can choose {} column evaluations \
-         arbitrarily at the AIR sumcheck endpoint r_air.",
-        free,
     );
     false
 }
 
 fn main() {
-    let mut rng_state: u64 = 0xdeadbeef_cafebabe;
-    let mut all_ok = true;
+    if !verify_pcs_consistency() {
+        std::process::exit(1);
+    }
 
+    let mut rng: u64 = 0xdeadbeef_cafebabe;
+    let mut all_ok = true;
     for table in &ALL_TABLES {
-        if !check_table(table, &mut rng_state) {
+        if !check_table(table, &mut rng) {
             all_ok = false;
         }
     }
