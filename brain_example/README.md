@@ -64,7 +64,7 @@ brain_example/
 │   ├── brain-author-profiler.md    # template-driven program.md for profiling experiments
 │   └── brain-author-optimization.md # template-driven 3-file design for optimization loops
 ├── repo_context/
-│   ├── leanmultisig.md             # hot symbols, baseline, gate, known-no-go's
+│   ├── leanvm.md             # hot symbols, baseline, gate, known-no-go's
 │   ├── plonky3.md                  # subsystems, bench bins, bug-class patterns
 │   └── zkalloc.md                  # API, platform results, integrations
 ├── coordinator/

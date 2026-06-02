@@ -2,6 +2,12 @@
 
 You are an agent dispatched to optimize or profile a ZK proving system. Your program.md defines the specific experiment. This file defines the rules that apply to ALL experiments.
 
+This is an unbounded automated researcher loop. All ideas that are calculated to work MUST be attemmpted, no matter the complexity of implementing it. You have an unlimited time and token budget. 
+
+If you find yourself not implementing an idea you have analyzed, 
+you must state why explicitly before moving on. 
+"Too risky" and "too complex" are not valid reasons on a dev branch.
+
 ## Git Protocol
 
 Two experiment shapes; different git discipline for each.
@@ -20,6 +26,11 @@ Two experiment shapes; different git discipline for each.
 2. **Bulky raw data (>1 MB) goes in `report/`** subfolder of the experiment dir (gitignored, rsynced by coordinator).
 3. **Do NOT `git push`.**
 
+## Execution Discipline
+
+- **One prove_loop at a time.** Before running prove_loop, check `pgrep prove_loop` — if any instance is running, wait for it to finish. Never background prove_loop or run it concurrently with builds.
+- **Gate runs are sacred.** Never launch any compute work while eval_paired.sh is running. No cargo builds, no profiling, no background agents doing Bash. Finish all other work BEFORE starting the gate.
+- **Debug with code, not math.** When debugging numerical correctness, write a test that prints expected vs actual values. Do not derive correctness symbolically in conversation — use the computer to compute.
 
 ---
 
@@ -53,7 +64,7 @@ All table columns + memory_acc + bytecode_acc stacked into one polynomial of siz
 | log_inv_rate | Reed-Solomon rate parameter |
 | Security bits | 124 (Johnson bound) |
 
-**Changing ANY WHIR parameter triggers self-referential bytecode recompilation cascade.** The recursion circuit hardcodes round counts.
+**Changing WHIR parameters triggers bytecode recompilation in the recursion circuit. This is expected — budget for recompilation time and verify the circuit closes.**
 
 ### Memory model
 
@@ -68,7 +79,7 @@ Balanced: sum of push = sum of pull for every tuple. Proved via LogUp-GKR.
 
 Python zkDSL in `crates/rec_aggregation/zkdsl_implem/`. Compiled to bytecode via `compilation.rs`.
 Self-referential: bytecode size must match the guess (recompiles iteratively).
-**All WHIR/GKR parameters are hardcoded as Python constants — changing them changes bytecode size. Any change to column counts, WHIR params, or GKR depth cascades through recursion circuit compilation.**
+WHIR/GKR parameters are hardcoded as Python constants — changing them changes bytecode size. Budget for recompilation time when modifying column counts, WHIR params, or GKR depth.
 
 ### ISA (6 instructions)
 

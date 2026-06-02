@@ -13,10 +13,10 @@ You write `program.md` for profiling / measurement experiments (Shape B). Output
 A profiler is a Shape B experiment (per repo CLAUDE.md): an agent runs measurement tooling against a target system, produces phase-by-phase outputs into a `report/` subdir (gitignored per path-policy), and ends with a synthesis. NO source modifications. NO commits — the data files and their mtimes ARE the audit trail.
 
 Examples in the tree:
-- `experiment_logs/leanMultisig/profiling/concluded/profiling_baseline_hetzner_2026-05-11/` (perf + flamegraph + per-crate aggregation on Hetzner Zen 4)
-- `experiment_logs/leanMultisig/profiling/concluded/profiling_baseline_m2_2026-05-11/` (perf on Asahi M2)
-- `experiment_logs/leanMultisig/profiling/concluded/profiling_macos_m{2pro,4pro,4m32}_pr216_2026-05-12/` (macOS xctrace + sample, three Macs)
-- `experiment_logs/leanMultisig/profiling/concluded/poseidon_call_sites_2026-05-11/` (call-site attribution, finer-grained)
+- `experiment_logs/leanVM/profiling/concluded/profiling_baseline_hetzner_2026-05-11/` (perf + flamegraph + per-crate aggregation on Hetzner Zen 4)
+- `experiment_logs/leanVM/profiling/concluded/profiling_baseline_m2_2026-05-11/` (perf on Asahi M2)
+- `experiment_logs/leanVM/profiling/concluded/profiling_macos_m{2pro,4pro,4m32}_pr216_2026-05-12/` (macOS xctrace + sample, three Macs)
+- `experiment_logs/leanVM/profiling/concluded/poseidon_call_sites_2026-05-11/` (call-site attribution, finer-grained)
 
 The macOS profilings used `sample`, `xctrace`, `powermetrics`, `dtrace` (no `perf` on macOS). The Linux profilings used `perf record/report/annotate`, `flamegraph`, and per-crate aggregation. Tooling differs per OS — your program.md must spell out the right tooling for the target hardware.
 
@@ -44,7 +44,7 @@ Sections of program.md, in order:
 | `## Role` | "You are a performance engineer profiling <target> on <hardware>. Shape B: measurement only, no source changes, no commits." |
 | `## Hardware` | Per-invocation. Include SKU, OS, CPU model, RAM, important quirks (16k pages on Asahi, no perf on macOS, single CCD on Hetzner Zen 4). |
 | `## Repo & Setup` | Repo path + branch + build commands. Branch is usually `main`, NOT an experiment branch — Shape B doesn't commit. |
-| `## Workload` | Exact invocation. E.g., `prove_loop 3` for leanMultisig with 1550 sigs and log_inv_rate=1. Cite the source — this is what gets profiled. |
+| `## Workload` | Exact invocation. E.g., `prove_loop 3` for leanVM with 1550 sigs and log_inv_rate=1. Cite the source — this is what gets profiled. |
 | `## Phases` | Numbered list of phases. Each phase: name, tooling command, expected output file path under `report/`. Phase 0 is usually a smoke test (does the workload run?). Phases 1-N produce specific measurements. Final phase is synthesis. |
 | `## Output / artifacts` | Where each phase output lands. Reaffirm path-is-policy: `<experiment_dir>/report/` for raw data (>200 KB), summary `.md` in the experiment dir root. |
 | `## Hard constraints` | Shape B rules. NO commits. NO source changes. Output is file contents + mtimes. Coordinator rsyncs `report/` back to brain at stop. |

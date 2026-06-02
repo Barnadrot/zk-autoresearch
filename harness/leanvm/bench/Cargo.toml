@@ -1,0 +1,62 @@
+[package]
+name = "leanvm-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Criterion benchmarks for leanVM autoresearch loop"
+
+# Assumes leanVM is cloned at ~/zk-autoresearch/leanVM
+
+[dependencies]
+rec_aggregation = { path = "../../../leanVM/crates/rec_aggregation" }
+xmss             = { path = "../../../leanVM/crates/xmss" }
+backend          = { path = "../../../leanVM/crates/backend" }
+sub_protocols    = { path = "../../../leanVM/crates/sub_protocols" }
+mt-koala-bear    = { path = "../../../leanVM/crates/backend/koala-bear" }
+utils            = { path = "../../../leanVM/crates/utils" }
+lean_vm          = { path = "../../../leanVM/crates/lean_vm" }
+rayon            = "1"
+backtrace        = "0.3"
+postcard         = { version = "1", default-features = false, features = ["alloc"] }
+zk-alloc         = { path = "../../../leanVM/crates/backend/zk-alloc", optional = true }
+
+[features]
+# These features require leanVM branches that have zkalloc support.
+# Comment out when benchmarking against upstream branches (bench-v1, bench-v2).
+# zkalloc = ["dep:zk-alloc", "rec_aggregation/zkalloc"]
+# zkalloc_preload = ["rec_aggregation/zkalloc_preload"]
+zkalloc_global = ["dep:zk-alloc"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "xmss_leaf"
+harness = false
+
+[[bench]]
+name = "poseidon_permute"
+harness = false
+
+[[bench]]
+name = "xmss_leaf_glibc"
+harness = false
+
+[[bench]]
+name = "xmss_leaf_preload"
+harness = false
+
+[[bin]]
+name = "prove_loop"
+path = "src/bin/prove_loop.rs"
+
+[[bin]]
+name = "proof_size_check"
+path = "src/bin/proof_size_check.rs"
+
+[[bin]]
+name = "soundness_check"
+path = "src/bin/soundness_check.rs"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
