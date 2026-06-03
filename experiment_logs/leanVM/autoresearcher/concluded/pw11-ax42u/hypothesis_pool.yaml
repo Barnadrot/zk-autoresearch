@@ -1,0 +1,110 @@
+current_pool:
+  - id: h7
+    paper_anchor: |
+      ePrint 2024/1586 (WHIR) §4.2: RS domain initial reduction reduces the first-round commitment domain.
+      The commitment phase dominates at 16.5% (permute_mut). Each WHIR round commits a polynomial
+      over a domain of size 2^(ν + log_inv_rate - reduction). Increasing reduction from 5 to 6 halves
+      the first-round domain, saving ~50% of first-round Merkle hashes. With 3 WHIR rounds,
+      first-round cost dominates (~60% of total commitment). Net savings: ~30% × 16.5% ≈ 5%.
+      Config constraint: rs_domain_initial_reduction_factor ≤ initial_folding_factor (=7).
+    mechanism: |
+      Increase RS_DOMAIN_INITIAL_REDUCTION_FACTOR from 5 to 6 (or 7).
+      This reduces the initial commitment domain by 2× (or 4×) by starting with a higher-rate
+      Reed-Solomon code. The first WHIR round commits to a smaller polynomial, requiring fewer
+      Merkle tree hashes. The soundness is maintained because the WHIR security proof accounts
+      for the reduced rate — CapacityBound already tightens the proximity gap.
+      The tradeoff: a higher reduction factor may increase the query count (more queries needed
+      to achieve the same soundness at higher rate). Need to verify that the net effect is positive.
+    predicted_pct: -3.0
+    plumbing:
+      - "crates/lean_prover/src/lib.rs:28 — RS_DOMAIN_INITIAL_REDUCTION_FACTOR=6 (or 7)"
+    kill_condition: |
+      If the WHIR config builder panics with "Increase folding_factor_0" when using
+      rs_domain_initial_reduction=6, the reduction exceeds the domain capacity.
+      If proof_size increases by >20%, the query count increase negates the hash savings.
+      Run proof_size_check binary to verify.
+
+  - id: h8
+    paper_anchor: |
+      ePrint 2025/719 (Wei et al.) — Packed sumcheck: 2.78-3.36× speedup over BDDT.
+      ePrint 2024/1046 (BDT) — Already implemented in leanVM. Packed sumcheck is the next step.
+      The packed sumcheck replaces the extension-field sumcheck with k parallel base-field
+      sumchecks folded together. For KoalaBear (p^k ≈ 2^(31k)), k=4 gives ≥100-bit security,
+      k=5 gives ≥128-bit security. All prover computation stays in the base field.
+      Sumcheck-related time: ~23% of total. 2.78× speedup on that = ~15% total improvement.
+    mechanism: |
+      Replace the current extension-field sumcheck (with BDDT optimization) with the packed
+      sumcheck protocol from Wei et al. The prover replicates the sumcheck instance k=5 times,
+      proves them in parallel using base-field arithmetic only, and folds them using a challenge.
+      The verifier sends k parallel challenges per round and verifies the folded instance.
+      This eliminates ALL extension-field multiplications from the sumcheck prover.
+      MAJOR PROTOCOL CHANGE: affects verifier, Fiat-Shamir transcript, recursion circuit.
+    predicted_pct: -10.0
+    plumbing:
+      - "crates/backend/sumcheck/src/ — replace prove.rs, sc_computation.rs with packed variants"
+      - "crates/backend/sumcheck/src/verify.rs — new verification logic for packed sumcheck"
+      - "crates/sub_protocols/src/air_sumcheck.rs — adapt AIR sumcheck to packed protocol"
+      - "crates/lean_prover/src/verify_execution.rs — update verifier for packed challenges"
+      - "crates/rec_aggregation/zkdsl_implem/ — rewrite recursion circuit verification"
+    kill_condition: |
+      If k=5 packed sumcheck soundness error exceeds d/p^k = 9/2^155 ≈ 2^(-152) per round
+      (acceptable for 124-bit total), the protocol is sound. If the folding scheme introduces
+      extra queries that negate the base-field savings, measure before full implementation.
+      If the Fiat-Shamir transcript incompatibility causes the recursion circuit to fail after
+      10 recompilation iterations, the protocol change is too deep for this experiment scope.
+
+  - id: h9
+    paper_anchor: |
+      ePrint 2024/1586 (WHIR) §3: WHIR folding parameters determine round structure.
+      Prior run tried initial_fold=8 with JohnsonBound — failed due to proof size.
+      With CapacityBound (now enabled), proof size is 48% smaller (177 KiB vs 340 KiB).
+      The proof size budget can absorb the increased per-round data from higher folding.
+      Increasing subsequent_fold from 5 to 6 reduces WHIR rounds (fewer Merkle commitments).
+      Each saved round eliminates one full Merkle tree construction + hash.
+    mechanism: |
+      Increase WHIR_SUBSEQUENT_FOLDING_FACTOR from 5 to 6. This folds more variables per
+      round in subsequent WHIR rounds, potentially eliminating one round of Merkle commitment.
+      With CapacityBound, the soundness is tighter → fewer queries needed per round →
+      the proof size overhead from higher folding may be absorbed.
+      Combined with the existing CapacityBound + max_send=10 changes, this further reduces
+      the commitment phase cost (which is the dominant 16.5% of total time).
+    predicted_pct: -2.0
+    plumbing:
+      - "crates/lean_prover/src/lib.rs:27 — WHIR_SUBSEQUENT_FOLDING_FACTOR=6"
+    kill_condition: |
+      If proof_size increases by >30% (from 177 KiB to >230 KiB), the tradeoff is negative
+      for the recursion circuit (larger proofs mean more work in the recursive verifier).
+      If the WHIR config builder panics with domain size assertions, the folding factor
+      exceeds the available domain. Run proof_size_check before performance gate.
+
+history:
+  - id: h1
+    iter_id: 1
+    result: keep
+    measured_pct: -7.68
+    mechanism: Reduce R_P=20→14. Grain LFSR regen. CICO-8=2^166.9.
+  - id: h2
+    iter_id: 2
+    result: keep
+    measured_pct: -2.17
+    mechanism: Reduce R_F=8→6, R_P=14→16. AIR restructured for 3+3.
+  - id: h4
+    iter_id: 3
+    result: keep
+    measured_pct: -4.86
+    mechanism: Reduce R_P=16→14 with R_F=6.
+  - id: h4
+    iter_id: 4
+    result: discard
+    measured_pct: -0.74
+    mechanism: R_P=14→13. Diminishing returns.
+  - id: h5
+    iter_id: 5
+    result: keep
+    measured_pct: -1.89
+    mechanism: CapacityBound + max_send=10.
+  - id: h6
+    iter_id: 6
+    result: discard
+    measured_pct: +3.59
+    mechanism: Degree 10→9 via 16 extra columns. Column cost exceeded sumcheck savings.
