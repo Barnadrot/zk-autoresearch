@@ -1,1 +1,11 @@
 iter	hypothesis_id	predicted_pct	measured_pct	proof_kib	status	files_changed	rationale	diagnostic
+0	h2	-12.0	-0.3	229	discard	1	WHIR fold 7→8	Per-leaf hashing doubled
+1	h5_wip1	-7.0		196	wip	6	n_air_columns() refactoring	Behavior-preserving
+2	h5	-7.0	-1.2	196	discard	8	Virtualize 18 Poseidon cols	Kill: soundness 3 free dims
+3	h7_mmcs	-11.0		N/A	discard	0	MMCS multi-height Merkle	Incompatible: stacked PCS
+4	h_svo	-5.0	+1.5		discard	2	SVO: partial_eq in folder	Regression: extra EF×EF
+5	h4_lazy	-3.0	-0.5		discard	3	Lazy combine_statement	Noise: same speed
+6	h6	-2.0		N/A	discard	3	Monomial binding	Protocol change, test fails
+7	h8_reuse	-7.0		N/A	discard	1	Memory ping-pong reuse	Kill: VM write-once memory
+8	h8_reduce	-7.0		N/A	discard	0	Memory allocation reduction	Only 2.4k saveable, need 60k
+9	h8_eqmle	-1.0		N/A	discard	0	eq_mle tree flattening	Only 2.4k saveable, need 60k

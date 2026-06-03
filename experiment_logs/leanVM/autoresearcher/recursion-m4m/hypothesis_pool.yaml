@@ -1,0 +1,134 @@
+current_pool:
+  - id: h7_mmcs
+    paper_anchor: |
+      Plonky3 MMCS. File: Plonky3/merkle-tree/src/merkle_tree.rs:93-176.
+      Haboeck et al. "Circle STARKs." ePrint 2024/278, Section 4.3 (multi-matrix FRI).
+    mechanism: |
+      Replace flat stacked polynomial commitment with multi-height Merkle tree (MMCS).
+      Tallest data (execution+memory) forms leaf layer. Shorter tables (extension, poseidon)
+      inject at intermediate tree levels via compress_and_inject. Leaf hashing processes
+      only tallest-table columns (~22 effective cols instead of ~115), reducing first_digest_layer
+      by ~80%. Requires adapting WHIR commit/prove/verify for multi-matrix structure.
+    predicted_pct: -11.0
+    plumbing:
+      - crates/backend/symetric/src/merkle.rs:1-128
+      - crates/whir/src/merkle.rs:1-216
+      - crates/whir/src/commit.rs:1-100
+      - crates/sub_protocols/src/stacked_pcs.rs:1-227
+    kill_condition: |
+      If WHIR's product sumcheck requires a single flat polynomial and cannot be adapted for
+      multi-matrix openings, the approach fails. Verify: run test_aggregation after modifying
+      the commit path. If Fiat-Shamir transcript diverges (different root hash structure),
+      the verifier will reject.
+
+  - id: h5
+    paper_anchor: |
+      Papini & Haboeck. ePrint 2023/1284, Section 4.
+      Diamond & Posen. ePrint 2024/504, Section 5.
+    mechanism: |
+      Virtualize 18 Poseidon bus-bound columns by sending virtual column evaluations in the
+      Fiat-Shamir transcript (for AIR constraint checking) while excluding them from the
+      stacked PCS polynomial. The virtual evaluations are bound by bus-GKR at r_gkr and
+      included in the transcript for Fiat-Shamir binding at r_air. ROOT crosses stacked 24→23.
+    predicted_pct: -7.0
+    plumbing:
+      - crates/lean_vm/src/tables/poseidon/mod.rs:369-454
+      - crates/sub_protocols/src/stacked_pcs.rs:40-100
+      - crates/lean_prover/src/prove_execution.rs:128-230
+      - crates/lean_prover/src/verify_execution.rs:60-170
+      - crates/backend/air/src/symbolic.rs:320-334
+      - crates/backend/sumcheck/src/sc_computation.rs:19-26
+    kill_condition: |
+      If the AIR verifier's constraint evaluation at r_air produces a different result when
+      using prover-supplied virtual evaluations vs PCS-opened evaluations, the proof is unsound.
+      Verify: correctness gate Layer 5 (test_aggregation) must pass.
+
+  - id: h_svo
+    paper_anchor: |
+      Dao et al. "Speeding Up Sum-Check Proving (Extended Version)." ePrint 2026/587, Section 4.
+      Dao, Thaler. "More Optimizations to Sum-Check Proving." ePrint 2024/1210, Section 3.
+    mechanism: |
+      Apply small-value optimization to AIR sumcheck inner loop. For early rounds where columns
+      are base-field-valued, accumulate constraint evaluations in base field and defer extension
+      field conversion. Replaces per-pair EF×EF multiply with per-constraint EF×BF multiply.
+      For 94 Poseidon constraints: 94×5=470 base ops vs 1×15=15 (analysis predicted worse).
+      MUST implement and measure — theoretical analysis may be wrong about real performance.
+    predicted_pct: -5.0
+    plumbing:
+      - crates/sub_protocols/src/air_sumcheck.rs:440-555
+      - crates/backend/sumcheck/src/sc_computation.rs:19-60
+      - crates/backend/air/src/constraint_folder/packed.rs:39-98
+    kill_condition: |
+      If the modified sumcheck produces different round polynomial coefficients (detected by
+      Fiat-Shamir transcript mismatch), the implementation has a bug. Verify: test_aggregation.
+
+  - id: h4_lazy
+    paper_anchor: |
+      Dao, Thaler. ePrint 2024/1210, Section 4 (delayed eq-binding).
+      Bagad et al. ePrint 2025/1117, Section 3 (SplitEq for eq-polynomial binding).
+    mechanism: |
+      Fuse combine_statement with the product sumcheck's first round to avoid materializing
+      the full 2^24-element weight polynomial. Use SplitEq-factored representation of the
+      OOD eq polynomials. Theoretical analysis predicted 67% more arithmetic — MUST implement
+      and measure because the cache/memory effects may compensate.
+    predicted_pct: -3.0
+    plumbing:
+      - crates/whir/src/open.rs:412-613
+      - crates/backend/sumcheck/src/product_computation.rs:37-229
+      - crates/backend/poly/src/eq_mle.rs:931-981
+    kill_condition: |
+      If the fused first round produces different sumcheck polynomial coefficients (Fiat-Shamir
+      divergence), the implementation has a bug. Verify: test_aggregation passes.
+
+  - id: h6
+    paper_anchor: |
+      Dao et al. "The Sum-Check Protocol over the Monomial Basis." ePrint 2026/762, Section 3.
+      Dao et al. ePrint 2026/587, Section 5 (Montgomery binding optimization).
+    mechanism: |
+      Replace Lagrange-basis sumcheck binding with monomial-basis (projective {0,infinity}).
+      Eliminates subtractions in fold_multilinear and removes evals-to-coeffs conversion in
+      WHIR final round. 1.82x speedup on binding step per paper's benchmarks.
+    predicted_pct: -2.0
+    plumbing:
+      - crates/backend/poly/src/utils.rs:161-186
+      - crates/backend/sumcheck/src/prove.rs:86-151
+      - crates/whir/src/open.rs:182-240
+    kill_condition: |
+      If the monomial-basis round polynomial has different Fiat-Shamir hash than the
+      Lagrange-basis version, the recursion circuit verification fails. Verify: test_aggregation.
+
+history:
+  - id: h2
+    paper_anchor: Arnon et al. ePrint 2024/1586 §4, ePrint 2024/390 §5.
+    mechanism: WHIR_INITIAL_FOLDING_FACTOR 7→8.
+    predicted_pct: -12.0
+    measured_pct: -0.3
+    status: discard
+    iter_id: 0
+    discard_reason: Per-leaf hashing cost doubled. Extension ops +24%.
+  - id: h2b
+    paper_anchor: Same as h2.
+    mechanism: MAX_NUM_VARIABLES_TO_SEND_COEFFS 8→12.
+    predicted_pct: -3.3
+    measured_pct: +11.9
+    status: prefiltered
+    discard_reason: Recursion circuit cycles exploded (+80%).
+  - id: h3_original
+    paper_anchor: Bagad et al. ePrint 2025/1117 §4.
+    mechanism: Small-field optimization for WHIR product sumcheck.
+    predicted_pct: -8.0
+    status: prefiltered
+    discard_reason: Already implemented via Rust type dispatch (BasePacked × ExtensionPacked).
+  - id: h_fat_lto
+    paper_anchor: N/A.
+    mechanism: Fat LTO + codegen-units=1.
+    predicted_pct: -3.0
+    measured_pct: +3.1
+    status: prefiltered
+    discard_reason: Fat LTO produces larger binary, hurting icache on M4 Pro.
+  - id: h1
+    paper_anchor: Grassi et al. ePrint 2023/323, Papini-Haboeck ePrint 2023/1284.
+    mechanism: Batch Poseidon partial-round intermediates to reduce committed columns.
+    predicted_pct: -4.0
+    status: prefiltered
+    discard_reason: Degree-split optimization destroyed (low-degree evals go from 4 to 10 points).

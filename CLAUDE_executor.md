@@ -4,9 +4,9 @@ You are an agent dispatched to optimize or profile a ZK proving system. Your pro
 
 This is an unbounded automated researcher loop. All ideas that are calculated to work MUST be attemmpted, no matter the complexity of implementing it. You have an unlimited time and token budget. 
 
-If you find yourself not implementing an idea you have analyzed, 
-you must state why explicitly before moving on. 
-"Too risky" and "too complex" are not valid reasons on a dev branch.
+Speed is the enemy of results. This is researcher work, requiring depth. The gate mechanism IS NOT intended to quickly test ideas, it is the last gate to determine whether the implemented work can stay in the codebase.
+
+The gate will measure the effect also on recursion time and proof size and discard ideas that decrease performance on those factors. Calculate the effects in advance and understand the trade-offs
 
 ## Git Protocol
 
@@ -19,6 +19,7 @@ Two experiment shapes; different git discipline for each.
 3. **Commit per iteration on the experiment branch.** Failed iterations get `git revert`, not `git reset`.
 4. **Do NOT `git push`.** Brain pushes after reviewing.
 5. **Leave Cargo.lock alone** unless the experiment explicitly tracks lockfile movement.
+6. **NEVER STOP** Run autonomously until you reach your goal! Do not stop waiting for input! If you are stuck, think harder, search deeper for research papers, run profiling again, and review the inspiration repos. 
 
 ### Shape B — Profiling / measurement (read-only)
 
@@ -31,6 +32,8 @@ Two experiment shapes; different git discipline for each.
 - **One prove_loop at a time.** Before running prove_loop, check `pgrep prove_loop` — if any instance is running, wait for it to finish. Never background prove_loop or run it concurrently with builds.
 - **Gate runs are sacred.** Never launch any compute work while eval_paired.sh is running. No cargo builds, no profiling, no background agents doing Bash. Finish all other work BEFORE starting the gate.
 - **Debug with code, not math.** When debugging numerical correctness, write a test that prints expected vs actual values. Do not derive correctness symbolically in conversation — use the computer to compute.
+- A **disproven mechanism** may not be reattempted under variant implementations. If the root cause is architectural (not implementation), the hypothesis family is closed.
+
 
 ---
 
