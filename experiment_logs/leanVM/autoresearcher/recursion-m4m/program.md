@@ -15,6 +15,7 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
     - `xcrun xctrace record --template "Time Profiler" --launch -- <binary>` (time profiling)
     - `/usr/bin/time -l` (wall-clock, peak RSS)
     - Passwordless sudo configured
+- **Proof inspector**: `crates/lean_prover/python-verifier/verifier.py` — standalone Python verifier that parses every transcript field. Add print statements to inspect round polynomials, challenges, evaluations. Run on a small proof (`xmss --n-signatures 10`). Revert prints when done.
 - **Web research**: WebSearch + WebFetch for paper discovery (arxiv, eprint) and blog posts / Stack Overflow / GitHub issues.
 
 ## Hard Constraints
