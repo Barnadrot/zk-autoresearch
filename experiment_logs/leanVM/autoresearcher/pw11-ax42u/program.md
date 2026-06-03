@@ -22,10 +22,11 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 1) Always specify the security regime and strengthen it with citations
 2) Do not modify tests or anything that affects the correctness or the benchmarking methodology. 
 3) Do not migrate from Poseidon1 implementation to a different hashing algorithm. 
-4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's context management will manage context by auto-compression if you hit the 1 million token context limit. 
+4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's contex
+5) Do not modify memory management
 
 
-## Autoresearch Loop
+## Automated Research Methodology
 See chapters for substeps, order of operations
 1. Phase 0
 2. Phase 2
@@ -43,21 +44,24 @@ See chapters for substeps, order of operations
   3. Profile the codebase - see profiling for tools and instructions
   4. **Protocol trace**: Read verify_execution.rs. Write a ≤10-line
   summary of what the verifier checks at each phase transition.
+  
+  Artifacts for each step: `zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw11-ax42u/report/iter{N}_phase_0.md`
 
-
-  ### Phase 1 - Develop Your Hypothesis
+  ### Phase 1 - Develop Your Hypothesis - Analyze this thoroughly before proceeding to Phase 2 - This is the most important step for results
     See logging rules at the logging chapter
 
   1. Select your target
-  2. Read minimum 10 related research papers to develop 3 different hypothesis that can solve your target
+  2. Read  yourself (DO NOT use sub-agents for this) minimum 10 related research papers to develop 3 different hypothesis that can solve your target
   3. Fill the pool with 3 initial candidates, based on your research. Add the papers you have read and you are using as citations.You need to develop composition techniques from different papers. 
   4. Use a subagent for each candidate in /plan mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
         Resources to hand off to the agent: Papers, Codebase understanding and tools to test. 
   5. Review the implementation plans once they finish and calculate the impact for the predicted_pct field
   6. Select by ambition: largest PROTOCOL DEPTH (changes verifier > changes prover round structure > changes prover implementation). Tiebreak: largest |predicted_pct|.
 
+  Output artifacts: `zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw11-ax42u/hypothesis_pool.yaml`
 
-### Phase 2: Implement
+
+  ### Phase 2: Implement
 
   Implement your hypothesis. Commit when logically complete; run the gate when the change is measurable. Iter rationale references the mechanism's papers + any inspiration-repo file:line that shaped the implementation.
 
