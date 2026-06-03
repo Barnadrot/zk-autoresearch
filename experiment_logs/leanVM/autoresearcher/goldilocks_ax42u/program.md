@@ -25,8 +25,12 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 3) Do not migrate from Poseidon1 implementation to a different hashing algorithm. 
 4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's contex
 5) Do not modify memory management
-6) Round count changes require security analysis with specific CICO bounds in the commit message.
-   Do NOT change SECURITY_BITS or SecurityAssumption without human approval.
+6) Do NOT modify these files (security-critical cryptographic parameters):
+    - crates/backend/goldilocks/src/poseidon1.rs (round counts, round constants, MDS matrix)
+    - crates/lean_prover/src/lib.rs (constants: SECURITY_BITS, GRINDING_BITS, 
+      MAX_NUM_VARIABLES_TO_SEND_COEFFS, WHIR_*, RS_DOMAIN_*, SecurityAssumption)
+    - crates/lean_prover/python-verifier/verifier.py (WHIR_CONFIGS)
+
 
 
 ## Automated Research Methodology
