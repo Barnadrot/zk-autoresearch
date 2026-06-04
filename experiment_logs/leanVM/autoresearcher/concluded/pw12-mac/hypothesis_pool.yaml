@@ -1,0 +1,137 @@
+current_pool:
+  - id: h8
+    paper_anchor: |
+      Thaler 2025 (eprint 2025/2041), Sec 5.2: Virtual polynomials — avoid committing intermediate
+      circuit layers by expressing them as low-degree functions of committed inputs. The GKR protocol
+      is the canonical mechanism: each layer's values are virtual, verified via layer-by-layer sumcheck.
+      Belling-Begassat 2020: "GKR inside a SNARK to reduce hash verification to 3 constraints."
+      Vitalik 2025 GKR Tutorial: GKR is 15x overhead vs 100x for traditional STARK for hash functions.
+      Interstellar (eprint 2025/1294): avoids commitments to full computation traces via GKR.
+      Poseidon-GKR in Semaphore 2024: 40% prover speedup for Poseidon via GKR sumcheck.
+    mechanism: |
+      COMPOSITION: GKR-verified virtual checkpoints + degree splitting.
+      Step 1: Make existing 48 full-round checkpoint columns VIRTUAL (not committed to stacked PCS).
+      The round function checkpoint = MDS(cube(prev_state + constants)) is a deterministic function
+      of the committed input columns. Use a circuit GKR to verify correctness: the GKR circuit has
+      depth 3 (square layer + multiply layer + linear MDS), width 16, applied to all 2^18 rows.
+      Step 2: With 48 committed columns removed (110→62), add 64 per-round checkpoint columns
+      (ALSO virtual/GKR-verified) for degree splitting. Net committed: 62 cols. Net virtual: 64+48=112.
+      Step 3: The AIR sumcheck runs at degree 4 (per-round checkpoints). The stacked PCS has only
+      62 Poseidon committed columns: 62 × 2^18 = 16.3M cells. Total stacked: 47.6M < 2^26. Safe.
+      The GKR proves all 8 full-round checkpoints are correct, adding ~O(8 × 3 × N × 16) operations.
+      At N=2^18: GKR cost ≈ 96M operations vs AIR sumcheck savings ≈ 312M operations. Net win.
+    predicted_pct: -6
+    plumbing:
+      - crates/sub_protocols/src/quotient_gkr/  # Extend or add circuit GKR alongside LogUp-GKR
+      - crates/lean_vm/src/tables/poseidon/mod.rs  # Make checkpoint columns virtual, add per-round virtual checkpoints
+      - crates/lean_prover/src/prove_execution.rs  # Run circuit GKR after AIR sumcheck for Poseidon checkpoints
+      - crates/lean_prover/src/verify_execution.rs  # Verify GKR claims, connect to WHIR opening
+      - crates/sub_protocols/src/air_sumcheck.rs  # Handle virtual columns in compute_raw_poly
+    kill_condition: |
+      GKR prover cost exceeds AIR sumcheck savings. Measured by implementing the GKR circuit
+      for one round function and benchmarking it standalone at 2^18 instances. If GKR_cost_per_round
+      > (current_AIR_poseidon_cost - new_AIR_poseidon_cost) / 8, the GKR overhead exceeds savings.
+      Concretely: if GKR for 1 round > 39M operations (= 312M savings / 8 rounds), killed.
+
+  - id: h9
+    paper_anchor: |
+      Thaler 2025 (eprint 2025/2041), Sec 5.2: Virtual polynomials.
+      H1 post-mortem: column budget is 26 at 1550 sigs. BUT if existing committed checkpoints are
+      made virtual first, the budget opens dramatically (19.5M headroom = 74 additional columns).
+    mechanism: |
+      MINIMAL version of H8: make ONLY the 32 beginning_full_rounds columns virtual via GKR
+      (not the 16 ending_full_rounds). This creates 32 × 2^18 = 8.4M cells headroom. Combined
+      with existing 6.9M: total 15.3M = 58 additional Poseidon cols. Then add 32 per-round
+      checkpoints for the beginning rounds only (2 pairs × 2 rounds × 16 = 64 columns, but only
+      32 committed + 32 virtual). Net committed: 110 - 32 + 32 = 110 (same!). But the beginning
+      full rounds drop from degree 9 to degree 3. Ending still degree 9. degree_air = 9.
+      Savings from degree 10→9 (1 fewer eval point) + GKR cost for 4 beginning rounds.
+    predicted_pct: -3
+    plumbing:
+      - crates/sub_protocols/src/quotient_gkr/  # Circuit GKR for 4 beginning full rounds only
+      - crates/lean_vm/src/tables/poseidon/mod.rs  # Restructure beginning columns
+      - crates/lean_prover/src/prove_execution.rs  # GKR for beginning rounds
+    kill_condition: |
+      Same as H8 but for 4 rounds only. If GKR cost for 4 beginning rounds exceeds the savings
+      from 1 fewer eval point (degree 10→9), killed.
+
+  - id: h10
+    paper_anchor: |
+      Thaler 2025 (eprint 2025/2041), Sec 4.2: Sparse sums and streaming proving.
+      leanVM Poseidon trace: at 1550 sigs, only 259K of 2^18 = 262K rows are active (99% full).
+      But the Poseidon table has 110 columns, most of which are intermediate computation
+      (only ~26 are truly "input/output": 16 inputs + 2 pointers + 8 outputs = 26).
+      The remaining 84 columns are intermediate computation (checkpoints + partial rounds).
+    mechanism: |
+      RADICAL column reduction: commit ONLY the input/output/control columns (26 columns)
+      and make ALL intermediate computation columns virtual. The 84 intermediate columns
+      (32 beginning_full_rounds + 20 partial_rounds + 16 ending_full_rounds + 16 out_lo/out_hi)
+      — wait, out_lo/out_hi are bus-bound and must stay committed. So: commit 42 columns
+      (10 flags + 16 inputs + 8 out_lo + 8 out_hi), virtualize 68 (32+20+16). Use GKR to
+      verify the full Poseidon permutation from input to output, bypassing ALL intermediate
+      constraints. The AIR becomes trivially simple: just bus interactions + flag checks
+      (degree ≤ 3). The stacked PCS shrinks from 60.2M to 42 × 2^18 + base = 42.4M cells.
+    predicted_pct: -10
+    plumbing:
+      - crates/sub_protocols/src/quotient_gkr/  # Full Poseidon GKR circuit (all 28 rounds)
+      - crates/lean_vm/src/tables/poseidon/mod.rs  # Radical AIR restructure — only bus + flags
+      - crates/lean_prover/src/prove_execution.rs  # Full GKR for Poseidon permutation
+      - crates/lean_prover/src/verify_execution.rs  # GKR verification + WHIR binding
+    kill_condition: |
+      Full Poseidon GKR (28 rounds × depth-3 circuit) costs more than the current AIR sumcheck.
+      Pre-check: GKR for 28 rounds at 2^18 instances ≈ 28 × 12M = 336M operations. Current
+      Poseidon AIR sumcheck ≈ 520M operations. Net saving if AIR drops to degree 3: 520M - 130M
+      - 336M = 54M (positive). Kill if GKR benchmark exceeds 390M operations.
+
+history:
+  - id: h1
+    iter_id: 1
+    status: discard
+    reason: +64 cols push stacked_n_vars 26→27. Doubles Merkle+DFT cost.
+  - id: h2
+    status: infeasible
+    reason: Bus terms prevent full zerocheck. Modified eq already implemented.
+  - id: h3
+    iter_id: 2
+    status: discard
+    reason: Phase 2+3 is only 18% of AIR sumcheck. Round skipping saves ~1.5% total.
+  - id: h4
+    status: infeasible
+    reason: Virtual partial-round columns would be free variables.
+  - id: h5
+    iter_id: 3
+    status: discard
+    reason: Measured +0.87% regression. +16 cols Merkle overhead > AIR savings.
+  - id: h6
+    iter_id: 4
+    status: discard
+    reason: 1.4% total savings below 0.93% noise floor. Not measurable.
+  - id: h7
+    status: infeasible
+    reason: be multiply already costs 5 bb muls (minimum). No savings possible.
+  - id: h11
+    status: infeasible
+    reason: |
+      Gruen eq extraction (Sec 3.2): ALREADY IMPLEMENTED in leanVM. The compute_bare_round_poly
+      already factors out eq(α_i, X) via SplitEq. The expand_bare_to_full only reconstructs for
+      Fiat-Shamir batching. Quotient caching (Sec 4): KILLED by memory — 2.3 GB for Poseidon
+      (110 cols × 10 × 131K × 16B). Eq-poly split: ALREADY IMPLEMENTED — SplitEq IS the two-table
+      decomposition (eq_lo = E_L, eq_hi_packed = E_R). Cost is O(√N) = ~512 ops, negligible vs
+      constraint evaluation at O(N×degree) = ~1.3M ops per round.
+      Papers: Bagad et al. 2025/1117, Gruen 2024/108, Dao-Thaler 2024/1210.
+  - id: h12
+    status: infeasible
+    reason: |
+      SplitEq already IS the two-table eq decomposition from Bagad-Dao-Domb-Thaler Algorithm 5.
+      The existing eq_lo field is E_L and eq_hi_packed is E_R. SplitEq::new costs ~2-5μs per round
+      vs constraint eval at ~2-8ms per round. Even incremental updates would save < 18μs total
+      across 18 rounds. Expected speedup < 0.1%, well below noise floor.
+      Papers: Bagad et al. 2025/1117, Dao-Thaler 2024/1210.
+  - id: h13
+    status: infeasible
+    reason: |
+      Same as h11 — the eq(α_i, X) factor extraction from Gruen Sec 3.2 is already implemented
+      in leanVM's bare_degree()/eq_alpha()/compute_bare_round_poly architecture. The prover already
+      computes t_i(X) of degree d=10 (not d+1=11). Reducing bare_degree to 9 would under-interpolate
+      the degree-10 constraint polynomial — the constraint degree is the real bottleneck.
+      Papers: Gruen 2024/108, Bagad et al. 2025/1117.
