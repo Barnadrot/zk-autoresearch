@@ -96,6 +96,13 @@ if [[ "$TOOL_NAME" == "Read" ]] && echo "$TOOL_CONTENT" | grep -qE "\.pdf"; then
   fi
 fi
 
+# --- Block agent from writing .phase_state directly ---
+if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]] && echo "$TOOL_CONTENT" | grep -qE "\.phase_state"; then
+  log_hook "blocked:direct_phase_state_write"
+  inject "PHASE GATE: Do not write .phase_state directly. Phase transitions are managed by the hook system based on your artifacts (profiling output, papers downloaded, git commits/reverts)."
+  exit 0
+fi
+
 # --- Nudge: curl to /tmp/ instead of papers dir ---
 if [[ "$TOOL_NAME" == "Bash" ]] && echo "$TOOL_CONTENT" | grep -qE "curl.*\.pdf.*-o.*/tmp/|wget.*\.pdf.*/tmp/"; then
   inject "TIP: Save papers to ${PAPERS_DIR}/ instead of /tmp/ so they count toward Phase 1. mkdir -p ${PAPERS_DIR} && curl -s -o ${PAPERS_DIR}/name.pdf ..."
@@ -120,35 +127,34 @@ if [[ "$CURRENT_PHASE" == "phase_0" && ("$TOOL_NAME" == "Write" || "$TOOL_NAME" 
   fi
 fi
 
-# --- Phase 1: papers required before implementation ---
-if [[ "$CURRENT_PHASE" == "phase_1" ]]; then
-  PAPER_COUNT=$(count_papers)
-  READ_COUNT=$(count_papers_read)
-  TRYING_TO_IMPLEMENT=false
+# --- Paper check: fires on ANY phase when agent tries to implement ---
+# This prevents the agent from bypassing Phase 1 by writing .phase_state directly.
+PAPER_COUNT=$(count_papers)
+READ_COUNT=$(count_papers_read)
+TRYING_TO_IMPLEMENT=false
 
-  if [[ "$TOOL_NAME" == "Bash" ]] && echo "$TOOL_CONTENT" | grep -qE "^git commit|&& git commit|; git commit"; then
-    TRYING_TO_IMPLEMENT=true
-  fi
-  if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]] && echo "$TOOL_CONTENT" | grep -qE "leanVM/crates/"; then
-    TRYING_TO_IMPLEMENT=true
-  fi
+if [[ "$TOOL_NAME" == "Bash" ]] && echo "$TOOL_CONTENT" | grep -qE "^git commit|&& git commit|; git commit"; then
+  TRYING_TO_IMPLEMENT=true
+fi
+if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]] && echo "$TOOL_CONTENT" | grep -qE "leanVM/crates/"; then
+  TRYING_TO_IMPLEMENT=true
+fi
 
-  if [[ "$TRYING_TO_IMPLEMENT" == "true" ]]; then
-    if [[ "$PAPER_COUNT" -lt "$REQUIRED_PAPERS" ]]; then
-      log_hook "blocked:papers_downloaded:${PAPER_COUNT}/${REQUIRED_PAPERS}"
-      inject "PHASE GATE: ${PAPER_COUNT}/${REQUIRED_PAPERS} papers downloaded to ${PAPERS_DIR}/. Download $((REQUIRED_PAPERS - PAPER_COUNT)) more before implementing."
-      exit 0
-    elif [[ "$READ_COUNT" -lt "$REQUIRED_PAPERS" ]]; then
-      log_hook "blocked:papers_not_read:${READ_COUNT}/${REQUIRED_PAPERS}"
-      inject "PHASE GATE: ${PAPER_COUNT} papers downloaded but only ${READ_COUNT} read. Use: Read ${PAPERS_DIR}/name.pdf pages=\"1-15\" for $((REQUIRED_PAPERS - READ_COUNT)) more."
-      exit 0
-    fi
-  fi
+if [[ "$TRYING_TO_IMPLEMENT" == "true" && "$PAPER_COUNT" -lt "$REQUIRED_PAPERS" ]]; then
+  log_hook "blocked:papers_insufficient:${PAPER_COUNT}/${REQUIRED_PAPERS}:phase=${CURRENT_PHASE}"
+  inject "PHASE GATE: ${PAPER_COUNT}/${REQUIRED_PAPERS} papers in ${PAPERS_DIR}/. You cannot implement without reading ${REQUIRED_PAPERS} papers this iteration. Download and read papers first."
+  exit 0
+fi
+if [[ "$TRYING_TO_IMPLEMENT" == "true" && "$READ_COUNT" -lt "$REQUIRED_PAPERS" ]]; then
+  log_hook "blocked:papers_not_read:${READ_COUNT}/${REQUIRED_PAPERS}:phase=${CURRENT_PHASE}"
+  inject "PHASE GATE: ${PAPER_COUNT} papers downloaded but only ${READ_COUNT} read. Read ${PAPERS_DIR}/name.pdf for $((REQUIRED_PAPERS - READ_COUNT)) more before implementing."
+  exit 0
+fi
 
-  if [[ "$PAPER_COUNT" -ge "$REQUIRED_PAPERS" && "$READ_COUNT" -ge "$REQUIRED_PAPERS" ]]; then
-    echo "phase_2" > "$STATE_FILE"
-    log_hook "advance:phase_1->phase_2"
-  fi
+# Advance from phase_1 to phase_2 if papers satisfied
+if [[ "$CURRENT_PHASE" == "phase_1" && "$PAPER_COUNT" -ge "$REQUIRED_PAPERS" && "$READ_COUNT" -ge "$REQUIRED_PAPERS" ]]; then
+  echo "phase_2" > "$STATE_FILE"
+  log_hook "advance:phase_1->phase_2"
 fi
 
 # --- Phase transitions on git commands ---
