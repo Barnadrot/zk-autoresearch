@@ -79,6 +79,46 @@ if [[ -f "$INTEGRITY_FILE" ]]; then
 fi
 
 # -----------------------------------------------------------------------
+# Layer 0.5: Crypto parameter guard
+# Verifies security-critical constants haven't been modified from spec.
+# Pure grep checks — no compilation, runs in milliseconds.
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.5: Crypto parameter guard..."
+
+# Poseidon round counts (spec: R_F=8 i.e. HALF=4, R_P=20)
+HALF_FULL=$(grep "pub const POSEIDON1_HALF_FULL_ROUNDS" crates/backend/koala-bear/src/poseidon1_koalabear_16.rs | grep -oE "= [0-9]+" | grep -oE "[0-9]+")
+PARTIAL=$(grep "pub const POSEIDON1_PARTIAL_ROUNDS" crates/backend/koala-bear/src/poseidon1_koalabear_16.rs | grep -oE "= [0-9]+" | grep -oE "[0-9]+")
+if [[ "$HALF_FULL" != "4" || "$PARTIAL" != "20" ]]; then
+  fail "0.5" \
+    "Poseidon round counts modified: HALF_FULL_ROUNDS=${HALF_FULL} (expected 4), PARTIAL_ROUNDS=${PARTIAL} (expected 20)." \
+    "Poseidon round counts are security-critical parameters defined in the leanVM spec (Section 4.2: N_full/2=4, N_partial=20). Reducing rounds trades security margin for speed — the interpolation attack bound requires R_F+R_P >= 24 for 124-bit security. The Poseidon Initiative bounty has R_F=6,R_P=8 BROKEN and R_F=6,R_P=10 OPEN at \$15K." \
+    "Revert your changes to poseidon1_koalabear_16.rs. Round count changes require explicit human approval and a published security analysis."
+fi
+
+# Security bits
+SEC_BITS=$(grep "pub const SECURITY_BITS" crates/lean_prover/src/lib.rs | grep -oE "= [0-9]+" | grep -oE "[0-9]+")
+if [[ "$SEC_BITS" != "124" ]]; then
+  fail "0.5" \
+    "SECURITY_BITS changed from 124 to ${SEC_BITS}." \
+    "The security target is a system-wide parameter that affects WHIR query counts, grinding bits, and all soundness proofs. Changing it without updating the entire security analysis invalidates all soundness guarantees." \
+    "Revert SECURITY_BITS to 124 in crates/lean_prover/src/lib.rs."
+fi
+
+# Soundness assumption (must be JohnsonBound or feature-gated CapacityBound)
+if grep -q "SecurityAssumption::CapacityBound" crates/lean_prover/src/lib.rs; then
+  # Check it's behind a feature flag, not hardcoded
+  if ! grep -B2 "SecurityAssumption::CapacityBound" crates/lean_prover/src/lib.rs | grep -q "cfg.*feature\|prox.gaps"; then
+    fail "0.5" \
+      "CapacityBound hardcoded without feature flag in lib.rs." \
+      "CapacityBound is a conjectured (not proven) proximity gap assumption. The strong form was disproven in 2025. It must remain behind the prox-gaps-conjecture feature flag so the system can revert to the proven JohnsonBound if the conjecture is further weakened." \
+      "Restore the feature flag: use cfg!(feature = \"prox-gaps-conjecture\") to gate CapacityBound, with JohnsonBound as the default."
+  fi
+fi
+
+echo "[correctness] Layer 0.5 PASSED — crypto parameters match spec."
+
+# -----------------------------------------------------------------------
 # Layer 1: Compile gate
 # -----------------------------------------------------------------------
 echo ""
