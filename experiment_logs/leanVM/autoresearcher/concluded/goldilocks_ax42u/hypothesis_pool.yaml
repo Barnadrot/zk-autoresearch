@@ -1,0 +1,79 @@
+current_pool:
+  - id: h1
+    paper_anchor: >
+      eprint 2024/1046 (BDT). On-the-fly partial eval to avoid ExtensionPacked
+      materialization.
+    mechanism: >
+      Defer fold materialization. Compute folded values on-the-fly during constraint
+      evaluation instead of allocating 3x-larger ExtensionPacked arrays.
+    predicted_pct: -3
+    plumbing:
+      - crates/sub_protocols/src/air_sumcheck.rs
+      - crates/backend/sumcheck/src/sc_computation.rs
+    kill_condition: >
+      If on-the-fly interpolation (2^D be muls per column per entry) exceeds the
+      memory bandwidth savings, the net effect is zero or negative.
+
+  - id: h4
+    paper_anchor: >
+      eprint 2024/1586 (WHIR) Section 6; iter2 profile: 39% stacked polynomial
+      padding wastes DFT + Merkle work. The stacked polynomial at ν=27 has 82M
+      cells in 2^27=134M capacity = 61% fill. Execution table (42M) and Poseidon
+      table (29M) are the two largest contributors.
+    mechanism: >
+      Split the stacked polynomial into two halves committed separately:
+      Poly A = memory (8M) + memory_acc (8M) + bytecode_acc (2M) + execution (42M) = 60M → ν_A=26 (89% fill)
+      Poly B = poseidon (29M) + extension (0.7M) = 29.7M → ν_B=25 (90% fill)
+      Total DFT: 2^27 + 2^26 = 1.5×2^27 vs current 2^28. Savings: 25% of DFT+Merkle cost.
+      The AIR sumcheck runs unchanged (single batched sumcheck over all tables). Column
+      evaluations at the sumcheck point are opened from the respective WHIR commitment.
+      Two WHIR opening proofs instead of one, but each is smaller.
+    predicted_pct: -9
+    plumbing:
+      - crates/sub_protocols/src/stacked_pcs.rs:102-161  # split into two stack_and_commit calls
+      - crates/sub_protocols/src/stacked_pcs.rs:40-100  # stacked_pcs_global_statements: two polynomial refs
+      - crates/lean_prover/src/verify_execution.rs  # parse two commitments, two opening proofs
+      - crates/lean_prover/python-verifier/verifier.py  # match split commitment parsing
+    kill_condition: >
+      The split must not cross the ν boundary in the wrong direction (e.g., if memory
+      grows, Poly A could exceed ν=26 → ν=27, eliminating savings). Verify: for the
+      1550-sig workload, compute both ν_A and ν_B and assert they are strictly less
+      than the current ν=27. Also: the two WHIR opening proofs increase proof size
+      and verifier time. If proof_kib increases by more than 30% (from 374 KiB), the
+      recursion circuit cost may offset the prover savings.
+
+  - id: h6
+    paper_anchor: >
+      iter2 profile: rayon overhead 5.45% (ForEachConsumer 3.53% + bridge 1.92%).
+      The parallel sumcheck uses par_iter over fold_size entries. For large tables
+      (execution: 2^21 rows), the fold_size in early rounds is 2^20, giving ample
+      parallelism. But for smaller tables (extension: 2^15 rows, poseidon: 2^18),
+      the fold_size may be too small for efficient parallelism, causing rayon
+      scheduling overhead to dominate.
+    mechanism: >
+      Add a PARALLEL_THRESHOLD tuning for the AIR sumcheck that uses sequential
+      iteration when fold_size × degree < threshold. Currently PARALLEL_THRESHOLD
+      in sc_computation.rs is a fixed constant. For small tables, switching to
+      sequential saves 5% rayon overhead. For large tables, keep parallel.
+      Also: adjust the rayon thread pool granularity to reduce scheduling overhead
+      for medium-sized workloads.
+    predicted_pct: -2
+    plumbing:
+      - crates/backend/sumcheck/src/sc_computation.rs:60-86  # parallel_sum: adjust threshold
+      - crates/sub_protocols/src/air_sumcheck.rs:395-442  # compute_raw_poly_impl: par_iter tuning
+    kill_condition: >
+      If reducing rayon overhead also reduces CPU utilization (fewer cores used),
+      the serial execution path may be slower despite less overhead. Measure both
+      serial and parallel prove times.
+
+history:
+  - id: h2
+    iter_id: 1
+    result: discard
+    measured_pct: +1.45
+    diagnostic: Composed map is ADDITIVE, ConstraintFolder uses concrete values.
+  - id: h3
+    iter_id: 2
+    result: discard
+    measured_pct: -0.15
+    diagnostic: eq tables not dominant TLB source; multilinear column data causes misses.
