@@ -4,27 +4,27 @@
     "PostToolUse": [
       {
         "matcher": "Bash",
-        "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"}]
       },
       {
         "matcher": "Write",
-        "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"}]
       },
       {
         "matcher": "Edit",
-        "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"}]
       },
       {
         "matcher": "Read",
-        "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/phase_gate.sh"}]
       },
       {
         "matcher": "Bash",
-        "command": "bash ~/zk-autoresearch/claude_hooks/research_goal.sh"
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/research_goal.sh"}]
       },
       {
         "matcher": "ScheduleWakeup",
-        "command": "bash ~/zk-autoresearch/claude_hooks/research_goal.sh"
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/research_goal.sh"}]
       }
     ]
   }
