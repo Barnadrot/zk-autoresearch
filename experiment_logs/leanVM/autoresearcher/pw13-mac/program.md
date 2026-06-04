@@ -58,7 +58,7 @@ See chapters for substeps, order of operations
     See logging rules at the logging chapter
 
   1. Select your target
-  2. Read  yourself (DO NOT use sub-agents for this) minimum 10 related research papers to develop 3 different hypothesis that can solve your target
+  2. Read  yourself (DO NOT use sub-agents for this) minimum 10 related research papers to develop 3 different hypothesis that can solve your target. Save them to `/report/papers/iter_{n}`
   3. Fill the pool with 3 initial candidates, based on your research. Add the papers you have read and you are using as citations.You need to develop composition techniques from different papers. 
   4. Use a subagent for each candidate with the tool call `subagent_type: "Plan"`  mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
         Resources to hand off to the agent: Papers, Codebase understanding and tools to test. 
