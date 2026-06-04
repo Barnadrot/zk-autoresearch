@@ -96,11 +96,13 @@ if [[ "$TOOL_NAME" == "Read" ]] && echo "$TOOL_CONTENT" | grep -qE "\.pdf"; then
   fi
 fi
 
-# --- Block agent from writing .phase_state directly ---
-if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]] && echo "$TOOL_CONTENT" | grep -qE "\.phase_state"; then
-  log_hook "blocked:direct_phase_state_write"
-  inject "PHASE GATE: Do not write .phase_state directly. Phase transitions are managed by the hook system based on your artifacts (profiling output, papers downloaded, git commits/reverts)."
-  exit 0
+# --- Block agent from writing .phase_state directly (any tool) ---
+if echo "$TOOL_CONTENT" | grep -qE "\.phase_state"; then
+  if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" || "$TOOL_NAME" == "Bash" ]]; then
+    log_hook "blocked:direct_phase_state_write:${TOOL_NAME}"
+    inject "PHASE GATE: Do not modify .phase_state. Phase transitions are managed automatically by the hook based on your artifacts (profiling, papers, commits, reverts)."
+    exit 0
+  fi
 fi
 
 # --- Nudge: curl to /tmp/ instead of papers dir ---
