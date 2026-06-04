@@ -204,16 +204,34 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
    sleep 0.5
    ```
    Verify `/effort max` was accepted by capturing the pane and checking for an `Effort:` or `max` acknowledgment line. If missing after 3s, retry once before escalating.
-8. **Dispatch — single atomic message: Read directive first, `/goal` after.**
+8. **Dispatch — read directive, optionally /goal.**
+
+   Read `goal_condition` from the queue entry. Two modes:
+
+   **Hook-driven mode** (goal_condition starts with "methodology" or contains "no /goal"):
+   No `/goal` slash command. Write the goal to `.research_goal` in the experiment dir
+   for the `research_goal.sh` hook. Dispatch is just the read directive.
+
+   **Classic mode** (any other goal_condition string):
+   `/goal` included in the atomic dispatch message, same as before.
 
    ```
    GOAL=$(jq -r .goal_condition brain/queue/claimed/<id>.json)
+   EXPERIMENT_DIR=$(jq -r .experiment_dir brain/queue/claimed/<id>.json)
+
    if [ -z "$GOAL" ] || [ "$GOAL" = "null" ]; then
      escalate_to_needs_decision "queue entry missing goal_condition field"
      exit
    fi
 
-   DISPATCH_MSG=$(printf 'read %s and start the experiment!\n/goal %s' "$PROGRAM_PATH" "$GOAL")
+   if echo "$GOAL" | grep -qiE "^methodology|no.*/goal|hooks.*enforce"; then
+     # Hook-driven: write .research_goal, no /goal slash command
+     ssh <host> "echo '$GOAL' > ~/zk-autoresearch/${EXPERIMENT_DIR}/.research_goal"
+     DISPATCH_MSG=$(printf 'read %s and start the experiment!' "$PROGRAM_PATH")
+   else
+     # Classic: /goal in the dispatch message
+     DISPATCH_MSG=$(printf 'read %s and start the experiment!\n/goal %s' "$PROGRAM_PATH" "$GOAL")
+   fi
 
    TMP=$(ssh <host> 'mktemp /tmp/dispatch_XXXXXX.txt')
    ssh <host> "cat > $TMP" <<< "$DISPATCH_MSG"
@@ -223,13 +241,12 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
                tmux send-keys -t <tmux_name> Enter && \
                rm $TMP"
    ```
-   Verify dispatch landed: capture pane after 5s, check for `Goal set:` acknowledgment. If missing, retry once before escalating.
 
-   Verify the dispatch landed: capture pane after 3s. Look for BOTH:
-   1. `Goal set:` (or equivalent) acknowledgment line — confirms /goal registered
-   2. Agent's read-program response (e.g., a `Read` tool call on the program path) — confirms the directive was parsed
+   Verify the dispatch landed: capture pane after 5s.
+   - Hook-driven mode: check for agent's `Read` tool call on the program path.
+   - Classic mode: also check for `Goal set:` acknowledgment.
 
-   If either is missing, retry once before escalating to needs-decision/.
+   If missing, retry once before escalating to needs-decision/.
 9. **Capture the session UUID** by reading `~/.claude/projects/*/*.jsonl` on the executor (newest one): `ssh <host> "ls -1t ~/.claude/projects/*/*.jsonl | head -1"`. Extract UUID from the filename.
 10. **Write the UUID into sessions.json** under a new entry.
 11. **Update the queue entry** in claimed/ with `session_uuid`, `started_at`, then `mv claimed → active`.
