@@ -116,7 +116,188 @@ if grep -q "SecurityAssumption::CapacityBound" crates/lean_prover/src/lib.rs; th
   fi
 fi
 
+# WHIR folding factors
+WHIR_INIT=$(grep "pub const WHIR_INITIAL_FOLDING_FACTOR" crates/lean_prover/src/lib.rs | grep -oE "= [0-9]+" | grep -oE "[0-9]+")
+WHIR_SUBS=$(grep "pub const WHIR_SUBSEQUENT_FOLDING_FACTOR" crates/lean_prover/src/lib.rs | grep -oE "= [0-9]+" | grep -oE "[0-9]+")
+if [[ "$WHIR_INIT" != "7" || "$WHIR_SUBS" != "5" ]]; then
+  fail "0.5" \
+    "WHIR folding factors modified: INITIAL=${WHIR_INIT} (expected 7), SUBSEQUENT=${WHIR_SUBS} (expected 5)." \
+    "WHIR folding factors affect the trade-off between proof size and security. Increasing them reduces query count and weakens soundness. These parameters are tuned for 124-bit security with JohnsonBound." \
+    "Revert WHIR_INITIAL_FOLDING_FACTOR to 7 and WHIR_SUBSEQUENT_FOLDING_FACTOR to 5 in crates/lean_prover/src/lib.rs."
+fi
+
+# Poseidon S-box degree (spec: x^3 for KoalaBear)
+SBOX_DEG=$(grep "pub const POSEIDON1_SBOX_DEGREE" crates/backend/koala-bear/src/poseidon1_koalabear_16.rs | grep -oE "= [0-9]+" | grep -oE "[0-9]+")
+if [[ "$SBOX_DEG" != "3" ]]; then
+  fail "0.5" \
+    "Poseidon S-box degree modified from 3 to ${SBOX_DEG}." \
+    "The S-box degree determines the algebraic degree growth per round and the security margin against algebraic attacks. Reducing it from x^3 weakens the CICO and interpolation attack bounds." \
+    "Revert POSEIDON1_SBOX_DEGREE to 3 in poseidon1_koalabear_16.rs."
+fi
+
+# MDS matrix first column (circulant)
+MDS_COL=$(grep "const MDS_CIRC_COL" crates/backend/koala-bear/src/poseidon1_koalabear_16.rs | grep -oE '\[.*\]' | head -1)
+EXPECTED_MDS="[1, 3, 13, 22, 67, 2, 15, 63, 101, 1, 2, 17, 11, 1, 51, 1]"
+if [[ "$MDS_COL" != *"$EXPECTED_MDS"* ]]; then
+  fail "0.5" \
+    "MDS circulant column modified." \
+    "The MDS matrix defines the linear diffusion layer. Changing it alters the branch number and the differential/linear attack resistance. The MDS matrix is part of the Poseidon specification." \
+    "Revert MDS_CIRC_COL to the specification values in poseidon1_koalabear_16.rs."
+fi
+
 echo "[correctness] Layer 0.5 PASSED — crypto parameters match spec."
+
+# -----------------------------------------------------------------------
+# Layer 0.7: Diff hygiene checks
+# Scans the experiment branch diff for patterns that indicate unsound
+# shortcuts. Runs in ~100ms (grep only, no compilation).
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.7: Diff hygiene checks..."
+
+# Only run if we're on an experiment branch (not main)
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  DIFF_RS=$(git diff main...HEAD -- '*.rs' 2>/dev/null || echo "")
+
+  # Check 1: No todo!() additions
+  TODO_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*todo!\(\)' || true)
+  if [[ "$TODO_HITS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff contains $TODO_HITS new todo!() macro(s) in Rust code." \
+      "todo!() compiles but panics at runtime. In a ZK proving system, the honest prover may never hit the code path, so tests pass — but the verifier path is incomplete. This is the exact pattern that bypassed the gate in pw12 and pw13." \
+      "Replace every todo!() with a real implementation. If the function is genuinely not needed, remove it entirely rather than leaving a stub."
+  fi
+
+  # Check 2: No unimplemented!() additions
+  UNIMPL_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*unimplemented!\(\)' || true)
+  if [[ "$UNIMPL_HITS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff contains $UNIMPL_HITS new unimplemented!() macro(s) in Rust code." \
+      "unimplemented!() is functionally identical to todo!() — it compiles but panics. Same risk as todo!(): verifier paths may be left incomplete." \
+      "Replace every unimplemented!() with a real implementation or remove the function."
+  fi
+
+  # Check 3: No modifications to structural invariant methods
+  STRUCT_METHODS="fn n_columns\|fn n_columns_total\|fn degree_air\|fn n_shift_columns"
+  STRUCT_HITS=$(echo "$DIFF_RS" | grep -cE '^\+.*(fn n_columns|fn n_columns_total|fn degree_air|fn n_shift_columns|fn low_degree_air)' || true)
+  if [[ "$STRUCT_HITS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff modifies structural AIR methods ($STRUCT_HITS change(s): fn n_columns, fn n_columns_total, fn degree_air, or fn n_shift_columns)." \
+      "These methods define the commitment surface, constraint degree, and shift column count — all security-critical boundaries. Changing them alters what the stacked PCS commits, how many sumcheck rounds run, or which transition constraints are active. The soundness_check baseline will also catch this, but this early grep blocks the change before compilation." \
+      "Revert changes to these methods. If a structural change is genuinely needed for your optimization, document WHY in the commit message and request human review."
+  fi
+
+  # Check 4: No modifications to the commitment boundary
+  PCS_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*stack_polynomials_and_commit' || true)
+  if [[ "$PCS_HITS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff modifies stack_polynomials_and_commit ($PCS_HITS change(s))." \
+      "This function defines which columns the stacked PCS commits to. Modifying it can reduce the commitment surface without changing n_columns(), defeating the baseline check. This is the exact attack surface exploited in pw8 h44." \
+      "Revert changes to stack_polynomials_and_commit. Commitment boundary changes require human review."
+  fi
+
+  # Check 5: No modifications to the verifier
+  VERIFIER_DIFF=$(git diff main...HEAD -- 'crates/lean_prover/src/verify_execution.rs' 2>/dev/null || echo "")
+  VERIFIER_ADDITIONS=$(echo "$VERIFIER_DIFF" | grep -c '^\+' || true)
+  if [[ "$VERIFIER_ADDITIONS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff modifies verify_execution.rs ($VERIFIER_ADDITIONS addition(s))." \
+      "The verifier is the trust root of the proving system. A weakened verifier accepts invalid proofs even when the AIR is sound. This is the hardest attack to detect — all honest-prover tests pass because the honest prover never triggers the weakened check. Verifier modifications require human cryptographer review." \
+      "Revert changes to verify_execution.rs. If the optimization requires verifier changes (e.g., new WHIR parameters), document the security argument and request human review."
+  fi
+
+  # Check 6: No modifications to Fiat-Shamir transcript or WHIR core
+  for CRITICAL_FILE in \
+    "crates/backend/fiat-shamir/src/prover.rs" \
+    "crates/backend/fiat-shamir/src/verifier.rs" \
+    "crates/whir/src/verify.rs" \
+    "crates/whir/src/open.rs" \
+    "crates/sub_protocols/src/air_sumcheck.rs"; do
+    FS_DIFF=$(git diff main...HEAD -- "$CRITICAL_FILE" 2>/dev/null || echo "")
+    FS_ADDS=$(echo "$FS_DIFF" | grep -c '^\+' || true)
+    if [[ "$FS_ADDS" -gt 0 ]]; then
+      fail "0.7" \
+        "Branch diff modifies $CRITICAL_FILE ($FS_ADDS addition(s))." \
+        "This file is part of the cryptographic protocol core (Fiat-Shamir, WHIR, or sumcheck). Modifications can reduce soundness without affecting honest-prover tests. For example: removing a verifier challenge from the transcript weakens Fiat-Shamir binding, or skipping a WHIR folding check allows forgery." \
+        "Revert changes to $CRITICAL_FILE. Protocol-core modifications require human review."
+    fi
+  done
+
+  echo "[correctness] Layer 0.7 PASSED — diff hygiene clean."
+else
+  echo "[correctness] Layer 0.7 SKIPPED — on main branch."
+fi
+
+# -----------------------------------------------------------------------
+# Layer 0.8: Differential verification
+# Generates a proof with the agent's (possibly modified) prover, then
+# verifies it with a FROZEN reference verifier binary compiled from main.
+# This is the trust root: the agent can change anything they want, but
+# the proof must still be accepted by the original verifier.
+#
+# Logic:
+#   frozen accepts → PASS (proof is sound under original security guarantees)
+#   frozen rejects + verifier files unchanged → PASS (legitimate AIR/prover change)
+#   frozen rejects + verifier files changed → FAIL (verifier changed AND proof incompatible)
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.8: Differential verification..."
+
+FROZEN_VERIFIER="$SHARED_DIR/reference_verify_frozen"
+BENCH_CRATE="${SHARED_DIR}/../bench"
+if [[ -x "$FROZEN_VERIFIER" && "$CURRENT_BRANCH" != "main" ]]; then
+  PROOF_FILE="/tmp/correctness_proof_$$.bin"
+
+  # Step 1: Build and run the prover (uses agent's code)
+  (
+    cd "$BENCH_CRATE"
+    cargo build --release --bin proof_generate 2>&1 | tail -3
+  )
+  if ! "$BENCH_CRATE/target/release/proof_generate" "$PROOF_FILE" 2>&1; then
+    fail "0.8" \
+      "proof_generate failed — could not generate a proof with the agent's prover." \
+      "The agent's modified prover cannot produce a valid proof. This is a critical failure." \
+      "Check your prover changes. The proof generation uses the same path as test_aggregation."
+  fi
+
+  # Step 2: Verify with frozen reference binary
+  if "$FROZEN_VERIFIER" "$PROOF_FILE" 2>&1; then
+    echo "[correctness] Layer 0.8 PASSED — frozen reference verifier accepted the proof."
+  else
+    # Frozen verifier rejected. Check if verifier files were modified.
+    VERIFIER_CHANGED=0
+    for VFILE in \
+      "crates/lean_prover/src/verify_execution.rs" \
+      "crates/backend/fiat-shamir/src/verifier.rs" \
+      "crates/whir/src/verify.rs" \
+      "crates/sub_protocols/src/air_sumcheck.rs"; do
+      if git diff main...HEAD --name-only 2>/dev/null | grep -q "$VFILE"; then
+        VERIFIER_CHANGED=1
+        break
+      fi
+    done
+
+    if [[ "$VERIFIER_CHANGED" -eq 0 ]]; then
+      echo "[correctness] Layer 0.8 PASS (fallback) — frozen verifier rejected but verifier files are unmodified (legitimate AIR/prover format change)."
+      echo "[correctness] WARNING: The frozen reference verifier is incompatible with the current proof format."
+      echo "[correctness]   This means differential verification provides NO security value for this experiment."
+      echo "[correctness]   Consider rebuilding the frozen binary from the current main branch."
+    else
+      fail "0.8" \
+        "Frozen reference verifier rejected the proof AND verifier files were modified." \
+        "The agent changed the verifier AND the generated proof is incompatible with the original verifier. This means the new proof format relies on modified verification logic — the original security guarantees may not hold. A malicious prover could exploit the verification changes to forge proofs." \
+        "Either (a) revert verifier file changes and optimize only the prover, or (b) ensure the proof is accepted by the frozen verifier. Verifier changes that alter the proof format require human cryptographer review."
+    fi
+  fi
+  rm -f "$PROOF_FILE"
+else
+  if [[ "$CURRENT_BRANCH" == "main" ]]; then
+    echo "[correctness] Layer 0.8 SKIPPED — on main branch."
+  else
+    echo "[correctness] Layer 0.8 SKIPPED — frozen verifier not found at $FROZEN_VERIFIER."
+  fi
+fi
 
 # -----------------------------------------------------------------------
 # Layer 1: Compile gate
@@ -136,7 +317,7 @@ echo "[correctness] Layer 1 PASSED."
 # -----------------------------------------------------------------------
 echo ""
 echo "[correctness] Layer 2: KoalaBear field + backend primitive tests (~15s)..."
-if ! cargo test -p mt-koala-bear -p mt-field -p mt-sumcheck -p mt-symetric --release 2>&1; then
+if ! cargo test -p koala-bear -p field -p sumcheck -p symetric --release 2>&1; then
   fail 2 \
     "Field arithmetic or backend primitive tests failed." \
     "These tests validate KoalaBear field operations (modular arithmetic, extension field, Montgomery form), sumcheck protocol correctness, and symmetric hash primitives. A failure here means your change broke fundamental cryptographic building blocks." \
@@ -180,7 +361,7 @@ echo "[correctness] Layer 3 PASSED."
 # -----------------------------------------------------------------------
 echo ""
 echo "[correctness] Layer 4: Full WHIR proof integration test (~30s)..."
-if ! cargo test -p mt-whir --release 2>&1; then
+if ! cargo test -p whir --release 2>&1; then
   fail 4 \
     "WHIR proof integration test failed (prove + verify round-trip)." \
     "This test generates a WHIR polynomial commitment, produces a proof, and verifies it. A failure means your change broke either the commitment scheme, the folding protocol, or the FRI/WHIR verification. This is a critical soundness failure — the prover and verifier no longer agree." \
@@ -251,7 +432,7 @@ if [[ "$REPEAT" -gt 1 ]]; then
   FAIL_COUNT=0
   for ((r=2; r<=REPEAT; r++)); do
     echo "[correctness]   repeat $r/$REPEAT..."
-    if ! cargo test -p mt-whir --release 2>&1 >/dev/null; then
+    if ! cargo test -p whir --release 2>&1 >/dev/null; then
       FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
   done

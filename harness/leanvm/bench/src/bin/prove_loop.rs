@@ -1,6 +1,6 @@
 use std::time::Instant;
-use mt_koala_bear::KoalaBear;
-use rec_aggregation::{init_aggregation_bytecode, aggregate_single_msg_signatures, verify_single_message_aggregate};
+use koala_bear::KoalaBear;
+use rec_aggregation::{init_aggregation_bytecode, aggregate_single_message_signatures, verify_single_message_aggregate};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
@@ -99,7 +99,7 @@ fn main() {
         }
         let data = raw_xmss.clone();
         let start = Instant::now();
-        let sig = aggregate_single_msg_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).expect("prove failed");
+        let sig = aggregate_single_message_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).expect("prove failed");
         let secs = start.elapsed().as_secs_f64();
         #[cfg(feature = "zkalloc_global")]
         zk_alloc::end_phase();
@@ -118,7 +118,7 @@ fn main() {
                 }
             }
         }
-        let proof_kib = sig.compress().len() / 1024;
+        let proof_kib = sig.to_bytes().len() / 1024;
         let rss = rss_kb() / 1024;
         println!("{i},{secs:.3},{rss},{proof_kib}");
         eprintln!("proof {}/{n_proofs}: {secs:.3}s, rss: {rss}MB, proof: {proof_kib}KiB", i + 1);

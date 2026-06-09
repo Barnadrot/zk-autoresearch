@@ -144,8 +144,8 @@ unsafe impl GlobalAlloc for TrackingAlloc {
 #[global_allocator]
 static A: TrackingAlloc = TrackingAlloc;
 
-use mt_koala_bear::KoalaBear;
-use rec_aggregation::{init_aggregation_bytecode, aggregate_single_msg_signatures};
+use koala_bear::KoalaBear;
+use rec_aggregation::{init_aggregation_bytecode, aggregate_single_message_signatures};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
@@ -205,7 +205,7 @@ fn main() {
     }
     let t1 = Instant::now();
     let data = raw_xmss.clone();
-    let proof1 = aggregate_single_msg_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+    let proof1 = aggregate_single_message_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed1 = t1.elapsed();
     TIMELINE_ENABLED.store(false, Relaxed);
 
@@ -240,7 +240,7 @@ fn main() {
     eprintln!("--- starting proof 2 ---");
     let t2 = Instant::now();
     let data = raw_xmss.clone();
-    let proof2 = aggregate_single_msg_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
+    let proof2 = aggregate_single_message_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).unwrap();
     let elapsed2 = t2.elapsed();
 
     let after_proof2 = COUNTERS.snapshot();
