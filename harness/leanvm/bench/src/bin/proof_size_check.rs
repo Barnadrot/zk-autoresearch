@@ -8,7 +8,7 @@
 // Exit code: 0 on success, 1 on prove/serialize failure.
 
 use backend::precompute_dft_twiddles;
-use mt_koala_bear::KoalaBear;
+use koala_bear::KoalaBear;
 use rec_aggregation::{aggregate_single_msg_signatures, init_aggregation_bytecode};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 

@@ -8,7 +8,7 @@
 //!   cargo run --release --bin fuzz_proof_rejection [-- --mutations N --seed S]
 
 use backend::precompute_dft_twiddles;
-use mt_koala_bear::KoalaBear;
+use koala_bear::KoalaBear;
 use rec_aggregation::{
     SingleMessageAggregateSignature, aggregate_single_msg_signatures, init_aggregation_bytecode, verify_single_message_aggregate,
 };

@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "air"
+version = "0.1.0"
+dependencies = [
+ "field",
+ "poly",
+]
+
+[[package]]
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -72,17 +80,17 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 name = "backend"
 version = "0.1.0"
 dependencies = [
- "mt-air",
- "mt-fiat-shamir",
- "mt-field",
- "mt-koala-bear",
- "mt-poly",
- "mt-sumcheck",
- "mt-symetric",
- "mt-utils",
- "mt-whir",
- "rayon",
- "tracing",
+ "air",
+ "fiat-shamir",
+ "field",
+ "koala-bear",
+ "parallel",
+ "poly",
+ "sumcheck",
+ "symetric",
+ "utils",
+ "whir",
+ "zk-alloc",
 ]
 
 [[package]]
@@ -113,15 +121,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "block-buffer"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
-dependencies = [
- "hybrid-array",
 ]
 
 [[package]]
@@ -221,12 +220,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-oid"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -256,7 +249,7 @@ dependencies = [
  "clap",
  "criterion-plot",
  "is-terminal",
- "itertools 0.10.5",
+ "itertools",
  "num-traits",
  "once_cell",
  "oorandom",
@@ -277,7 +270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
 dependencies = [
  "cast",
- "itertools 0.10.5",
+ "itertools",
 ]
 
 [[package]]
@@ -328,33 +321,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "crypto-common"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
-dependencies = [
- "hybrid-array",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
- "block-buffer 0.10.4",
- "crypto-common 0.1.7",
-]
-
-[[package]]
-name = "digest"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4850db49bf08e663084f7fb5c87d202ef91a3907271aff24a94eb97ff039153c"
-dependencies = [
- "block-buffer 0.12.0",
- "const-oid",
- "crypto-common 0.2.1",
+ "block-buffer",
+ "crypto-common",
 ]
 
 [[package]]
@@ -380,6 +353,29 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
+name = "fiat-shamir"
+version = "0.1.0"
+dependencies = [
+ "field",
+ "koala-bear",
+ "parallel",
+ "serde",
+ "symetric",
+ "utils",
+]
+
+[[package]]
+name = "field"
+version = "0.1.0"
+dependencies = [
+ "parallel",
+ "paste",
+ "rand",
+ "serde",
+ "utils",
+]
 
 [[package]]
 name = "foldhash"
@@ -503,15 +499,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
-name = "hybrid-array"
-version = "0.4.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d46837a0ed51fe95bd3b05de33cd64a1ee88fc797477ca48446872504507c5"
-dependencies = [
- "typenum",
-]
-
-[[package]]
 name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -569,15 +556,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,13 +574,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "keccak"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e24a010dd405bd7ed803e5253182815b41bf2e6a80cc3bfc066658e03a198aa"
+name = "koala-bear"
+version = "0.1.0"
 dependencies = [
- "cfg-if",
- "cpufeatures 0.3.0",
+ "field",
+ "paste",
+ "rand",
+ "serde",
+ "utils",
 ]
 
 [[package]]
@@ -620,10 +599,7 @@ dependencies = [
  "lean_vm",
  "pest",
  "pest_derive",
- "rand",
  "sub_protocols",
- "tracing",
- "utils",
  "xmss",
 ]
 
@@ -632,16 +608,12 @@ name = "lean_prover"
 version = "0.1.0"
 dependencies = [
  "backend",
- "itertools 0.14.0",
  "lean_compiler",
  "lean_vm",
- "pest",
- "pest_derive",
  "rand",
  "serde",
  "sub_protocols",
  "tracing",
- "utils",
  "xmss",
 ]
 
@@ -650,23 +622,19 @@ name = "lean_vm"
 version = "0.1.0"
 dependencies = [
  "backend",
- "itertools 0.14.0",
- "pest",
- "pest_derive",
- "rand",
  "tracing",
- "utils",
  "xmss",
 ]
 
 [[package]]
-name = "leanmultisig-bench"
+name = "leanvm-bench"
 version = "0.1.0"
 dependencies = [
  "backend",
  "backtrace",
  "criterion",
- "mt-koala-bear",
+ "koala-bear",
+ "lean_vm",
  "postcard",
  "rayon",
  "rec_aggregation",
@@ -704,15 +672,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
-name = "lz4_flex"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db9a0d582c2874f68138a16ce1867e0ffde6c0bb0a0df85e1f36d04146db488a"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -737,140 +696,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "mt-air"
-version = "0.1.0"
-dependencies = [
- "mt-field",
- "mt-poly",
-]
-
-[[package]]
-name = "mt-fiat-shamir"
-version = "0.1.0"
-dependencies = [
- "mt-field",
- "mt-koala-bear",
- "mt-symetric",
- "mt-utils",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "mt-field"
-version = "0.1.0"
-dependencies = [
- "itertools 0.14.0",
- "mt-utils",
- "num-bigint",
- "paste",
- "rand",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "mt-koala-bear"
-version = "0.1.0"
-dependencies = [
- "itertools 0.14.0",
- "mt-field",
- "mt-utils",
- "num-bigint",
- "paste",
- "rand",
- "rayon",
- "serde",
- "tracing",
-]
-
-[[package]]
-name = "mt-poly"
-version = "0.1.0"
-dependencies = [
- "itertools 0.14.0",
- "mt-field",
- "mt-utils",
- "rand",
- "rayon",
- "serde",
- "system-info",
-]
-
-[[package]]
-name = "mt-sumcheck"
-version = "0.1.0"
-dependencies = [
- "mt-air",
- "mt-fiat-shamir",
- "mt-field",
- "mt-poly",
- "rayon",
- "tracing",
-]
-
-[[package]]
-name = "mt-symetric"
-version = "0.1.0"
-dependencies = [
- "mt-field",
- "mt-koala-bear",
- "rayon",
-]
-
-[[package]]
-name = "mt-utils"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "mt-whir"
-version = "0.1.0"
-dependencies = [
- "itertools 0.14.0",
- "mt-fiat-shamir",
- "mt-field",
- "mt-koala-bear",
- "mt-poly",
- "mt-sumcheck",
- "mt-symetric",
- "mt-utils",
- "rand",
- "rayon",
- "system-info",
- "tracing",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys",
-]
-
-[[package]]
-name = "num-bigint"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-integer"
-version = "0.1.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -927,6 +758,13 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "parallel"
+version = "0.1.0"
+dependencies = [
+ "system-info",
+]
 
 [[package]]
 name = "paste"
@@ -1009,6 +847,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "poly"
+version = "0.1.0"
+dependencies = [
+ "field",
+ "parallel",
+ "rand",
+ "serde",
+ "system-info",
+ "utils",
+ "zk-alloc",
 ]
 
 [[package]]
@@ -1104,17 +955,13 @@ dependencies = [
  "lean_compiler",
  "lean_prover",
  "lean_vm",
- "lz4_flex",
  "objc2",
  "objc2-foundation",
  "postcard",
- "rand",
  "serde",
  "sub_protocols",
  "tracing",
- "utils",
  "xmss",
- "zk-alloc",
 ]
 
 [[package]]
@@ -1239,17 +1086,7 @@ checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
-
-[[package]]
-name = "sha3"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
-dependencies = [
- "digest 0.11.2",
- "keccak",
+ "digest",
 ]
 
 [[package]]
@@ -1295,7 +1132,29 @@ dependencies = [
  "backend",
  "lean_vm",
  "tracing",
- "utils",
+]
+
+[[package]]
+name = "sumcheck"
+version = "0.1.0"
+dependencies = [
+ "air",
+ "fiat-shamir",
+ "field",
+ "parallel",
+ "poly",
+ "tracing",
+ "zk-alloc",
+]
+
+[[package]]
+name = "symetric"
+version = "0.1.0"
+dependencies = [
+ "field",
+ "koala-bear",
+ "parallel",
+ "zk-alloc",
 ]
 
 [[package]]
@@ -1314,7 +1173,6 @@ name = "system-info"
 version = "0.1.0"
 dependencies = [
  "libc",
- "rayon",
 ]
 
 [[package]]
@@ -1431,12 +1289,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "twox-hash"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
-
-[[package]]
 name = "typenum"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1464,8 +1316,8 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 name = "utils"
 version = "0.1.0"
 dependencies = [
- "backend",
- "tracing",
+ "parallel",
+ "serde",
  "tracing-forest",
  "tracing-subscriber",
 ]
@@ -1597,6 +1449,24 @@ checksum = "2eadbac71025cd7b0834f20d1fe8472e8495821b4e9801eb0a60bd1f19827602"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "whir"
+version = "0.1.0"
+dependencies = [
+ "fiat-shamir",
+ "field",
+ "koala-bear",
+ "parallel",
+ "poly",
+ "rand",
+ "sumcheck",
+ "symetric",
+ "system-info",
+ "tracing",
+ "utils",
+ "zk-alloc",
 ]
 
 [[package]]
@@ -1744,12 +1614,9 @@ name = "xmss"
 version = "0.1.0"
 dependencies = [
  "backend",
- "lz4_flex",
  "postcard",
  "rand",
  "serde",
- "sha3",
- "utils",
 ]
 
 [[package]]
@@ -1777,6 +1644,7 @@ name = "zk-alloc"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "parallel",
  "system-info",
 ]
 

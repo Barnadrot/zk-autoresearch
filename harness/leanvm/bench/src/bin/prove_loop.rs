@@ -1,5 +1,5 @@
 use std::time::Instant;
-use mt_koala_bear::KoalaBear;
+use koala_bear::KoalaBear;
 use rec_aggregation::{init_aggregation_bytecode, aggregate_single_msg_signatures, verify_single_message_aggregate};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;

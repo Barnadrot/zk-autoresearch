@@ -11,8 +11,8 @@ rec_aggregation = { path = "../../../leanVM/crates/rec_aggregation" }
 xmss             = { path = "../../../leanVM/crates/xmss" }
 backend          = { path = "../../../leanVM/crates/backend" }
 sub_protocols    = { path = "../../../leanVM/crates/sub_protocols" }
-mt-koala-bear    = { path = "../../../leanVM/crates/backend/koala-bear" }
-utils            = { path = "../../../leanVM/crates/utils" }
+koala-bear       = { path = "../../../leanVM/crates/backend/koala-bear" }
+utils            = { path = "../../../leanVM/crates/backend/utils" }
 lean_vm          = { path = "../../../leanVM/crates/lean_vm" }
 rayon            = "1"
 backtrace        = "0.3"

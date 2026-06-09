@@ -12,7 +12,7 @@
 use rec_aggregation::{init_aggregation_bytecode, aggregate_single_msg_signatures};
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
-use mt_koala_bear::KoalaBear;
+use koala_bear::KoalaBear;
 
 const LOG_INV_RATE: usize = 1;
 
