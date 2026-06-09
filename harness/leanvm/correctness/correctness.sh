@@ -280,6 +280,9 @@ if [[ -x "$FROZEN_VERIFIER" && "$CURRENT_BRANCH" != "main" ]]; then
 
     if [[ "$VERIFIER_CHANGED" -eq 0 ]]; then
       echo "[correctness] Layer 0.8 PASS (fallback) — frozen verifier rejected but verifier files are unmodified (legitimate AIR/prover format change)."
+      echo "[correctness] WARNING: The frozen reference verifier is incompatible with the current proof format."
+      echo "[correctness]   This means differential verification provides NO security value for this experiment."
+      echo "[correctness]   Consider rebuilding the frozen binary from the current main branch."
     else
       fail "0.8" \
         "Frozen reference verifier rejected the proof AND verifier files were modified." \

@@ -414,27 +414,44 @@ fn check_poseidon_test_vector(rng: &mut u64) -> bool {
 fn verify_extra_data_integrity() -> bool {
     let alphas: Vec<EF> = (0..64).map(|i| EF::from(F::from_u64(0xbead_cafe + i as u64))).collect();
     let alpha_powers: Vec<EF> = (0..20).map(|i| EF::from(F::from_u64(0xdead_0000 + i as u64))).collect();
-    let extra = ExtraDataForBuses::new(&alphas, alpha_powers);
+    let extra = ExtraDataForBuses::new(&alphas, alpha_powers.clone());
 
+    // Check 1: alphas are non-zero
     let all_nonzero = extra.logup_alphas_eq_poly.iter().all(|a| *a != EF::ZERO);
     if !all_nonzero {
         eprintln!(
-            "[soundness] EXTRA DATA FAIL: ExtraDataForBuses::new() zeroed out logup_alphas_eq_poly. \
-             This would make all bus constraints trivially zero, defeating the virtual-column soundness check. \
-             The agent may have modified ExtraDataForBuses::new() in table_trait.rs.",
+            "[soundness] EXTRA DATA FAIL: ExtraDataForBuses::new() zeroed out logup_alphas_eq_poly.",
         );
         return false;
     }
 
-    let alpha_ok = extra.alpha_powers.iter().all(|a| *a != EF::ZERO);
-    if !alpha_ok {
-        eprintln!(
-            "[soundness] EXTRA DATA FAIL: ExtraDataForBuses::new() zeroed out alpha_powers.",
-        );
-        return false;
+    // Check 2: alphas round-trip — verify new() preserved the input values
+    // If the agent modifies new() to ignore inputs and hardcode values (e.g., all-ones),
+    // this check catches it because the output won't match what we passed in.
+    for (i, (actual, expected)) in extra.logup_alphas_eq_poly.iter().zip(alphas.iter()).enumerate() {
+        if actual != expected {
+            eprintln!(
+                "[soundness] EXTRA DATA FAIL: logup_alphas_eq_poly[{}] = {:?} but expected {:?}. \
+                 ExtraDataForBuses::new() modified the input alphas instead of preserving them. \
+                 This defeats the bus fingerprint uniqueness guarantee.",
+                i, actual, expected,
+            );
+            return false;
+        }
     }
 
-    eprintln!("[soundness] ExtraDataForBuses integrity PASS");
+    // Check 3: alpha_powers round-trip
+    for (i, (actual, expected)) in extra.alpha_powers.iter().zip(alpha_powers.iter()).enumerate() {
+        if actual != expected {
+            eprintln!(
+                "[soundness] EXTRA DATA FAIL: alpha_powers[{}] modified by new().",
+                i,
+            );
+            return false;
+        }
+    }
+
+    eprintln!("[soundness] ExtraDataForBuses integrity PASS — alphas round-trip verified");
     true
 }
 
