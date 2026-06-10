@@ -37,7 +37,7 @@ Two experiment shapes; different git discipline for each.
 
 ---
 
-## leanMultisig Reference
+## leanVM Reference
 
 KoalaBear field: p = 2^31 - 2^24 + 1. Extension: F_q = F_p[X]/(X^5 + X^2 - 1), q = p^5.
 
@@ -46,12 +46,12 @@ KoalaBear field: p = 2^31 - 2^24 + 1. Extension: F_q = F_p[X]/(X^5 + X^2 - 1), q
 | Table | Committed cols | Degree | Max rows | Bus domain_sep |
 |---|---|---|---|---|
 | EXECUTION | 20 | 5 | 2^24 | push: (ν_A, ν_B, ν_C, 0_12, aux_2) with flag_precompile |
-| POSEIDON | 101 | 9 | 2^21 | pull: odd ≥ 3, encoding = 3 + 2·permute + 4·half + 8·flag_left + 16·flag_left·offset |
+| POSEIDON | 110 | 10 | 2^21 | pull: odd ≥ 3, encoding = 3 + 2·permute + 4·half + 8·flag_left + 16·flag_left·offset |
 | EXTENSION | 29 | 6 | 2^21 | pull: multiple of 4, encoding = 4·flag_be + 8·flag_add + 16·flag_dot_product + 32·flag_eq + 64·N |
 
-### Poseidon16 column layout (101 cols)
+### Poseidon16 column layout (110 cols)
 
-9 control/flags + 16 inputs + 32 full-round intermediates (2 pairs × 16) + 20 partial-round S-box outputs + 16 final full-round + 8 outputs_left = 101. Virtual: ν_A (left pointer), aux_2 (precompute data).
+10 control/flags + 16 inputs + 32 full-round intermediates (2 pairs × 16) + 20 partial-round S-box outputs + 16 ending full-round + 8 out_lo + 8 out_hi = 110. Virtual: ν_A (left pointer), domain_sep (+2 = 112 total).
 
 ### Stacked PCS
 
@@ -102,10 +102,10 @@ WHIR/GKR parameters are hardcoded as Python constants — changing them changes 
 | Native Merkle | crates/whir/src/merkle.rs |
 | Circuit Merkle verification | crates/rec_aggregation/zkdsl_implem/hashing.py, utils.py |
 | XMSS protocol hashing | crates/rec_aggregation/zkdsl_implem/xmss_aggregate.py |
-| Poseidon table AIR | crates/lean_vm/src/tables/poseidon_16/mod.rs |
+| Poseidon table AIR | crates/lean_vm/src/tables/poseidon/mod.rs |
 | Table registration | crates/lean_vm/src/tables/table_enum.rs |
 | Stacked PCS | crates/sub_protocols/src/stacked_pcs.rs |
 | Recursion compilation | crates/rec_aggregation/src/compilation.rs |
 | WHIR config | crates/lean_prover/src/lib.rs |
-| prove_loop benchmark | harness/leanmultisig/bench/src/bin/prove_loop.rs |
-| Correctness gate | harness/leanmultisig/correctness/correctness.sh |
+| prove_loop benchmark | harness/leanVM/bench/src/bin/prove_loop.rs |
+| Correctness gate | harness/leanVM/correctness/correctness.sh |

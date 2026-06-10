@@ -10,7 +10,7 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 
 ## Tools
 - **File ops**: Read, Edit, Write, Grep, Glob, Bash. Local clones pre-mounted at ~/zk-autoresearch/ (leanVM, Plonky3, sp1, jolt, leanSpec) — readable directly via path traversal.
-- **Sub-agents**: Agent tool for planning implementations. Defaults to parent model (Opus 4.6). NO per-task cost-tuning — planning quality matters more than token cost.
+- **Sub-agents**: Agent tool for planning implementations. Defaults to parent model (Fable 5). NO per-task cost-tuning — planning quality matters more than token cost.
 - **Profiling**:
     - Linux: `perf record/report/stat/annotate`, `cargo flamegraph`, `/usr/bin/time -v`
     - Passwordless sudo configured on server
