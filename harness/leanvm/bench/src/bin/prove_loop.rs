@@ -4,9 +4,10 @@ use rec_aggregation::{init_aggregation_bytecode, aggregate_single_message_signat
 use xmss::signers_cache::{BENCHMARK_SLOT, get_benchmark_signatures, message_for_benchmark};
 use backend::precompute_dft_twiddles;
 
-#[cfg(feature = "zkalloc_global")]
-#[global_allocator]
-static ALLOC: zk_alloc::ZkAllocator = zk_alloc::ZkAllocator;
+// leanVM's zk-alloc is an explicit bump arena ("never a #[global_allocator]" — see
+// crates/backend/zk-alloc/src/lib.rs). The zkalloc_global feature now only enables the
+// begin_phase()/end_phase() resets around each proof; the old `static ALLOC: ZkAllocator`
+// global-allocator line was leanMultisig-era API and does not exist in leanVM's crate.
 
 const N_SIGS: usize = 1550;
 const LOG_INV_RATE: usize = 1;
@@ -47,7 +48,7 @@ fn main() {
 
     #[cfg(feature = "zkalloc_global")]
     {
-        eprintln!("prove_loop: zkalloc_global — #[global_allocator] mode");
+        eprintln!("prove_loop: zkalloc_global — per-proof arena phase resets (leanVM built-in arena)");
     }
 
     let phase_boundary = resolve_ffi(b"zk_alloc_phase_boundary\0");
@@ -74,16 +75,10 @@ fn main() {
     eprintln!("setup: {setup_ms}ms, rss: {}MB", rss_kb() / 1024);
     println!("proof,seconds,rss_mb,proof_kib");
 
-    // Pre-warm the arena once. The original code called begin_phase() here too,
-    // which left a phase active when the loop's begin_phase() ran — a latent
-    // nested-phase bug now surfaced by PR #215's assertion. The intent was to
-    // touch / initialize the arena once; achieve that by begin+end here so the
-    // loop's begin_phase() starts from a clean state.
-    #[cfg(feature = "zkalloc_global")]
-    {
-        zk_alloc::begin_phase();
-        zk_alloc::end_phase();
-    }
+    // Phase management lives INSIDE the prover now: aggregate_single_message_signatures
+    // takes its own enter_phase() guard (single_message_aggregation.rs:234), so prove_loop
+    // must NOT wrap begin/end_phase around it ("phases must not nest" assert). Same method
+    // as the xmss CLI: enable_arena() once in setup, then just call the prover.
     #[cfg(not(feature = "zkalloc_global"))]
     if let Some(pb) = phase_boundary {
         unsafe { pb(); }
@@ -93,8 +88,6 @@ fn main() {
     }
 
     for i in 0..n_proofs {
-        #[cfg(feature = "zkalloc_global")]
-        zk_alloc::begin_phase();
         #[cfg(not(feature = "zkalloc_global"))]
         if let Some(pb) = phase_boundary {
             unsafe { pb(); }
@@ -103,8 +96,6 @@ fn main() {
         let start = Instant::now();
         let sig = aggregate_single_message_signatures(&[], data, message, BENCHMARK_SLOT, LOG_INV_RATE).expect("prove failed");
         let secs = start.elapsed().as_secs_f64();
-        #[cfg(feature = "zkalloc_global")]
-        zk_alloc::end_phase();
         #[cfg(not(feature = "zkalloc_global"))]
         if let Some(da) = deactivate {
             unsafe { da(); }
