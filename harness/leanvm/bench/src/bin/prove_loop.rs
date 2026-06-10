@@ -63,6 +63,8 @@ fn main() {
     eprintln!("prove_loop: {n_proofs} proofs, {N_SIGS} sigs, log_inv_rate={LOG_INV_RATE}");
 
     let setup_start = Instant::now();
+    #[cfg(feature = "zkalloc_global")]
+    zk_alloc::enable_arena();
     precompute_dft_twiddles::<KoalaBear>(1 << 24);
     init_aggregation_bytecode();
     let raw_xmss: Vec<_> = get_benchmark_signatures()[..N_SIGS].to_vec();
