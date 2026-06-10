@@ -20,6 +20,10 @@
       },
       {
         "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/review_gate.sh"}]
+      },
+      {
+        "matcher": "Bash",
         "hooks": [{"type": "command", "command": "bash ~/zk-autoresearch/claude_hooks/research_goal.sh"}]
       },
       {
