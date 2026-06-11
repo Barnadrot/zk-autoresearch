@@ -1,0 +1,37 @@
+[package]
+name = "leanvm-goldilocks-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmark harness for leanVM Goldilocks autoresearch loop"
+
+# Assumes leanVM is cloned at ~/zk-autoresearch/leanVM on the goldilocks branch
+
+[dependencies]
+rec_aggregation = { path = "../../../leanVM/crates/rec_aggregation" }
+xmss             = { path = "../../../leanVM/crates/xmss" }
+backend          = { path = "../../../leanVM/crates/backend" }
+sub_protocols    = { path = "../../../leanVM/crates/sub_protocols" }
+goldilocks       = { path = "../../../leanVM/crates/backend/goldilocks" }
+utils            = { path = "../../../leanVM/crates/backend/utils" }
+lean_vm          = { path = "../../../leanVM/crates/lean_vm" }
+rayon            = "1"
+zk-alloc         = { path = "../../../leanVM/crates/backend/zk-alloc", optional = true }
+
+[features]
+zkalloc_global = ["dep:zk-alloc"]
+
+[[bin]]
+name = "prove_loop"
+path = "src/bin/prove_loop.rs"
+
+[[bin]]
+name = "soundness_check"
+path = "src/bin/soundness_check.rs"
+
+[[bin]]
+name = "fuzz_proof_rejection"
+path = "src/bin/fuzz_proof_rejection.rs"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

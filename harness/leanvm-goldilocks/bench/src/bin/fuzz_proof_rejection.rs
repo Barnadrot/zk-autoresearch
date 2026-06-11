@@ -1,14 +1,13 @@
-//! Proof-transcript mutation fuzzer.
+//! Proof-transcript mutation fuzzer for leanVM Goldilocks.
 //!
 //! Generates one valid proof, then mutates random bytes in the serialized
-//! transcript and verifies the verifier REJECTS every mutation. A mutation
-//! that passes verification indicates a verifier bug.
+//! transcript and verifies the verifier REJECTS every mutation.
 //!
 //! Usage:
 //!   cargo run --release --bin fuzz_proof_rejection [-- --mutations N --seed S]
 
 use backend::precompute_dft_twiddles;
-use koala_bear::KoalaBear;
+use goldilocks::Goldilocks;
 use rec_aggregation::{
     SingleMessageAggregateSignature, aggregate_single_message_signatures, init_aggregation_bytecode, verify_single_message_aggregate,
 };
@@ -36,12 +35,11 @@ fn main() {
         i += 1;
     }
 
-    eprintln!("[fuzz] proof-transcript mutation fuzzer");
+    eprintln!("[fuzz] proof-transcript mutation fuzzer (Goldilocks)");
     eprintln!("[fuzz] mutations={} seed={}", n_mutations, seed);
 
-    // --- Generate one valid proof ---
     init_aggregation_bytecode();
-    precompute_dft_twiddles::<KoalaBear>(1 << 24);
+    precompute_dft_twiddles::<Goldilocks>(1 << 24);
     let message = message_for_benchmark();
     let slot: u32 = BENCHMARK_SLOT;
     let signatures = get_benchmark_signatures();
@@ -52,12 +50,10 @@ fn main() {
     let valid_bytes = valid_sig.to_bytes();
     eprintln!("[fuzz] proof size: {} bytes", valid_bytes.len());
 
-    // Sanity: valid proof passes verification
     let recovered = SingleMessageAggregateSignature::from_bytes(&valid_bytes).unwrap();
     verify_single_message_aggregate(&recovered).unwrap();
     eprintln!("[fuzz] valid proof passes verification ✓");
 
-    // --- Mutation loop ---
     let mut rng_state = seed;
     let mut accepted = 0usize;
     let mut rejected = 0usize;
@@ -66,17 +62,14 @@ fn main() {
     for i in 0..n_mutations {
         let mut mutated = valid_bytes.clone();
 
-        // Pick mutation strategy
         let strategy = simple_rng(&mut rng_state) % 4;
         match strategy {
             0 => {
-                // Single byte flip
                 let pos = (simple_rng(&mut rng_state) as usize) % mutated.len();
                 let bit = (simple_rng(&mut rng_state) % 8) as u8;
                 mutated[pos] ^= 1 << bit;
             }
             1 => {
-                // Multi-byte corruption (2-8 bytes)
                 let n = 2 + (simple_rng(&mut rng_state) as usize) % 7;
                 for _ in 0..n {
                     let pos = (simple_rng(&mut rng_state) as usize) % mutated.len();
@@ -84,12 +77,10 @@ fn main() {
                 }
             }
             2 => {
-                // Truncation (remove last 1-32 bytes)
                 let n = 1 + (simple_rng(&mut rng_state) as usize) % 32;
                 mutated.truncate(mutated.len().saturating_sub(n));
             }
             3 => {
-                // Zero a region (4-64 bytes)
                 let len = 4 + (simple_rng(&mut rng_state) as usize) % 61;
                 let start = (simple_rng(&mut rng_state) as usize) % mutated.len();
                 let end = (start + len).min(mutated.len());
@@ -100,7 +91,6 @@ fn main() {
             _ => unreachable!(),
         }
 
-        // Skip if mutation didn't actually change anything (e.g. zeroing already-zero bytes)
         if mutated == valid_bytes {
             deser_fail += 1;
             if (i + 1) % 50 == 0 {
@@ -109,11 +99,8 @@ fn main() {
             continue;
         }
 
-        // Try decompress + verify
         match SingleMessageAggregateSignature::from_bytes(&mutated) {
-            None => {
-                deser_fail += 1;
-            }
+            None => { deser_fail += 1; }
             Some(sig) => {
                 match verify_single_message_aggregate(&sig) {
                     Ok(_) => {
@@ -128,25 +115,16 @@ fn main() {
                                 n_diff += 1;
                             }
                         }
-                        eprintln!(
-                            "[fuzz] ACCEPTED mutation {}! strategy={} \
-                             — VERIFIER BUG: mutated proof passed verification",
-                            i, strategy,
-                        );
-                        eprintln!(
-                            "[fuzz]   diff: {} bytes changed at positions {}..={} (proof len={})",
-                            n_diff, diff_start, diff_end, valid_bytes.len(),
-                        );
+                        eprintln!("[fuzz] ACCEPTED mutation {}! strategy={} — VERIFIER BUG", i, strategy);
+                        eprintln!("[fuzz]   diff: {} bytes at {}..={} (len={})", n_diff, diff_start, diff_end, valid_bytes.len());
                         if n_diff <= 64 {
-                            let ctx_start = diff_start.saturating_sub(4);
-                            let ctx_end = (diff_end + 5).min(valid_bytes.len());
-                            eprintln!("[fuzz]   original: {:?}", &valid_bytes[ctx_start..ctx_end]);
-                            eprintln!("[fuzz]   mutated:  {:?}", &mutated[ctx_start..ctx_end]);
+                            let s = diff_start.saturating_sub(4);
+                            let e = (diff_end + 5).min(valid_bytes.len());
+                            eprintln!("[fuzz]   original: {:?}", &valid_bytes[s..e]);
+                            eprintln!("[fuzz]   mutated:  {:?}", &mutated[s..e]);
                         }
                     }
-                    Err(_) => {
-                        rejected += 1;
-                    }
+                    Err(_) => { rejected += 1; }
                 }
             }
         }

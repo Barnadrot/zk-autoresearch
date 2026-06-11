@@ -1,4 +1,151 @@
 current_pool:
-  
+  - id: h5
+    name: uniskip-bottom-gkr-layer
+    paper_anchor: >
+      Gruen eprint 2024/108 §5 (same mechanism, new target) + Papini-Haböck
+      2023/1284 §3.2 (layer sumcheck structure: deg-3 products over
+      eq·(p_a·q_b + p_b·q_a, q_a·q_b)). The bottom logup-GKR layer is the
+      largest (2^24 this workload; prove GKR = 218ms = 10.8% e2e); its first k
+      rounds pay EF-vs-base penalties wherever leaf factors are base field
+      (numerators are multiplicities/counts; denominators are EF fingerprints).
+      Front-loading is NOT needed (single sumcheck per layer).
+    mechanism: >
+      Apply the univariate skip to the FIRST (largest) layer sumcheck of the
+      logup quotient GKR only: reinterpret the leaf numerator/denominator
+      multilinears over D x H_{n-k}, send one combined coefficient vector
+      (degree (2^k-1)*3 = 45 at k=4, +46 EF transcript), bind k variables with
+      one challenge. Saves the EF-round tail of the largest layer; upper layers
+      unchanged. Verifier + python spec + recursion circuit mirror (one extra
+      branch in the gkr verification round 1).
+    predicted_pct: -0.6  # double-downgraded: h8 diagnostic measured ~40% compute->wallclock conversion in the GKR/WHIR memory-bound region; bottom-layer ~25ms compute saving converts to ~10ms e2e -> BELOW GATE; entry retained only as documentation pending triage-kill unless iter-4 profiling contradicts the conversion factor  # was: downgraded from -2.0: bottom-layer sumcheck measured 70-78ms (h5-measure, iter2 phase1); den-side d*d products are EF at every round incl. the window, so the skip accelerates only the num side
+    plumbing:
+      - "crates/sub_protocols/src/quotient_gkr/ (bottom-layer prover + verifier)"
+      - "crates/lean_prover/python-verifier/verifier.py verify_gkr_quotient"
+      - "crates/rec_aggregation/zkdsl_implem/recursion.py (gkr section)"
+    kill_condition: >
+      Profile attribution shows the bottom GKR layer is <40ms of the 218ms GKR
+      span (add a temporary per-layer tracing span and run once) - then max win
+      <1% and the transcript+recursion cost is not paid back. Also kill if BOTH
+      leaf factors are already extension-field at the bottom layer (read
+      quotient_gkr leaf layout first): then the skip saves only the eq factor
+      and dies.
+  - id: h6
+    name: poseidon-output-regating-degree-9
+    paper_anchor: >
+      Phase-0 code analysis (tables/poseidon/mod.rs:296-301 + 488-522): AIR
+      degree is 10 ONLY because eval_last_2_full_rounds_16 gates the degree-9
+      permutation tail by linear flags (gate_lo_8, gate_hi). Max table degree
+      drives the batched sumcheck z-point count (10 eval points per pair per
+      round for poseidon; combined verifier degree 11; skip-poly degree 150).
+      Gruen 2024/108 cost model: prover work linear in d.
+    mechanism: >
+      Restructure the output constraints so every constraint has degree <=9:
+      commit out_lo/out_hi as the UNGATED permutation(+feedforward) outputs and
+      move mode selection to the bus/trace side (the memory lookups already
+      select which output cells are consumed; trace_gen defines the committed
+      values for unused cells). Poseidon AIR degree 10 -> 9, combined sumcheck
+      degree 11 -> 10: one fewer z-point every round AND one fewer EF coeff per
+      linear round, skip poly degree 150 -> 135 (-16 EF transcript each).
+      Requires degree_air() change (Layer 0.7 Check-3 protected method ->
+      human-review posture, same as iter 1) + recursion MAX_AIR_FULL_DEGREE
+      recompile.
+    predicted_pct: -0.8  # downgraded by the pre-wiring soundness sketch (report/hypothesis_6/soundness_sketch.md): post-h1/h4 the degree drop saves only ~15ms in the AIR region, and the 'small regating' actually requires logup-wide multiplicity-column changes; BELOW GATE -> triage-kill territory per operator h7 rule
+    plumbing:
+      - "crates/lean_vm/src/tables/poseidon/mod.rs (eval_last_2_full_rounds_16, degree_air, trace_gen.rs)"
+      - "crates/rec_aggregation zkdsl + compilation.rs (degree constant)"
+      - "crates/lean_prover/python-verifier/verifier.py (degree + eval_air mirror)"
+    kill_condition: >
+      Write the candidate constraint system down BEFORE wiring: if mode-selection
+      soundness (out4/out8/permute) cannot be enforced without the gating
+      multiplications - i.e., a hand-built adversarial witness with mismatched
+      mode flags passes all bus + AIR checks in a soundness_check-style unit
+      test - the family is dead. Also kill if padding rows (multiplicity 0 but
+      out columns pulled by 16 memory lookups) cannot satisfy the ungated
+      equality with any trace_gen definition.
 
 history:
+  - id: h9
+    name: fractional-sumcheck-restructuring
+    iter: 4
+    result: killed-at-W1-measurement
+    predicted_pct: -1.7
+    notes: >
+      In-pipeline kill-gate (the iter-3 process fix) killed it in ~3 hours with
+      zero protocol surface: rho_sq=2.55 (squaring kernel 2.5x SLOWER; packed
+      quintic square is ~1.7-1.8x of a mul on Zen4 AVX-512 — ILP-bound, the
+      0.6x assumption false), plus pre-registered code-fact refutations F1
+      (transcript credit never existed: 2 EF/round already), F2 (eq machinery
+      already modern), F3 (7/4 state growth crosses the logup boundary).
+      Permanent diagnostic: GKR = 52ms down + 164ms up (68.6 initial / 92.9
+      interior / 2.4 natural). report/hypothesis_9/killgate.md.
+  - id: h8
+    name: uniskip-whir-initial-fold
+    iter: 3
+    result: discard
+    predicted_pct: -5.5
+    measured_pct: -1.23
+    notes: >
+      Gate: net -1.21% after proof-size penalty (throughput -1.23% p=1.4e-4;
+      proof +4KiB = 9x predicted). Concept-level miss, all 5 commits reverted
+      (ff7eeb2d..00032320). DIAGNOSTIC (binding for future entries): (1)
+      compute->wallclock conversion in the memory-bound WHIR/GKR region is
+      ~40% (AIR region converts ~1:1 — h1/h4 evidence); (2) transcript deltas
+      multiply per WHIR instance in aggregate bundles; size-scaling component
+      partially unattributed. Mechanism was SOUND (kill-gate 0.662, recursion
+      cycles below baseline, security argument closed) — the e2e ceiling
+      (~-1.2%) is just below the gate+penalty floor at this workload scale.
+  - id: h7
+    name: parallelize-acc-builds
+    iter: "-"
+    result: killed-at-triage
+    notes: >
+      Operator triage + arithmetic: predicted -0.8% is structurally below the
+      gate keep threshold (delta <= -1.0% required); a hypothesis that cannot
+      pass the gate even at full prediction is not worth an iteration slot.
+      The TODO-parallelize serial loops (~22ms) remain valid cleanup for a
+      maintenance pass, not research.
+  - id: h4
+    name: finite-difference-skip-kernel
+    iter: 2
+    result: keep
+    predicted_pct: -3.5
+    measured_pct: -3.10
+    notes: >
+      Kept at -3.10% (p=2.9e-05, new xmss-method gate baseline 1.90s; recursion
+      -3.25%; proofs bit-identical). Commit bc8a3fc4, review-accepted with
+      independent FD-anchor re-derivation. Skip kernel now 150ms vs 408 legacy.
+      K-sweep note: with FD, K=4 is near-optimal (K=5 extension cost ~2x for
+      ~25ms tail saving = net loss; K=3 ~breakeven) - documented dead end.
+  - id: h1
+    name: univariate-skip-air-sumcheck
+    iter: 1
+    result: keep(needs-human-review:L0.7/L0.8)
+    predicted_pct: -12.0
+    measured_pct: -6.66
+    notes: >
+      Kept at -6.66% (p~0; steady-state -5.68%; recursion -4.08%; proof +0.0%).
+      Commits 377bb24b..2576191e (T1-T7), all review-accepted. Correctness
+      layers 0,0.5,1-7 pass; 0.7/0.8 fail by design (verifier-depth change,
+      surgical protected-file diffs; human cryptographer review requested).
+      Security argument: report/hypothesis_1/security_regime.md. Original pool
+      entry preserved in git history of this file and in plan_spec.md.
+      Shortfall vs prediction = Lagrange-dot vs FD-stepping kernel (-> h4).
+  - id: h2
+    name: gkr-poseidon-offload
+    iter: 1
+    result: killed-at-planning
+    notes: >
+      Transcript +29.5..40 KiB vs +5 KiB kill threshold (5.9-7.8x over),
+      structurally irreducible (28 constant-width 2^22 layers); see
+      report/hypothesis_2/gkr-poseidon-offload.md. Diagnostic: replacements for
+      the same target must keep transcript growth O(1) sumchecks.
+  - id: h3
+    name: vectorized-memory-bus-poseidon-io
+    iter: 1
+    result: killed-at-planning
+    notes: >
+      Formal audit: 99/67/60/91% of poseidon operand pointers unaligned mod 4
+      on the 1550-sig trace; alignment retrofit = allocation-policy change
+      (hard constraint 5) with 2^22 memory-boundary downside; see
+      report/hypothesis_3/vectorized-memory-bus.md. Protocol side (0b/0c)
+      verified feasible - only the alignment route is closed.
