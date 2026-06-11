@@ -3,6 +3,15 @@
 # Forked from harness/leanvm/correctness/correctness.sh, adapted for
 # Goldilocks field (p = 2^64 - 2^32 + 1), Poseidon8 (width=8, α=7),
 # cubic extension (degree 3).
+#
+# Usage:
+#   correctness.sh                            # normal mode — fail-fast
+#   correctness.sh --expect-protected-changes # run all layers, tripwires → REVIEW
+#
+# Exit codes:
+#   0 = all layers passed
+#   1 = hard failure (crypto params, tests, soundness)
+#   3 = all layers passed but protected-file changes need human review
 
 set -euo pipefail
 
@@ -11,6 +20,24 @@ cd ~/zk-autoresearch/leanVM
 
 export RUSTFLAGS="-C target-cpu=native"
 export RUST_MIN_STACK=67108864
+
+# -----------------------------------------------------------------------
+# Args
+# -----------------------------------------------------------------------
+EXPECT_PROTECTED=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expect-protected-changes) EXPECT_PROTECTED=1; shift ;;
+    *) echo "[correctness] unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+# -----------------------------------------------------------------------
+# Result tracking (used in --expect-protected-changes mode)
+# -----------------------------------------------------------------------
+GATE_FAILURES=0
+GATE_REVIEWS=0
+REVIEW_ITEMS=""
 
 fail() {
   local layer="$1" what="$2" why="$3" fix="$4"
@@ -25,7 +52,37 @@ fail() {
   echo ""
   echo "ACTION REQUIRED: ${fix}"
   echo "================================================================"
-  exit 1
+  GATE_FAILURES=$((GATE_FAILURES + 1))
+  if [[ "$EXPECT_PROTECTED" != "1" ]]; then
+    exit 1
+  fi
+}
+
+review() {
+  local layer="$1" what="$2" why="$3"
+  echo ""
+  echo "================================================================"
+  echo "[correctness] REVIEW at Layer ${layer}"
+  echo "================================================================"
+  echo ""
+  echo "WHAT: ${what}"
+  echo ""
+  echo "WHY: ${why}"
+  echo ""
+  echo "STATUS: Needs human review before merge."
+  echo "================================================================"
+  GATE_REVIEWS=$((GATE_REVIEWS + 1))
+  REVIEW_ITEMS="${REVIEW_ITEMS}  - Layer ${layer}: ${what}\n"
+}
+
+# Dispatches to review() in --expect-protected-changes mode, fail() otherwise
+tripwire() {
+  local layer="$1" what="$2" why="$3" fix="$4"
+  if [[ "$EXPECT_PROTECTED" == "1" ]]; then
+    review "$layer" "$what" "$why"
+  else
+    fail "$layer" "$what" "$why" "$fix"
+  fi
 }
 
 # -----------------------------------------------------------------------
@@ -72,6 +129,159 @@ if [[ "$WHIR_INIT" != "6" || "$WHIR_SUBS" != "4" ]]; then
 fi
 
 echo "[correctness] Layer 0.5 PASSED — crypto parameters match Goldilocks spec."
+
+# -----------------------------------------------------------------------
+# Layer 0.7: Diff hygiene checks
+# Scans the experiment branch diff for patterns that indicate unsound
+# shortcuts. Runs in ~100ms (grep only, no compilation).
+#
+# In --expect-protected-changes mode, checks 3-6 (structural/protected
+# file changes) emit REVIEW instead of FAIL. Checks 1-2 (todo!/
+# unimplemented!) always hard-fail — they're never sanctioned.
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.7: Diff hygiene checks..."
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  DIFF_RS=$(git diff main...HEAD -- '*.rs' 2>/dev/null || echo "")
+
+  # Check 1: No todo!() additions — always hard-fail
+  TODO_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*todo!\(\)' || true)
+  if [[ "$TODO_HITS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff contains $TODO_HITS new todo!() macro(s) in Rust code." \
+      "todo!() compiles but panics at runtime. In a ZK proving system, the honest prover may never hit the code path, so tests pass — but the verifier path is incomplete." \
+      "Replace every todo!() with a real implementation. If the function is genuinely not needed, remove it entirely rather than leaving a stub."
+  fi
+
+  # Check 2: No unimplemented!() additions — always hard-fail
+  UNIMPL_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*unimplemented!\(\)' || true)
+  if [[ "$UNIMPL_HITS" -gt 0 ]]; then
+    fail "0.7" \
+      "Branch diff contains $UNIMPL_HITS new unimplemented!() macro(s) in Rust code." \
+      "unimplemented!() is functionally identical to todo!() — it compiles but panics. Same risk as todo!(): verifier paths may be left incomplete." \
+      "Replace every unimplemented!() with a real implementation or remove the function."
+  fi
+
+  # Check 3: Structural invariant methods — tripwire (REVIEW in protected mode)
+  STRUCT_HITS=$(echo "$DIFF_RS" | grep -cE '^\+.*(fn n_columns|fn n_columns_total|fn degree_air|fn n_shift_columns|fn low_degree_air)' || true)
+  if [[ "$STRUCT_HITS" -gt 0 ]]; then
+    tripwire "0.7" \
+      "Branch diff modifies structural AIR methods ($STRUCT_HITS change(s): fn n_columns, fn n_columns_total, fn degree_air, or fn n_shift_columns)." \
+      "These methods define the commitment surface, constraint degree, and shift column count — all security-critical boundaries." \
+      "Revert changes to these methods. If a structural change is genuinely needed for your optimization, document WHY in the commit message and request human review."
+  fi
+
+  # Check 4: Commitment boundary — tripwire
+  PCS_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*stack_polynomials_and_commit' || true)
+  if [[ "$PCS_HITS" -gt 0 ]]; then
+    tripwire "0.7" \
+      "Branch diff modifies stack_polynomials_and_commit ($PCS_HITS change(s))." \
+      "This function defines which columns the stacked PCS commits to. Modifying it can reduce the commitment surface without changing n_columns(), defeating the baseline check." \
+      "Revert changes to stack_polynomials_and_commit. Commitment boundary changes require human review."
+  fi
+
+  # Check 5: Verifier — tripwire
+  VERIFIER_DIFF=$(git diff main...HEAD -- 'crates/lean_prover/src/verify_execution.rs' 2>/dev/null || echo "")
+  VERIFIER_ADDITIONS=$(echo "$VERIFIER_DIFF" | grep -c '^\+' || true)
+  if [[ "$VERIFIER_ADDITIONS" -gt 0 ]]; then
+    tripwire "0.7" \
+      "Branch diff modifies verify_execution.rs ($VERIFIER_ADDITIONS addition(s))." \
+      "The verifier is the trust root of the proving system. A weakened verifier accepts invalid proofs even when the AIR is sound. Verifier modifications require human cryptographer review." \
+      "Revert changes to verify_execution.rs. If the optimization requires verifier changes (e.g., new WHIR parameters), document the security argument and request human review."
+  fi
+
+  # Check 6: Fiat-Shamir / WHIR core — tripwire
+  for CRITICAL_FILE in \
+    "crates/backend/fiat-shamir/src/prover.rs" \
+    "crates/backend/fiat-shamir/src/verifier.rs" \
+    "crates/whir/src/verify.rs" \
+    "crates/whir/src/open.rs" \
+    "crates/sub_protocols/src/air_sumcheck.rs"; do
+    FS_DIFF=$(git diff main...HEAD -- "$CRITICAL_FILE" 2>/dev/null || echo "")
+    FS_ADDS=$(echo "$FS_DIFF" | grep -c '^\+' || true)
+    if [[ "$FS_ADDS" -gt 0 ]]; then
+      tripwire "0.7" \
+        "Branch diff modifies $CRITICAL_FILE ($FS_ADDS addition(s))." \
+        "This file is part of the cryptographic protocol core (Fiat-Shamir, WHIR, or sumcheck). Modifications can reduce soundness without affecting honest-prover tests." \
+        "Revert changes to $CRITICAL_FILE. Protocol-core modifications require human review."
+    fi
+  done
+
+  if [[ "$GATE_REVIEWS" -eq 0 ]] && [[ "$GATE_FAILURES" -eq 0 || "$EXPECT_PROTECTED" == "1" ]]; then
+    echo "[correctness] Layer 0.7 PASSED — diff hygiene clean."
+  elif [[ "$GATE_REVIEWS" -gt 0 ]]; then
+    echo "[correctness] Layer 0.7: $GATE_REVIEWS item(s) flagged for REVIEW."
+  fi
+else
+  echo "[correctness] Layer 0.7 SKIPPED — on main branch."
+fi
+
+BENCH_CRATE="${SHARED_DIR}/../bench"
+
+# -----------------------------------------------------------------------
+# Layer 0.8: Differential verification
+# Generates a proof with the agent's (possibly modified) prover, then
+# verifies it with a FROZEN reference verifier binary compiled from main.
+#
+# Logic:
+#   frozen accepts → PASS (proof is sound under original security guarantees)
+#   frozen rejects + verifier files unchanged → PASS (legitimate AIR/prover change)
+#   frozen rejects + verifier files changed → FAIL (verifier changed AND proof incompatible)
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.8: Differential verification..."
+
+FROZEN_VERIFIER="$SHARED_DIR/reference_verify_frozen"
+if [[ -x "$FROZEN_VERIFIER" && "$CURRENT_BRANCH" != "main" ]]; then
+  PROOF_FILE="/tmp/correctness_proof_$$.bin"
+
+  (
+    cd "$BENCH_CRATE"
+    cargo build --release --bin proof_generate 2>&1 | tail -3
+  )
+  if ! "$BENCH_CRATE/target/release/proof_generate" "$PROOF_FILE" 2>&1; then
+    fail "0.8" \
+      "proof_generate failed — could not generate a proof with the agent's prover." \
+      "The agent's modified prover cannot produce a valid proof. This is a critical failure." \
+      "Check your prover changes. The proof generation uses the same path as test_aggregation."
+  fi
+
+  if "$FROZEN_VERIFIER" "$PROOF_FILE" 2>&1; then
+    echo "[correctness] Layer 0.8 PASSED — frozen reference verifier accepted the proof."
+  else
+    VERIFIER_CHANGED=0
+    for VFILE in \
+      "crates/lean_prover/src/verify_execution.rs" \
+      "crates/backend/fiat-shamir/src/verifier.rs" \
+      "crates/whir/src/verify.rs" \
+      "crates/sub_protocols/src/air_sumcheck.rs"; do
+      if git diff main...HEAD --name-only 2>/dev/null | grep -q "$VFILE"; then
+        VERIFIER_CHANGED=1
+        break
+      fi
+    done
+
+    if [[ "$VERIFIER_CHANGED" -eq 0 ]]; then
+      echo "[correctness] Layer 0.8 PASS (fallback) — frozen verifier rejected but verifier files are unmodified (legitimate AIR/prover format change)."
+      echo "[correctness] WARNING: The frozen reference verifier is incompatible with the current proof format."
+      echo "[correctness]   Consider rebuilding the frozen binary from the current main branch."
+    else
+      fail "0.8" \
+        "Frozen reference verifier rejected the proof AND verifier files were modified." \
+        "The agent changed the verifier AND the generated proof is incompatible with the original verifier. This means the new proof format relies on modified verification logic — the original security guarantees may not hold." \
+        "Either (a) revert verifier file changes and optimize only the prover, or (b) ensure the proof is accepted by the frozen verifier. Verifier changes that alter the proof format require human cryptographer review."
+    fi
+  fi
+  rm -f "$PROOF_FILE"
+else
+  if [[ "$CURRENT_BRANCH" == "main" ]]; then
+    echo "[correctness] Layer 0.8 SKIPPED — on main branch."
+  else
+    echo "[correctness] Layer 0.8 SKIPPED — frozen verifier not found at $FROZEN_VERIFIER."
+  fi
+fi
 
 # -----------------------------------------------------------------------
 # Layer 0.9: Format gate
@@ -174,7 +384,6 @@ echo "[correctness] Layer 5 PASSED."
 # -----------------------------------------------------------------------
 echo ""
 echo "[correctness] Layer 6: Free variable soundness check..."
-BENCH_CRATE="${SHARED_DIR}/../bench"
 (
   cd "$BENCH_CRATE"
   cargo build --release --bin soundness_check 2>&1 | tail -3
@@ -204,5 +413,18 @@ if ! "$BENCH_CRATE/target/release/fuzz_proof_rejection" --mutations 200 --seed "
 fi
 echo "[correctness] Layer 7 PASSED."
 
+# -----------------------------------------------------------------------
+# Final summary
+# -----------------------------------------------------------------------
 echo ""
-echo "[correctness] ALL LAYERS PASSED."
+if [[ "$GATE_FAILURES" -gt 0 ]]; then
+  echo "[correctness] $GATE_FAILURES FAILURE(S), $GATE_REVIEWS REVIEW item(s)."
+  exit 1
+elif [[ "$GATE_REVIEWS" -gt 0 ]]; then
+  echo "[correctness] ALL LAYERS PASSED. $GATE_REVIEWS item(s) flagged for REVIEW:"
+  echo -e "$REVIEW_ITEMS"
+  echo "[correctness] These changes require human review before merge."
+  exit 3
+else
+  echo "[correctness] ALL LAYERS PASSED."
+fi

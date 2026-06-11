@@ -56,6 +56,10 @@ PROOF_SIZE_PENALTY_MULTIPLIER=${PROOF_SIZE_PENALTY_MULTIPLIER:-3}
 
 export RUSTFLAGS="-C target-cpu=native"
 
+# Clean stale artifacts from prior runs (a crashed run must not leave data
+# that the next iteration reads as its own).
+rm -f /tmp/eval_paired_summary.json /tmp/eval_paired_preflight.json
+
 # ------------------------------- ARGS ----------------------------------------
 
 while [[ $# -gt 0 ]]; do
@@ -86,6 +90,14 @@ PREFLIGHT_JSON=$(cat /tmp/eval_paired_preflight.json 2>/dev/null || echo "{}")
 err() { echo "[eval_paired][err] $*" >&2; }
 log() { echo "[eval_paired] $*"; }
 
+file_hash() {
+  if command -v md5sum > /dev/null 2>&1; then
+    md5sum "$1" | awk '{print $1}'
+  else
+    md5 -q "$1"
+  fi
+}
+
 drop_caches() {
   sync
   echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
@@ -108,7 +120,7 @@ build_binaries() {
   (
     cd "$BENCH_CRATE"
     cargo clean --release >/dev/null 2>&1 || true
-    cargo build --release --bin prove_loop --features zkalloc_global 2>&1 | tail -5 >&2 \
+    cargo build --release --bin prove_loop --features zkalloc_global  2>&1 | tail -5 >&2 \
       || { err "cargo build --bin prove_loop failed at $ref"; exit 2; }
     cp target/release/prove_loop "$prove_loop_out" \
       || { err "prove_loop binary not found at $ref"; exit 2; }
@@ -149,8 +161,8 @@ build_binaries "$BASELINE_SHA" /tmp/prove_loop_base /tmp/lean_multisig_base
 log "building candidate (prove_loop + lean-multisig)..."
 build_binaries "$CANDIDATE_SHA" /tmp/prove_loop_cand /tmp/lean_multisig_cand
 
-HASH_BASE=$(md5sum /tmp/prove_loop_base | awk '{print $1}')
-HASH_CAND=$(md5sum /tmp/prove_loop_cand | awk '{print $1}')
+HASH_BASE=$(file_hash /tmp/prove_loop_base)
+HASH_CAND=$(file_hash /tmp/prove_loop_cand)
 log "hash_base : $HASH_BASE"
 log "hash_cand : $HASH_CAND"
 if [[ "$HASH_BASE" == "$HASH_CAND" ]]; then

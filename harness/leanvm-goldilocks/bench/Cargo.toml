@@ -12,10 +12,12 @@ xmss             = { path = "../../../leanVM/crates/xmss" }
 backend          = { path = "../../../leanVM/crates/backend" }
 sub_protocols    = { path = "../../../leanVM/crates/sub_protocols" }
 goldilocks       = { path = "../../../leanVM/crates/backend/goldilocks" }
-utils            = { path = "../../../leanVM/crates/backend/utils" }
 lean_vm          = { path = "../../../leanVM/crates/lean_vm" }
 rayon            = "1"
 zk-alloc         = { path = "../../../leanVM/crates/backend/zk-alloc", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 zkalloc_global = ["dep:zk-alloc"]
@@ -31,6 +33,18 @@ path = "src/bin/soundness_check.rs"
 [[bin]]
 name = "fuzz_proof_rejection"
 path = "src/bin/fuzz_proof_rejection.rs"
+
+[[bin]]
+name = "proof_generate"
+path = "src/bin/proof_generate.rs"
+
+[[bin]]
+name = "reference_verify"
+path = "src/bin/reference_verify.rs"
+
+[[bench]]
+name = "xmss_leaf"
+harness = false
 
 [profile.release]
 lto = "fat"
