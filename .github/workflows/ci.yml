@@ -6,30 +6,31 @@ on:
   pull_request:
     branches: ["main"]
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.94.0"
+
 jobs:
-  build-plonky3-harness:
+  # ─── Shell script syntax ──────────────────────────────────────────────
+  shell-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.94.0"
+      - name: Syntax-check all shell scripts (bash -n)
+        run: |
+          FAIL=0
+          while IFS= read -r f; do
+            if ! bash -n "$f" 2>/tmp/bash_err.txt; then
+              echo "FAIL: $f"
+              cat /tmp/bash_err.txt
+              FAIL=1
+            fi
+          done < <(find harness -name '*.sh' -not -path '*/target/*')
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "All shell scripts pass syntax check."
 
-      - name: Clone Plonky3
-        run: git clone --depth 1 https://github.com/Plonky3/Plonky3.git plonky3
-
-      - name: Clone zk-alloc
-        run: git clone --depth 1 https://github.com/Barnadrot/zk-alloc.git zk-alloc
-
-      - name: Build correctness checker
-        run: cargo check --profile bench
-        working-directory: harness/plonky3/correctness
-
-      - name: Check bench crate compiles
-        run: cargo check --release
-        working-directory: harness/plonky3/bench
-
+  # ─── leanVM harness (KoalaBear — main branch) ────────────────────────
   build-leanvm-harness:
     runs-on: ubuntu-latest
     steps:
@@ -37,11 +38,79 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.0"
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
-      - name: Clone leanVM
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: harness/leanvm/bench
+          key: leanvm
+
+      - name: Clone leanVM (main)
         run: git clone --depth 1 https://github.com/leanEthereum/leanVM.git leanVM
 
-      - name: Check bench crate compiles
-        run: cargo check --release
+      - name: Check all binaries compile
         working-directory: harness/leanvm/bench
+        run: cargo check --release
+
+      - name: Check binaries with zkalloc_global
+        working-directory: harness/leanvm/bench
+        run: cargo check --release --features zkalloc_global
+
+  # ─── leanVM-Goldilocks harness (goldilocks branch) ───────────────────
+  build-leanvm-goldilocks-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: harness/leanvm-goldilocks/bench
+          key: leanvm-goldilocks
+
+      - name: Clone leanVM (goldilocks branch)
+        run: git clone --depth 1 -b goldilocks https://github.com/leanEthereum/leanVM.git leanVM
+
+      - name: Check all binaries compile
+        working-directory: harness/leanvm-goldilocks/bench
+        run: cargo check --release
+
+      - name: Check binaries with zkalloc_global
+        working-directory: harness/leanvm-goldilocks/bench
+        run: cargo check --release --features zkalloc_global
+
+      - name: Check bench targets compile
+        working-directory: harness/leanvm-goldilocks/bench
+        run: cargo check --benches
+
+  # ─── Plonky3 harness ─────────────────────────────────────────────────
+  build-plonky3-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: harness/plonky3/bench
+          key: plonky3
+
+      - name: Clone Plonky3
+        run: git clone --depth 1 https://github.com/Plonky3/Plonky3.git plonky3
+
+      - name: Clone zk-alloc
+        run: git clone --depth 1 https://github.com/Barnadrot/zk-alloc.git zk-alloc
+
+      - name: Check correctness crate compiles
+        working-directory: harness/plonky3/correctness
+        run: cargo check --profile bench
+
+      - name: Check bench crate compiles
+        working-directory: harness/plonky3/bench
+        run: cargo check --release

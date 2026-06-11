@@ -7,8 +7,12 @@
 # On failure: prints a structured diagnostic block with what failed,
 # why it matters, and what the agent should do to fix it.
 #
+# Usage:
+#   correctness.sh                            # normal mode — fail-fast
+#   correctness.sh --expect-protected-changes # run all layers, tripwires → REVIEW
+#
 # Exit code: 0 = pass, 1 = fail, 2 = nondeterminism detected,
-#            3 = test-file integrity violation.
+#            3 = all passed but protected-file changes need human review.
 
 set -euo pipefail
 
@@ -21,9 +25,30 @@ export RUST_MIN_STACK=67108864
 REPEAT=${CORRECTNESS_REPEAT:-1}
 
 # -----------------------------------------------------------------------
+# Args
+# -----------------------------------------------------------------------
+EXPECT_PROTECTED=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expect-protected-changes) EXPECT_PROTECTED=1; shift ;;
+    *) echo "[correctness] unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+# -----------------------------------------------------------------------
+# Result tracking (used in --expect-protected-changes mode)
+# -----------------------------------------------------------------------
+GATE_FAILURES=0
+GATE_REVIEWS=0
+REVIEW_ITEMS=""
+
+# -----------------------------------------------------------------------
 # Failure handler — every layer calls fail() instead of letting set -e
 # produce an opaque exit. The message tells the agent exactly what broke,
 # why it matters, and what to do.
+#
+# In --expect-protected-changes mode, fail() records but does not exit,
+# so all layers run and the agent gets the full evidence set in one pass.
 # -----------------------------------------------------------------------
 fail() {
   local layer="$1"
@@ -41,7 +66,36 @@ fail() {
   echo ""
   echo "ACTION REQUIRED: ${fix}"
   echo "================================================================"
-  exit 1
+  GATE_FAILURES=$((GATE_FAILURES + 1))
+  if [[ "$EXPECT_PROTECTED" != "1" ]]; then
+    exit 1
+  fi
+}
+
+review() {
+  local layer="$1" what="$2" why="$3"
+  echo ""
+  echo "================================================================"
+  echo "[correctness] REVIEW at Layer ${layer}"
+  echo "================================================================"
+  echo ""
+  echo "WHAT: ${what}"
+  echo ""
+  echo "WHY: ${why}"
+  echo ""
+  echo "STATUS: Needs human review before merge."
+  echo "================================================================"
+  GATE_REVIEWS=$((GATE_REVIEWS + 1))
+  REVIEW_ITEMS="${REVIEW_ITEMS}  - Layer ${layer}: ${what}\n"
+}
+
+tripwire() {
+  local layer="$1" what="$2" why="$3" fix="$4"
+  if [[ "$EXPECT_PROTECTED" == "1" ]]; then
+    review "$layer" "$what" "$why"
+  else
+    fail "$layer" "$what" "$why" "$fix"
+  fi
 }
 
 # -----------------------------------------------------------------------
@@ -178,36 +232,35 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
       "Replace every unimplemented!() with a real implementation or remove the function."
   fi
 
-  # Check 3: No modifications to structural invariant methods
-  STRUCT_METHODS="fn n_columns\|fn n_columns_total\|fn degree_air\|fn n_shift_columns"
+  # Check 3: Structural invariant methods — tripwire (REVIEW in protected mode)
   STRUCT_HITS=$(echo "$DIFF_RS" | grep -cE '^\+.*(fn n_columns|fn n_columns_total|fn degree_air|fn n_shift_columns|fn low_degree_air)' || true)
   if [[ "$STRUCT_HITS" -gt 0 ]]; then
-    fail "0.7" \
+    tripwire "0.7" \
       "Branch diff modifies structural AIR methods ($STRUCT_HITS change(s): fn n_columns, fn n_columns_total, fn degree_air, or fn n_shift_columns)." \
       "These methods define the commitment surface, constraint degree, and shift column count — all security-critical boundaries. Changing them alters what the stacked PCS commits, how many sumcheck rounds run, or which transition constraints are active. The soundness_check baseline will also catch this, but this early grep blocks the change before compilation." \
       "Revert changes to these methods. If a structural change is genuinely needed for your optimization, document WHY in the commit message and request human review."
   fi
 
-  # Check 4: No modifications to the commitment boundary
+  # Check 4: Commitment boundary — tripwire
   PCS_HITS=$(echo "$DIFF_RS" | grep -c '^\+.*stack_polynomials_and_commit' || true)
   if [[ "$PCS_HITS" -gt 0 ]]; then
-    fail "0.7" \
+    tripwire "0.7" \
       "Branch diff modifies stack_polynomials_and_commit ($PCS_HITS change(s))." \
       "This function defines which columns the stacked PCS commits to. Modifying it can reduce the commitment surface without changing n_columns(), defeating the baseline check. This is the exact attack surface exploited in pw8 h44." \
       "Revert changes to stack_polynomials_and_commit. Commitment boundary changes require human review."
   fi
 
-  # Check 5: No modifications to the verifier
+  # Check 5: Verifier — tripwire
   VERIFIER_DIFF=$(git diff main...HEAD -- 'crates/lean_prover/src/verify_execution.rs' 2>/dev/null || echo "")
   VERIFIER_ADDITIONS=$(echo "$VERIFIER_DIFF" | grep -c '^\+' || true)
   if [[ "$VERIFIER_ADDITIONS" -gt 0 ]]; then
-    fail "0.7" \
+    tripwire "0.7" \
       "Branch diff modifies verify_execution.rs ($VERIFIER_ADDITIONS addition(s))." \
-      "The verifier is the trust root of the proving system. A weakened verifier accepts invalid proofs even when the AIR is sound. This is the hardest attack to detect — all honest-prover tests pass because the honest prover never triggers the weakened check. Verifier modifications require human cryptographer review." \
+      "The verifier is the trust root of the proving system. A weakened verifier accepts invalid proofs even when the AIR is sound. Verifier modifications require human cryptographer review." \
       "Revert changes to verify_execution.rs. If the optimization requires verifier changes (e.g., new WHIR parameters), document the security argument and request human review."
   fi
 
-  # Check 6: No modifications to Fiat-Shamir transcript or WHIR core
+  # Check 6: Fiat-Shamir / WHIR core — tripwire
   for CRITICAL_FILE in \
     "crates/backend/fiat-shamir/src/prover.rs" \
     "crates/backend/fiat-shamir/src/verifier.rs" \
@@ -217,14 +270,18 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
     FS_DIFF=$(git diff main...HEAD -- "$CRITICAL_FILE" 2>/dev/null || echo "")
     FS_ADDS=$(echo "$FS_DIFF" | grep -c '^\+' || true)
     if [[ "$FS_ADDS" -gt 0 ]]; then
-      fail "0.7" \
+      tripwire "0.7" \
         "Branch diff modifies $CRITICAL_FILE ($FS_ADDS addition(s))." \
-        "This file is part of the cryptographic protocol core (Fiat-Shamir, WHIR, or sumcheck). Modifications can reduce soundness without affecting honest-prover tests. For example: removing a verifier challenge from the transcript weakens Fiat-Shamir binding, or skipping a WHIR folding check allows forgery." \
+        "This file is part of the cryptographic protocol core (Fiat-Shamir, WHIR, or sumcheck). Modifications can reduce soundness without affecting honest-prover tests." \
         "Revert changes to $CRITICAL_FILE. Protocol-core modifications require human review."
     fi
   done
 
-  echo "[correctness] Layer 0.7 PASSED — diff hygiene clean."
+  if [[ "$GATE_REVIEWS" -eq 0 ]] && [[ "$GATE_FAILURES" -eq 0 || "$EXPECT_PROTECTED" == "1" ]]; then
+    echo "[correctness] Layer 0.7 PASSED — diff hygiene clean."
+  elif [[ "$GATE_REVIEWS" -gt 0 ]]; then
+    echo "[correctness] Layer 0.7: $GATE_REVIEWS item(s) flagged for REVIEW."
+  fi
 else
   echo "[correctness] Layer 0.7 SKIPPED — on main branch."
 fi
@@ -467,4 +524,14 @@ if [[ "$REPEAT" -gt 1 ]]; then
 fi
 
 echo ""
-echo "[correctness] ALL LAYERS PASSED."
+if [[ "$GATE_FAILURES" -gt 0 ]]; then
+  echo "[correctness] $GATE_FAILURES FAILURE(S), $GATE_REVIEWS REVIEW item(s)."
+  exit 1
+elif [[ "$GATE_REVIEWS" -gt 0 ]]; then
+  echo "[correctness] ALL LAYERS PASSED. $GATE_REVIEWS item(s) flagged for REVIEW:"
+  echo -e "$REVIEW_ITEMS"
+  echo "[correctness] These changes require human review before merge."
+  exit 3
+else
+  echo "[correctness] ALL LAYERS PASSED."
+fi

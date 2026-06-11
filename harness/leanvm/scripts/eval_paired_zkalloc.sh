@@ -44,8 +44,8 @@ grep -E "time:|change:" /tmp/eval_paired_zkalloc.log || echo "(no prior baseline
 echo ""
 
 # Extract median times for comparison
-glibc_time=$(grep -oP 'time:\s+\[\K[0-9.]+' /tmp/eval_paired_glibc.log | head -1 || echo "?")
-zkalloc_time=$(grep -oP 'time:\s+\[\K[0-9.]+' /tmp/eval_paired_zkalloc.log | head -1 || echo "?")
+glibc_time=$(sed -n 's/.*time:\s*\[\([0-9.]*\).*/\1/p' /tmp/eval_paired_glibc.log | head -1 || echo "?")
+zkalloc_time=$(sed -n 's/.*time:\s*\[\([0-9.]*\).*/\1/p' /tmp/eval_paired_zkalloc.log | head -1 || echo "?")
 echo "glibc median:   ${glibc_time}"
 echo "zkalloc median: ${zkalloc_time}"
 

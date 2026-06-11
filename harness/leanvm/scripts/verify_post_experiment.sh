@@ -63,7 +63,7 @@ PROOF_SIZE_OUT=$("$BENCH_CRATE/target/release/proof_size_check" 2>&1) || {
   echo "$PROOF_SIZE_OUT" | tail -10
   exit 1
 }
-CURRENT_SIZE=$(echo "$PROOF_SIZE_OUT" | grep -oP 'proof_bytes=\K[0-9]+' | head -1)
+CURRENT_SIZE=$(echo "$PROOF_SIZE_OUT" | sed -n 's/.*proof_bytes=\([0-9]*\).*/\1/p' | head -1)
 if [[ -z "$CURRENT_SIZE" ]]; then
   echo "      FAILED — could not parse proof_bytes from output"
   echo "$PROOF_SIZE_OUT" | tail -5

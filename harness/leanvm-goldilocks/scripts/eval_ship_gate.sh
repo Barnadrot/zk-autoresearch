@@ -33,7 +33,7 @@
 set -eo pipefail
 
 SHARED_DIR="$(cd "$(dirname "$0")" && pwd)"
-BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanvm/bench}
+BENCH_CRATE=${BENCH_CRATE:-$HOME/zk-autoresearch/harness/leanvm-goldilocks/bench}
 LM_REPO=${LM_REPO:-$HOME/zk-autoresearch/leanVM}
 BENCH_NAME=${BENCH_NAME:-xmss_leaf}
 # Default filter matches xmss_leaf_<N_SIGS>sigs from bench source (N_SIGS=1550 currently).
