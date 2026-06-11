@@ -6,27 +6,33 @@
 # The phase gate requires >= 15 primitives before implementation.
 # Papers in report/papers/iter_N/ satisfy the breadth gate.
 # This inventory satisfies the depth gate.
+#
+# Kill ladder (each rung ~10× cheaper than the next):
+#   paper math → primitive-op bench → in-pipeline compute-and-discard stub → implementation
+# Kill at the cheapest rung that produces a decisive answer.
 
 primitives:
   - id: p1
     name: short-descriptive-name
+    category: sumcheck       # sumcheck | pcs | lookup | memory | pipeline | other
     source: "Author YYYY/NNNN §section"
     mechanism: >
       What it does in 1-3 sentences.
     cost_model: >
       What it saves, what it costs. Be quantitative.
     assumptions:
-      pcs: any          # any | FRI | WHIR | KZG | MSM-class
-      field: any        # any | 31-bit | 64-bit | prime | binary
-      arch: any         # any | avx512 | neon | specific requirement
-      requires: ""      # other prerequisites (optional)
+      pcs: any               # any | FRI | WHIR | KZG | MSM-class
+      field: any             # any | 31-bit | 64-bit | prime | binary
+      arch: any              # any | avx512 | neon | specific requirement
+      requires: ""           # other prerequisites (optional)
     soundness_cost: "added error term or 'none'"
-    composable_with: [other-primitive-ids-or-names]
-    status: available   # available | used | closed
+    composable_with: [p2]    # list of primitive ids that compose with this
+    status: available        # available | used | closed
     iter_added: 1
 
   - id: p2
     name: another-primitive
+    category: pcs
     source: "Author YYYY/NNNN §section"
     mechanism: >
       Description.
@@ -38,7 +44,12 @@ primitives:
       arch: any
     soundness_cost: none
     composable_with: [p1]
-    status: available
+    status: closed
+    closed_reason: "what killed it and the evidence"
+    reopens_on: "conditions under which this primitive becomes viable again (different field, arch, workload scale)"
+    latent_parts:            # subcomponents that survived the kill — composition seeds
+      - "part A: still valid because..."
+      - "part B: unexplored synthesis with..."
     iter_added: 1
 
 # Compositions: novel constructs from combining primitives.
@@ -52,3 +63,26 @@ compositions:
       What this construct does that NEITHER source paper describes
       individually. One sentence.
     iter_added: 1
+
+# Pricing rules — apply to every composition before pool admission.
+# Measure these on YOUR hardware during Phase 0. Values below are
+# placeholders; replace with measured numbers.
+
+pricing_rules:
+  conversion_factors:
+    air_sumcheck: 1.0        # raw compute savings → wall-clock (measure)
+    whir_gkr: 0.4            # memory-bound region, lower conversion (measure)
+  arch_facts:
+    ef_square_vs_mul: 1.75   # packed EF square cost relative to mul (measure)
+    ef_vs_base_mul: "5-15x"  # depends on packing width (measure)
+  boundaries:
+    stacked_cells: null       # total cells vs next power-of-2 (fill from Phase 0)
+    nu: null                  # current ν value (fill from Phase 0)
+    nu_boundary: null         # 2^(ν-1) — crossing halves commit cost
+    logup_data: null          # total logup tuples (fill from Phase 0)
+    recursion_bytecode: null  # instructions vs log_size headroom (fill from Phase 0)
+  gate:
+    keep_threshold_pct: -1.0
+    proof_size_penalty: "3× size-increase-%"
+    recursion_ceiling_pct: 3.0
+    transcript_rule: "deltas multiply per WHIR instance in bundle"
