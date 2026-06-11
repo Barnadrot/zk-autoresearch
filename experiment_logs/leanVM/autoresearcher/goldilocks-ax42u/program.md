@@ -125,12 +125,15 @@ You are working in the leanVM repo. Only changes to this need to be commited. Lo
 | Expander | `~/zk-autoresearch/Expander` | `main` | Reference |
 | Jolt | `~/zk-autoresearch/jolt` | `main` | Reference |
 | LeanSpec | `~/zk-autoresearch/leanSpec` | `main` | Specifications for LeanVM |
+| 0xPolygon Goldilocks (C++) | `~/zk-autoresearch/goldilocks-polygon` | `main` | Hand-tuned AVX-512 Goldilocks field arithmetic, NTT, Poseidon. Performance ceiling reference for 64-bit field SIMD |
 
 ## Correctness
 
 ```bash
 bash ~/zk-autoresearch/harness/leanvm-goldilocks/correctness/correctness.sh
 ```
+Note: Use flag --expect-protected-changes mode if changes required verifier-depth work
+
 ## Evaluation Gate
 
 The evaluation gate measures e2e latency. Sign convention: `delta_pct` is `(candidate - baseline) / baseline * 100` **negative = faster**. 
@@ -149,7 +152,7 @@ iter  hypothesis_id  predicted_pct  measured_pct  proof_kib   status   files_cha
 Update the hypothesis pool at `~/zk-autoresearch/experiment_logs/leanVM/autoresearcher/goldilocks-ax42u/hypothesis_pool.yaml`
 
 **Structure**: two top-level keys
-- `current_pool` — live working set, always exactly 3 entries
+- `current_pool` — live working set, pool must hold 3 candidates whose predicted_pct clears the gate after documented conversion factors
 - `history` — append-only, consumed entries with iter outcomes
 
 **Required fields per entry**:
