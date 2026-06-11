@@ -60,11 +60,15 @@ See chapters for substeps, order of operations
 
   1. Select your target
   2. Read  yourself (DO NOT use sub-agents for this) minimum 10 related research papers to develop 3 different hypothesis that can solve your target. Save them to `/report/papers/iter_{n}`
-  3. Fill the pool with 3 initial candidates, based on your research. Add the papers you have read and you are using as citations.You need to develop composition techniques from different papers. 
-  4. Use a subagent for each candidate with the tool call `subagent_type: "Plan"`  mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
+  3. **Decompose each paper into typed primitives in mechanism_inventory.yaml** 
+     (see example in experiment_logs/leanVM/autoresearcher/example/mechanism_inventory.yaml).
+     Each paper should yield 2-4 primitives. The hook requires >= 15 primitives before 
+     implementation. Review composable_with links for combination opportunities.
+  4. Fill the pool with 3 initial candidates, based on your research. Add the papers you have read and you are using as citations.You need to develop composition techniques from different papers. 
+  5. Use a subagent for each candidate with the tool call `subagent_type: "Plan"`  mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
         Resources to hand off to the agent: Papers, Codebase understanding and tools to test. 
-  5. Review the implementation plans once they finish and calculate the impact for the predicted_pct field
-  6. Select by ambition: largest PROTOCOL DEPTH (changes verifier > changes prover round structure > changes prover implementation). Tiebreak: largest |predicted_pct|.
+  6. Review the implementation plans once they finish and calculate the impact for the predicted_pct field
+  7. Select by ambition: largest PROTOCOL DEPTH (changes verifier > changes prover round structure > changes prover implementation). Tiebreak: largest |predicted_pct|.
 
   Output artifacts: `zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-hetzner/hypothesis_pool.yaml`
 
@@ -132,7 +136,7 @@ You are working in the leanVM repo. Only changes to this need to be commited. Lo
 ```bash
 bash ~/zk-autoresearch/harness/leanvm/correctness/correctness.sh
 ```
-Note: Use flag --expect-protected-changes mode if changes required verifier-depth work
+Note: Use --expect-protected-changes when the experiment intentionally modifies protected files (verifier, Fiat-Shamir, WHIR core, structural AIR methods). This runs all layers without fail-fast and reports protected-file changes as REVIEW instead of FAIL. todo!() and unimplemented!() always hard-fail regardless of mode.
 
 ## Evaluation Gate
 
