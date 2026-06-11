@@ -105,6 +105,13 @@ if echo "$TOOL_CONTENT" | grep -qE "\.phase_state"; then
   fi
 fi
 
+# --- Block zk-alloc crate modifications (hard constraint 5) ---
+if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]] && echo "$TOOL_CONTENT" | grep -qE "crates/backend/zk-alloc/"; then
+  log_hook "blocked:zk_alloc_modification:${TOOL_NAME}"
+  inject "CONSTRAINT 5: Do not modify the zk-alloc crate (crates/backend/zk-alloc/). If your hypothesis requires allocation changes, kill it — this constraint is non-negotiable."
+  exit 0
+fi
+
 # --- Nudge: curl to /tmp/ instead of papers dir ---
 if [[ "$TOOL_NAME" == "Bash" ]] && echo "$TOOL_CONTENT" | grep -qE "curl.*\.pdf.*-o.*/tmp/|wget.*\.pdf.*/tmp/"; then
   inject "TIP: Save papers to ${PAPERS_DIR}/ instead of /tmp/ so they count toward Phase 1. mkdir -p ${PAPERS_DIR} && curl -s -o ${PAPERS_DIR}/name.pdf ..."

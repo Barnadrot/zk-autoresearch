@@ -24,7 +24,7 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 2) Do not modify tests or anything that affects the correctness or the benchmarking methodology. 
 3) Do not migrate from Poseidon1 implementation to a different hashing algorithm. 
 4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. 
-5) Do not modify memory management
+5) Do not modify zk-alloc crate or switch to a new allocator
 6) Do NOT modify these files (security-critical cryptographic parameters):
     - crates/backend/goldilocks/src/poseidon1.rs (round counts, round constants, MDS matrix)
     - crates/lean_prover/src/lib.rs (constants: SECURITY_BITS, GRINDING_BITS, 
