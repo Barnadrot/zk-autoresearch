@@ -65,7 +65,7 @@ CURRENT_ITER=$(cat "$ITER_FILE")
 REQUIRED_PAPERS=${PHASE1_PAPER_MINIMUM:-10}
 REQUIRED_PRIMITIVES=${PHASE1_PRIMITIVE_MINIMUM:-15}
 PAPERS_DIR="${REPORT_DIR}/papers/iter_${CURRENT_ITER}"
-INVENTORY_FILE="${REPORT_DIR}/mechanism_inventory.yaml"
+INVENTORY_FILE="${EXPERIMENT_DIR}/mechanism_inventory.yaml"
 
 # --- Helpers ---
 count_papers() {

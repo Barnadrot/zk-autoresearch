@@ -60,7 +60,7 @@ See chapters for substeps, order of operations
 
   1. Select your target
   2. Read  yourself (DO NOT use sub-agents for this) minimum 10 related research papers to develop 3 different hypothesis that can solve your target. Save them to `/report/papers/iter_{n}`
-  3. **Decompose each paper into typed primitives in report/mechanism_inventory.yaml** 
+  3. **Decompose each paper into typed primitives in mechanism_inventory.yaml** 
      (see example in experiment_logs/leanVM/autoresearcher/example/mechanism_inventory.yaml).
      Each paper should yield 2-4 primitives. The hook requires >= 15 primitives before 
      implementation. Review composable_with links for combination opportunities.

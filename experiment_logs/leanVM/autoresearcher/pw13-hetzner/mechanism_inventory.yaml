@@ -1,0 +1,54 @@
+# Mechanism Inventory — append-only across iterations
+#
+# Each paper decomposes into 2-4 typed primitives. The inventory is your
+# combination space: more primitives = more composition opportunities.
+#
+# The phase gate requires >= 15 primitives before implementation.
+# Papers in report/papers/iter_N/ satisfy the breadth gate.
+# This inventory satisfies the depth gate.
+
+primitives:
+  - id: p1
+    name: short-descriptive-name
+    source: "Author YYYY/NNNN §section"
+    mechanism: >
+      What it does in 1-3 sentences.
+    cost_model: >
+      What it saves, what it costs. Be quantitative.
+    assumptions:
+      pcs: any          # any | FRI | WHIR | KZG | MSM-class
+      field: any        # any | 31-bit | 64-bit | prime | binary
+      arch: any         # any | avx512 | neon | specific requirement
+      requires: ""      # other prerequisites (optional)
+    soundness_cost: "added error term or 'none'"
+    composable_with: [other-primitive-ids-or-names]
+    status: available   # available | used | closed
+    iter_added: 1
+
+  - id: p2
+    name: another-primitive
+    source: "Author YYYY/NNNN §section"
+    mechanism: >
+      Description.
+    cost_model: >
+      Quantitative cost/benefit.
+    assumptions:
+      pcs: any
+      field: any
+      arch: any
+    soundness_cost: none
+    composable_with: [p1]
+    status: available
+    iter_added: 1
+
+# Compositions: novel constructs from combining primitives.
+# At least one pool entry per iteration must be a composition.
+
+compositions:
+  - id: c1
+    name: descriptive-composition-name
+    composed_of: [p1, p2]
+    novel_claim: >
+      What this construct does that NEITHER source paper describes
+      individually. One sentence.
+    iter_added: 1
