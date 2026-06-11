@@ -25,6 +25,8 @@ Enforces the Phase 0→1→2→3 research methodology. Fires on Bash, Write, Edi
 | **Write/Edit to `hypothesis_pool`** | Phase is `phase_0` AND no profiling artifacts in `report/` | `PHASE GATE: Phase 0 incomplete. Write profiling output to report/ before developing hypotheses.` |
 | **Write/Edit to `leanVM/crates/`** | Paper count < 10 in `report/papers/iter_N/` | `PHASE GATE: {count}/10 papers in {path}. You cannot implement without reading 10 papers this iteration. Download and read papers first.` |
 | **Write/Edit to `leanVM/crates/`** | Papers downloaded but not Read | `PHASE GATE: {count} papers downloaded but only {read_count} read. Read {path}/name.pdf for {remaining} more before implementing.` |
+| **Write/Edit to `leanVM/crates/`** | Primitive count < 15 in `report/mechanism_inventory.yaml` | `PHASE GATE: {count}/15 primitives in mechanism_inventory.yaml. Decompose each paper into typed primitives (id, mechanism, cost_model, assumptions, composable_with) before implementing.` |
+| **Write/Edit to `crates/backend/zk-alloc/`** | Always | `CONSTRAINT 5: Do not modify the zk-alloc crate. If your hypothesis requires allocation changes, kill it.` |
 | **Bash: `git commit`** | Always (when phase tracking active) | Advances phase to `phase_3`. No message. |
 | **Bash: `git revert`** | Always | `PHASE GATE: Reverted. Iteration {N}. Download 10 NEW papers to report/papers/iter_{N}/ before next attempt.` Resets to `phase_1`, increments iter. |
 | **Keep detected** (agent reads eval summary containing `"decision": "keep"`) | Always | `PHASE GATE: Keep confirmed. Iteration {N}. Re-profile (Phase 0) then read 10 new papers (Phase 1).` Resets to `phase_0`, increments iter. |
@@ -35,7 +37,7 @@ Enforces the Phase 0→1→2→3 research methodology. Fires on Bash, Write, Edi
 ### Phase transitions (automatic)
 ```
 phase_0 → phase_1  : profiling artifacts exist + agent writes hypothesis_pool
-phase_1 → phase_2  : 10 papers downloaded AND read
+phase_1 → phase_2  : 10 papers downloaded AND read AND 15+ primitives in mechanism_inventory.yaml
 phase_2 → phase_3  : git commit
 phase_3 → phase_0  : keep detected (new iter)
 phase_3 → phase_1  : git revert (new iter)

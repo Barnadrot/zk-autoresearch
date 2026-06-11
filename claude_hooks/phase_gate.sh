@@ -63,7 +63,9 @@ PAPERS_READ_LOG="${EXPERIMENT_DIR}/.papers_read"
 CURRENT_PHASE=$(cat "$STATE_FILE")
 CURRENT_ITER=$(cat "$ITER_FILE")
 REQUIRED_PAPERS=${PHASE1_PAPER_MINIMUM:-10}
+REQUIRED_PRIMITIVES=${PHASE1_PRIMITIVE_MINIMUM:-15}
 PAPERS_DIR="${REPORT_DIR}/papers/iter_${CURRENT_ITER}"
+INVENTORY_FILE="${REPORT_DIR}/mechanism_inventory.yaml"
 
 # --- Helpers ---
 count_papers() {
@@ -72,6 +74,10 @@ count_papers() {
 
 count_papers_read() {
   [[ -f "$PAPERS_READ_LOG" ]] && grep -c "^iter_${CURRENT_ITER}:" "$PAPERS_READ_LOG" 2>/dev/null | tr -d ' ' || echo "0"
+}
+
+count_primitives() {
+  [[ -f "$INVENTORY_FILE" ]] && grep -c "^  - id:" "$INVENTORY_FILE" 2>/dev/null | tr -d ' ' || echo "0"
 }
 
 log_hook() {
@@ -136,10 +142,11 @@ if [[ "$CURRENT_PHASE" == "phase_0" && ("$TOOL_NAME" == "Write" || "$TOOL_NAME" 
   fi
 fi
 
-# --- Paper check: fires on ANY phase when agent tries to implement ---
-# This prevents the agent from bypassing Phase 1 by writing .phase_state directly.
+# --- Paper + inventory check: fires on ANY phase when agent tries to implement ---
+# Three gates must pass before implementation: papers downloaded, papers read, primitives extracted.
 PAPER_COUNT=$(count_papers)
 READ_COUNT=$(count_papers_read)
+PRIMITIVE_COUNT=$(count_primitives)
 TRYING_TO_IMPLEMENT=false
 
 if [[ "$TOOL_NAME" == "Bash" ]] && echo "$TOOL_CONTENT" | grep -qE "^git commit|&& git commit|; git commit"; then
@@ -159,9 +166,14 @@ if [[ "$TRYING_TO_IMPLEMENT" == "true" && "$READ_COUNT" -lt "$REQUIRED_PAPERS" ]
   inject "PHASE GATE: ${PAPER_COUNT} papers downloaded but only ${READ_COUNT} read. Read ${PAPERS_DIR}/name.pdf for $((REQUIRED_PAPERS - READ_COUNT)) more before implementing."
   exit 0
 fi
+if [[ "$TRYING_TO_IMPLEMENT" == "true" && "$PRIMITIVE_COUNT" -lt "$REQUIRED_PRIMITIVES" ]]; then
+  log_hook "blocked:primitives_insufficient:${PRIMITIVE_COUNT}/${REQUIRED_PRIMITIVES}:phase=${CURRENT_PHASE}"
+  inject "PHASE GATE: ${PRIMITIVE_COUNT}/${REQUIRED_PRIMITIVES} primitives in mechanism_inventory.yaml. Decompose each paper into typed primitives (id, mechanism, cost_model, assumptions, composable_with) before implementing. The inventory is your combination space — more primitives = more composition opportunities."
+  exit 0
+fi
 
-# Advance from phase_1 to phase_2 if papers satisfied
-if [[ "$CURRENT_PHASE" == "phase_1" && "$PAPER_COUNT" -ge "$REQUIRED_PAPERS" && "$READ_COUNT" -ge "$REQUIRED_PAPERS" ]]; then
+# Advance from phase_1 to phase_2 if papers + inventory satisfied
+if [[ "$CURRENT_PHASE" == "phase_1" && "$PAPER_COUNT" -ge "$REQUIRED_PAPERS" && "$READ_COUNT" -ge "$REQUIRED_PAPERS" && "$PRIMITIVE_COUNT" -ge "$REQUIRED_PRIMITIVES" ]]; then
   echo "phase_2" > "$STATE_FILE"
   log_hook "advance:phase_1->phase_2"
 fi
