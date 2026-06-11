@@ -25,7 +25,7 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 2) Do not modify tests or anything that affects the correctness or the benchmarking methodology. 
 3) Do not migrate from Poseidon1 implementation to a different hashing algorithm. 
 4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. 
-5) Do not modify memory management
+5) Do not modify zk-alloc crate or switch to a new allocator
 6) Do NOT modify these files (security-critical cryptographic parameters):
     - crates/backend/koala-bear/src/poseidon1_koalabear_16.rs
     - crates/lean_prover/src/lib.rs (constants: SECURITY_BITS, GRINDING_BITS, 
@@ -132,6 +132,8 @@ You are working in the leanVM repo. Only changes to this need to be commited. Lo
 ```bash
 bash ~/zk-autoresearch/harness/leanvm/correctness/correctness.sh
 ```
+Note: Use flag --expect-protected-changes mode if changes required verifier-depth work
+
 ## Evaluation Gate
 
 The evaluation gate measures e2e latency. Sign convention: `delta_pct` is `(candidate - baseline) / baseline * 100` **negative = faster**. 
@@ -150,7 +152,7 @@ iter  hypothesis_id  predicted_pct  measured_pct  proof_kib   status   files_cha
 Update the hypothesis pool at `~/zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-hetzner/hypothesis_pool.yaml`
 
 **Structure**: two top-level keys
-- `current_pool` — live working set, always exactly 3 entries
+- `current_pool` — live working set, pool must hold 3 candidates whose predicted_pct clears the gate after documented conversion factors
 - `history` — append-only, consumed entries with iter outcomes
 
 **Required fields per entry**:

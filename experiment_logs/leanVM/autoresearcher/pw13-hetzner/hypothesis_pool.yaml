@@ -145,7 +145,14 @@ history:
     result: killed-at-planning
     notes: >
       Formal audit: 99/67/60/91% of poseidon operand pointers unaligned mod 4
-      on the 1550-sig trace; alignment retrofit = allocation-policy change
-      (hard constraint 5) with 2^22 memory-boundary downside; see
+      on the 1550-sig trace; block lane requires 100% alignment. CORRECTION
+      (operator, 2026-06-11): the alignment retrofit was WRONGLY attributed to
+      hard constraint 5 - that constraint covers zk-alloc only (the arena;
+      excellently designed, closed by quality); guest/compiler allocation
+      alignment was in scope. The retrofit route stands killed on its own
+      merits instead: sprawling compiler+preamble+runtime diff with a 2^22
+      memory high-water boundary risk (+4.2M committed cells if crossed)
+      against a -2.7..-3.7% ceiling. See
       report/hypothesis_3/vectorized-memory-bus.md. Protocol side (0b/0c)
-      verified feasible - only the alignment route is closed.
+      verified feasible; reopening condition: a compiler/ISA alignment
+      guarantee (no constraint relaxation needed).
