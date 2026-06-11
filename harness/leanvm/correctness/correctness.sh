@@ -300,6 +300,19 @@ else
 fi
 
 # -----------------------------------------------------------------------
+# Layer 0.9: Format gate (cargo fmt --check)
+# -----------------------------------------------------------------------
+echo ""
+echo "[correctness] Layer 0.9: Format gate (cargo fmt --check)..."
+if ! cargo fmt --check 2>&1; then
+  fail "0.9" \
+    "cargo fmt --check found formatting differences." \
+    "Inconsistent formatting makes diffs noisy and code review harder. The upstream CI enforces rustfmt." \
+    "Run 'cargo fmt' and commit the result."
+fi
+echo "[correctness] Layer 0.9 PASSED."
+
+# -----------------------------------------------------------------------
 # Layer 1: Compile gate
 # -----------------------------------------------------------------------
 echo ""
