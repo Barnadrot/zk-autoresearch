@@ -194,8 +194,15 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
    ssh <host> "tmux new-session -d -s <tmux_name> -c <workdir>"
    ```
 5. **Launch claude in the pane:**
+   Read `executor_model` from the queue entry. Default (null or "opus") uses the executor's settings.json model. Non-default (e.g. "fable") adds `--model claude-<model>-5`.
    ```
-   ssh <host> "tmux send-keys -t <tmux_name> 'PATH=/path/to/claude:\\$PATH claude --dangerously-skip-permissions --remote-control <tmux_name>' Enter"
+   MODEL=$(jq -r .executor_model brain/queue/claimed/<id>.json)
+   if [ "$MODEL" != "null" ] && [ "$MODEL" != "opus" ]; then
+     MODEL_FLAG="--model claude-${MODEL}-5"
+   else
+     MODEL_FLAG=""
+   fi
+   ssh <host> "tmux send-keys -t <tmux_name> 'PATH=/path/to/claude:\\$PATH claude --dangerously-skip-permissions --remote-control <tmux_name> ${MODEL_FLAG}' Enter"
    ```
 6. **Wait ~5s** (`sleep 5`) for claude to print its session banner.
 7. **Set effort to `max` BEFORE the dispatch message.** The executor's `~/.claude/settings.json` has `"effortLevel": "xhigh"` as its config-file ceiling, but `xhigh` is one tier BELOW `max`. The `/effort max` slash command overrides the config-file setting for THIS session — needed for autoresearcher's structural-mechanism reasoning. Send as a standalone slash command, not part of the dispatch message (otherwise the dispatch's multi-line message would have to embed it and lose atomicity for the /goal+Read+ultrathink trio).

@@ -24,8 +24,8 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
 1) Always specify the security regime and strengthen it with citations
 2) Do not modify tests or anything that affects the correctness or the benchmarking methodology. 
 3) Do not migrate from Poseidon1 implementation to a different hashing algorithm. 
-4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. Claude Code's contex
-5) Do not modify memory management
+4) Never attempt micro optimizations or knob tuning. This autoresearch is targeted to find breakthrough ideas. Don't self-censor on scope. 
+5) Do not modify zk-alloc crate or switch to a new allocator
 6) Do NOT modify these files (security-critical cryptographic parameters):
     - crates/backend/koala-bear/src/poseidon1_koalabear_16.rs
     - crates/lean_prover/src/lib.rs (constants: SECURITY_BITS, GRINDING_BITS, 
@@ -33,12 +33,14 @@ You reason from primary sources: ePrints, cryptanalysis results, and the code it
     - crates/lean_prover/python-verifier/verifier.py (WHIR_CONFIGS)
 
 
+
 ## Automated Research Methodology
 See chapters for substeps, order of operations
 1. Phase 0
-2. Phase 2
-3. Phase 3
-4. Phase 4
+2. Phase 1
+3. Phase 2
+4. Phase 3
+5. Phase 4
 
   ### Phase 0 - Understanding the codebase and profiling
 
@@ -59,11 +61,16 @@ See chapters for substeps, order of operations
 
   1. Select your target
   2. Read  yourself (DO NOT use sub-agents for this) minimum 10 related research papers to develop 3 different hypothesis that can solve your target. Save them to `/report/papers/iter_{n}`
-  3. Fill the pool with 3 initial candidates, based on your research. Add the papers you have read and you are using as citations.You need to develop composition techniques from different papers. 
-  4. Use a subagent for each candidate with the tool call `subagent_type: "Plan"`  mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
+  3. **Decompose each paper into typed primitives in mechanism_inventory.yaml** 
+     (see example in experiment_logs/leanVM/autoresearcher/example/mechanism_inventory.yaml).
+     Each paper should yield 2-4 primitives. The hook requires >= 15 primitives before 
+     implementation. Review composable_with links for combination opportunities.
+  4. Fill the pool with 3 initial candidates, based on your research. Add the papers you have read and you are using as citations.You need to develop composition techniques from different papers. 
+  5. Use a subagent for each candidate with the tool call `subagent_type: "Plan"`  mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
         Resources to hand off to the agent: Papers, Codebase understanding and tools to test. 
-  5. Review the implementation plans once they finish and calculate the impact for the predicted_pct field
-  6. Select by ambition: largest PROTOCOL DEPTH (changes verifier > changes prover round structure > changes prover implementation). Tiebreak: largest |predicted_pct|.
+  6. Review the implementation plans once they finish and calculate the impact for the predicted_pct field
+  7. Select by ambition: largest PROTOCOL DEPTH (changes verifier > changes prover round structure > changes prover implementation). Tiebreak: largest |predicted_pct|.
+
 
   Output artifacts: `zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-mac/hypothesis_pool.yaml`
 
@@ -72,14 +79,21 @@ See chapters for substeps, order of operations
 
   Implement your hypothesis. Commit when logically complete; run the gate when the change is measurable. Iter rationale references the mechanism's papers + any inspiration-repo file:line that shaped the implementation.
 
-  If the change is structural and requires multiple commits before it can be measured cleanly, use the WIP arc pattern:
-  - Log each intermediate commit as `status=wip` in iters.tsv. WIP iterations run the correctness gate only — incomplete structural changes produce meaningless performance numbers.
-  - The arc MUST have a defined end state declared in the first WIP iteration's rationale: "I'll know it's done when [specific condition]."
-  - Maximum arc length: Unbounded but review your work at every 5 WIP iterations. 
-  - When the arc completes, run the performance gate against the pre-arc baseline (not the previous WIP commit). Log the final measurement as a normal keep/discard.
-  - If discarded, `git revert` all commits in the arc.
-  - If during implementation the kill_condition triggers (e.g., register-budget arithmetic predicts spill, disasm confirms the mechanism won't engage, correctness fails in a way the mechanism explicitly predicted), STOP. Do not run the gate on a hypothesis you have already disproven.
-  The arc-end commit message must explicitly assert the end state condition was met and cite the evidence (test output, line of code, measurement).
+  For structural changes that span multiple files and commits (protocol replacements, multi-file refactors):
+
+  1. Review the plan from the hypothesis agent and determine if it has the correct invariants to evaluate implementation subagents work. IF NOT: 
+    - **Launch a planning subagent for an updated plan** It needs to produce the full implementation plan with tasks, file ownership, signatures, dependencies.
+    - **Save the plan as `plan_spec.md`** in your experiment dir before your first implementation commit.
+  2. **Launch a Subagent for each distinct task**: Make sure there are no conflicting parallel agents running
+  3. **One commit per task.** Each task gets its own commit. No batching, no partial commits.
+  4. **Review gate fires on every commit.** A hook compares the diff against plan_spec.md and injects a review subagent prompt. Spawn it, wait for ACCEPT. On REJECT, fix the listed gaps and commit again.
+  5. **Mark completed tasks.** On ACCEPT, mark the task `[x]` in plan_spec.md, proceed to the next.
+  6. **Correctness gate runs after the final task**, not after each intermediate commit. Performance gate runs against the pre-plan baseline.
+  7. **If the final gate discards:** 
+      - Evaluate if the implementation met the spec and the concept is disproven:
+          - If the implementation quality is the reason for the discard, update your plan and fix the implementation with new subagents 
+      - `git revert` all commits back to the pre-plan baseline.
+
 
   ### Phase 3: Gate
 
@@ -91,14 +105,14 @@ See chapters for substeps, order of operations
   checks each proof component separately (Merkle root, round polynomials,
   final evaluation) and reports which one diverged.
 
-  Run performance gate (skip for WIP iterations). `RUSTFLAGS="-C target-cpu=native"` always.
+  Run performance gate. `RUSTFLAGS="-C target-cpu=native"` always.
   - Gate passes → log as `keep`. Proceed to Phase 4.
   - Gate fails → `git revert HEAD`, log as `discard`.
 
   ### Phase 4: After keep
 
   After a **keep**, you MUST:
-  Save the post-keep flamegraph as ~/zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-mac/report/iter-N-postkeep-flamegraph.svg
+  Save the post-keep flamegraph as ~/zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-hetzner/report/iter-N-postkeep-flamegraph.svg
 
   After a **discard**, the replacement hypothesis MUST reference the diagnostic from the failed entry and explain why the new hypothesis does not share the same failure mode.
 
@@ -106,7 +120,7 @@ See chapters for substeps, order of operations
   IF its reverted start the loop again from Phase 1
 
 **Commit discipline:** Every change and revert gets its own commit. `git revert`, not reset.
-You are working in the leanVM repo. Only changes to this need to be commited. Logging files only modify locally.  
+You are working in the leanVM repo. Only changes to this need to be commited. Logging files only modify locally.   
 
 ## Inspiration Repos
 
@@ -124,6 +138,8 @@ You are working in the leanVM repo. Only changes to this need to be commited. Lo
 ```bash
 bash ~/zk-autoresearch/harness/leanvm/correctness/correctness.sh
 ```
+Note: Use --expect-protected-changes when the experiment intentionally modifies protected files (verifier, Fiat-Shamir, WHIR core, structural AIR methods). This runs all layers without fail-fast and reports protected-file changes as REVIEW instead of FAIL. todo!() and unimplemented!() always hard-fail regardless of mode.
+
 ## Evaluation Gate
 
 The evaluation gate measures e2e latency. Sign convention: `delta_pct` is `(candidate - baseline) / baseline * 100` **negative = faster**. 
@@ -132,7 +148,6 @@ The gate keeps a change when `delta_pct ≤ -1.0` AND `p < 0.01` (counterbalance
 ```bash
 bash ~/zk-autoresearch/harness/leanvm/scripts/eval_paired.sh
 ```
-
 ## Logging
 
 Append attempts that you submit for the gate to `~/zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-mac/iters.tsv`:

@@ -1,3 +1,518 @@
+# Hypothesis pool — goldilocks-ax42u
+# Sign convention: predicted_pct negative = faster (e2e prove_loop wall-clock).
+# Conversion factors applied per project memory: AIR-phase savings ~1:1 to wall;
+# WHIR/GKR-phase savings ~0.4x to wall unless phase-isolated measurement says otherwise;
+# commit-phase (Merkle/DFT) savings measured directly in-phase ~1:1 (phase is 44% of wall).
+# SELECTION RULE (iter-1 lesson, h1 discard): rank on net_predicted = wall_pct - 3*proof_delta_pct.
+# A mechanism adding >=1% proof must save >=4% wall to break even; transcript-free changes
+# (bit-identical proofs) have net = wall and are immune to the penalty.
+
 current_pool:
+  - id: h9
+    name: small-value-column-packing
+    subsystem: commit (hashed-byte volume — the kernel-parity-proven structural gap)
+    paper_anchor: >
+      Lasso 2023/1216 §1.2-1.5 (small-value commitment economics — MSM-specific, hence for
+      hash PCS the lever is PACKING not magnitude); Jolt 2023/1217 (~6 committed elements/
+      step, most < 2^25); iter-4 ceiling benches (kernels at/above reference -> bytes are
+      the gap); iter-1 decomposition (exec 21M cells, many columns 32-bit-bounded:
+      PC/FP/addrs/operands/flags; Value_A/B/C are full-width).
+    mechanism: >
+      Pack pairs of 32-bit-bounded execution-table columns into single cells
+      (c = a + 2^32 b) at commit time; AIR unpacks virtually (a, b as virtual columns with
+      c = a + 2^32 b linear constraint) + range checks (a,b < 2^32) via a new range-check
+      table + LogUp bus tuples. Net cells: -6..8M committed minus range apparatus
+      (table cells + bus growth in logup data). Verifier changes (new table, bus domain) ->
+      recursion budget required. NET-SCORE BEFORE SELECTING (h1 lesson): proof delta from
+      extra table roots/openings must be priced x3.
+    predicted_pct: -2.0
+    net_predicted: -1.5   # preliminary; Plan agent must compute proof delta exactly
+    plumbing:
+      - "crates/lean_vm/src/tables/* (new range table; execution packing)"
+      - "crates/sub_protocols/src/{stacked_pcs.rs,logup.rs}"
+      - "crates/lean_prover/src/{prove,verify}_execution.rs + recursion.py"
+    kill_condition: >
+      KILL if exact cell accounting shows net committed-cell reduction < 4M (effective-cols
+      granularity 2^20: < 4 col-blocks = < 1 perm/leaf), OR if logup data growth from range
+      tuples pushes the GKR domain past the next power-of-2 boundary, OR if proof delta x3
+      exceeds half the predicted wall win.
+    status: selected_iter5   # plan arrived (late, complete): literal packing PROVEN UNSOUND
+                          # (grounding/rank argument: k committed cols ground only k evals/point;
+                          # range checks cannot fix it — recorded as inventory law). SOUND PIVOT:
+                          # A address virtualization (-3 cols, free bounds from memory argument),
+                          # B mode merge fa/fb/fab/fc/fc_fp -> M_A/M_B/M_C (-2, deg 5->7),
+                          # C opcode merge (-1, deg 7->8, gated). 58->52 effective blocks,
+                          # logup unchanged, proof SHRINKS ~288B -> net BONUS under x3 rule.
+                          # predicted -4.0 [-2.9,-4.8], net_predicted -4.2. Verifier-depth.
+                          # Plan text: agent a9ca65bc result (to be saved to report/hypothesis_9/).
+    iter: 4
 
 history:
+  - id: h11
+    name: vm-interpreter-acceleration
+    subsystem: witness-gen (untouched 4.4% pool; trivially transcript-free)
+    paper_anchor: >
+      Iter-4 trace (/tmp/t4c_1.log): Executing bytecode = 161ms of 181ms witness gen
+      (4.4% e2e), single-threaded interpreter. Reference points: sp1/jolt tracer designs;
+      threaded chunked execution with deterministic replay.
+    mechanism: >
+      Profile the interpreter loop (dispatch, write-once memory checks, allocation churn);
+      candidates: jump-table dispatch, batched memory-acc bookkeeping, parallel chunked
+      re-execution (execute once for chunk boundaries + replay chunks in parallel for
+      trace filling — determinism preserved).
+    predicted_pct: -2.0   # refined by plan agent (measured attribution): 68% of the 161ms
+                          # window = native Poseidon WITNESS computation via slow fully-reducing
+                          # scalar mds_vec_mul (tuned u128-accumulator + packed kernels exist,
+                          # unused on this path); 55-60ms = single-threaded Trace::merge memcpy;
+                          # dispatch 3.8% / write-once checks <4% -> those sub-mechanisms KILLED
+                          # by measurement; chunked replay ALREADY EXISTS (parallel_range DSL).
+                          # Tasks: T1 parallel reserve-exact merge (-30..45ms), T2a witness MDS
+                          # u128 scheme (-20..30ms), T3 parallel memory-acc (-13..17ms),
+                          # T2b gated packed aux pass (-15..20ms). GO, range [-1.2,-2.9].
+    net_predicted: -2.0
+    plumbing:
+      - "crates/lean_vm/src/execution/runner.rs:119-131,410-541 (T1 merge)"
+      - "crates/lean_vm/src/tables/poseidon/mod.rs:120-214,296-398 (T2a/T2b witness)"
+      - "crates/lean_prover/src/prove_execution.rs:82-109 (T3)"
+    kill_condition: >
+      (original dispatch/replay kill conditions FIRED at plan stage and those sub-mechanisms
+      were dropped; surviving tasks carry their own gates:) T0 probe kills T1 if parallel
+      copy < 2x AND reserve-exact projection < 15ms; T2a killed if witness-kernel microbench
+      < 1.5x; T3 killed if < 50% span reduction; MIDPOINT: revert all and kill h11 if
+      cumulative exec-span gain < 25ms; per-task proof byte-diff IDENTICAL required.
+    status: killed_at_midpoint
+    iter: 4
+    iter_outcome: >
+      Iter 4: T0 probe ok; T1 KILLED at gate (-3.9ms e2e < 15ms: the 55-60ms merge tail was
+      a cold-arena CLI profiling artifact — warm prove_loop arenas erase it); T2a PASSED all
+      gates (witness MDS u128 scheme: kernel 2.24x, 1916ns/perm = 1.88x, span -21.3ms,
+      byte-identical; commit cfc10a7d) but alone < the 25ms midpoint bar; T3 KILLED
+      (false-sharing cap 1.27x). All reverted (b1e454a0), tree = 76ec3d8a. LATENT: T2a
+      re-land candidate; T2b (packed witness pass, modeled -15..20ms) never attempted —
+      a T2a+T2b composite ~ -1.0..-1.1% remains possible. PROCESS LESSON -> memory:
+      plan-stage profiling MUST use the gate workload (warm prove_loop), not the CLI.
+
+  - id: h10
+    name: product-sumcheck-table-reuse
+    subsystem: sumcheck infra (WHIR rounds 2+ AND GKR layers — generalizes the kept h6' C2)
+    paper_anchor: >
+      h6' KEEP evidence (iter 3: C-table reuse on AIR sumcheck, measured -5.21%); Gruen
+      2024/108 §4; BDDT 2025/1117 §6.2 (infinity-point); DT 2024/1210 / BDDT §5 (eq-split
+      aggregation); Rothblum 2024/1103 (Gray-code eq for combine_statement). Pools
+      (iter-1/3 traces): WHIR initial sumchecks 443ms (combine 166 + product 276, round-1
+      kernel already improved by C1), GKR 313ms. Product shape: P_pair(z) =
+      (a0+z da)(b0+z db) is QUADRATIC -> a cached product table P[x] = A[x]B[x] + ONE
+      fresh eval (at infinity: da*db, differences only) fully determines every round poly;
+      fold updates P by extrapolation exactly like h6' C2. Transcript-free.
+    mechanism: >
+      (a) P-table reuse + infinity-eval for the (ExtensionPacked) product sumcheck rounds
+      in prove.rs/sc_computation handlers (WHIR rounds 2+) and quotient_gkr round kernels;
+      (b) eq-split + Gray-code eq generation in combine_statement / add_new_base_equality
+      passes. Per-component span gates as in h6'; per-class kill switches.
+    predicted_pct: -2.5
+    net_predicted: -2.5   # proof delta 0 by construction
+    plumbing:
+      - "crates/backend/sumcheck/src/{prove.rs,sc_computation.rs,product_computation.rs}"
+      - "crates/sub_protocols/src/quotient_gkr/*"
+      - "crates/whir/src/open.rs (combine_statement, add_new_base_equality)"
+    kill_condition: >
+      KILL per component (h6' discipline): P-table memory traffic regresses any span class
+      (the T5' inversion lesson — note P is 1 EF/pair, lighter than T5's 12-zmm state);
+      combine_statement eq passes < 30ms measured -> Gray-code part dies; per-component
+      in-pipeline span gates >= 8% of their pools.
+    status: killed_at_plan
+    iter: 4
+    iter_outcome: >
+      Iter 4 plan-gate kill (static, source-verified at HEAD): every production product-
+      sumcheck loop already computes only the {z=0, z=infinity} Karatsuba terms — the
+      information-theoretic floor for degree-2 bare messages — so the premise (removable
+      z-point evals) does not exist; P-table maintenance costs exactly the multiplication
+      it saves (profit = C_eval - C_maintain = 0 for products) while adding 1.6-3.2 GiB
+      traffic on bandwidth-bound spans (T5' inversion precedent at the same loops).
+      add_new_base_equality is ALREADY DT24-batched upstream (eq_mle.rs:313-371).
+      INVENTORY LAW: table-reuse profit scales with eval/maintenance ratio; empirical
+      viability floor > 12:1 (h6' exec-class kill); products sit at 1:1. Survivor: c1
+      combine_statement region-pass fusion (~-0.3%) banked as a rider for a future
+      composite iteration. Full plan in agent a0cf83bc transcript.
+
+  - id: h8
+    name: prover-buffer-reuse-prefault
+    subsystem: memory/pipeline (cross-cutting; targets the 41% parallel IPC collapse + 3.4M faults/proof)
+    paper_anchor: >
+      Audit deficiency #3 + Phase-0 evidence (iter 1): per-proof ArenaVec mmap + lazy
+      faulting, no cross-proof buffer reuse, no hugepage hints; reference provers
+      (Plonky3/stwo/sp1 practice) preallocate and reuse. The 41% parallel IPC collapse
+      taxes every streaming phase — fault/TLB attribution may reveal this as the hidden
+      large pool. zk-alloc crate itself is OFF-LIMITS (constraint 5) — changes live at
+      CALL SITES (buffer lifecycle in whir/sub_protocols/lean_prover) only.
+    mechanism: >
+      (a) Reuse the big per-proof buffers (DFT codeword, leaf matrix, logup accs) across
+      prove_loop iterations via caller-held pools; (b) madvise(THP)/pre-touch the arena
+      regions once at startup (call-site mmap flags if exposed; else sequential pre-touch
+      pass); (c) measure-first: perf fault/TLB/c2c attribution to size the pool before
+      implementing (Phase-0 task of its iteration).
+    predicted_pct: -2.5
+    net_predicted: -2.5
+    plumbing:
+      - "crates/whir/src/{commit.rs,dft.rs,merkle.rs} (buffer lifecycle)"
+      - "harness prove_loop caller pattern (NO harness changes — leanVM-side API only)"
+      - "crates/lean_prover/src/prove_execution.rs (per-proof allocations)"
+    kill_condition: >
+      KILL if the attribution run shows combined fault+TLB+THP-addressable stalls < 1.5%
+      of prove cycles, OR if buffer reuse requires zk-alloc crate modifications (constraint
+      5) that cannot be expressed at call sites.
+    status: killed_at_phase0
+    iter: 4
+    iter_outcome: >
+      Iter 4 Phase-0 kill by own condition (combined addressable < 1.5%): live measurement
+      (warm proofs, perf attach + smaps_rollup): minor faults 45K/9s ~ 0.75% of cycles;
+      dTLB-load-misses 32.5M/9s ~ 0.1%; combined ~ 0.85%. The 41% parallel IPC collapse is
+      bandwidth-class, not fault/TLB-class. LATENT ANOMALY recorded: RSS 13.5 GiB with
+      AnonHugePages = 0 despite THP [always] AND 6144 reserved hugepages unused — the arena
+      mappings never receive huge-page backing (alignment or madvise in zk-alloc, which is
+      off-limits). Reopens if zk-alloc constraint lifts or workloads become TLB-bound.
+
+  - id: h4
+    name: dft-kernel-upgrade
+    subsystem: commit (DFT/NTT kernel — replaces h2 after its plan-stage kill)
+    paper_anchor: >
+      Evidence-anchored synthesis: h2's KC-1 measurement showed the FFT spans run at only
+      10-13.5 GB/s of ~60 GB/s available — the DFT is COMPUTE-bound, so kernel-level
+      improvement headroom exists. Ceiling reference: 0xPolygon goldilocks-polygon C++
+      AVX-512 NTT (~/zk-autoresearch/goldilocks-polygon, ntt_goldilocks.cpp) — hand-tuned
+      radix-8/avx512 butterflies with interleaved twiddle layout. leanVM dft.rs uses
+      radix-2 triple-layer groups (dft.rs:217-319). Pornin 2022/274 reduction tricks and
+      p12/p13 (deferred reduction, lazy canonicalization) apply to butterfly arithmetic:
+      a radix-4/8 butterfly amortizes reductions across stages exactly like the Karatsuba
+      combination amortizes them across products.
+    mechanism: >
+      Rework dft_algebra_batch_by_evals butterflies: (1) radix-4 (or radix-8) butterflies
+      with deferred reduction — twiddle muls produce (hi,lo) pairs combined unreduced
+      within the butterfly, one reduce per output; (2) twiddle table layout interleaved
+      for zmm broadcast loads (polygon-style) instead of strided lookups; (3) keep the
+      existing 3-layer cache blocking and parallel structure. Pure prover-internal: DFT
+      outputs identical values, transcripts unchanged.
+    predicted_pct: -2.5
+    plumbing:
+      - "crates/whir/src/dft.rs:1-450 (dft_layer_par_triple, butterfly kernels, twiddle access)"
+      - "crates/backend/goldilocks/src/x86_64_avx512/packing.rs (mul64_64/reduce128 reuse for butterflies)"
+      - "crates/backend/poly (twiddle precompute: precompute_dft_twiddles)"
+    kill_condition: >
+      KILL if a standalone in-pipeline measurement (span timing around the commit FFT with
+      the radix-4 kernel prototyped on the first layer-group only, compute-and-discard)
+      shows < 15% FFT-phase improvement, OR if goldilocks-polygon's NTT benched on this
+      machine at 2^26 (their bench harness, same core count) is NOT >= 1.4x faster than
+      leanVM's current dft span (no ceiling headroom -> nothing to chase), OR if the
+      radix-4 deferred-reduction butterfly disasm shows more uops per 4 outputs than
+      2x the current radix-2 pair (objdump count).
+    status: killed_at_phase0
+    net_predicted: -2.5   # proof delta 0 (identical DFT outputs) -> net = wall
+    iter: 1
+    iter_outcome: >
+      Iter 4 Phase-0 kill: Phase-0 ceiling bench: polygon NTT 580 MiB/s vs leanVM DFT ~1.6 GiB/s — reference ~2.8x slower; kill bar required >= 1.4x faster. No ceiling headroom to chase.
+
+  - id: h7
+    name: poseidon-interleaved-batch-kernel
+    subsystem: commit (Merkle hashing throughput — reference-parity class per operator directive)
+    paper_anchor: >
+      Implementation audit (report/iter4_implementation_audit.md, deficiency #1) vs
+      goldilocks-polygon poseidon_goldilocks_avx512.hpp: leanVM dispatches ONE 8-wide
+      Poseidon batch per call; the 30-round dependency chain (MDS mul64_64+reduce128
+      ~6-cycle latency vs ~2-cycle/round issue capacity) leaves pipeline utilization ~30%
+      (measured 1400 cycles per 8 perms; latency model says ~720 achievable with 2-way
+      interleaving). Merkle hashing = 34% of wall. PENDING: polygon ceiling bench on this
+      box (iteration-4 Phase 0) to replace the model with a measured target.
+    mechanism: >
+      New interleaved permutation kernel in x86_64_avx512/packing.rs (poseidon1.rs is
+      protected — kernel reads its round-constant/MDS consts read-only): process 2 (or 3)
+      independent 8-wide batches with software-pipelined rounds (16 state zmm + temporaries;
+      stagger MDS of batch A against sbox/RC of batch B). Route the Merkle leaf-sponge and
+      tree-climb callers (symetric/merkle.rs, first_digest_layer + from_first_layer) to the
+      interleaved kernel. Permutation function bit-identical; transcripts unchanged.
+    predicted_pct: -6.0
+    net_predicted: -6.0   # proof delta 0
+    plumbing:
+      - "crates/backend/goldilocks/src/x86_64_avx512/packing.rs (new kernel; mds_mul_simd reuse)"
+      - "crates/backend/symetric (hash_rtl_iter, MerkleTree climb call sites)"
+      - "crates/whir/src/merkle.rs:59-222 (routing)"
+    kill_condition: >
+      KILL if the polygon ceiling bench (Phase 0) shows their perm <= 1.2x faster than
+      leanVM's current 175 cycles/perm (no headroom -> model wrong), OR if a 2-way
+      interleaved prototype kernel (standalone bench vs current, same data) shows < 20%
+      throughput gain (latency model wrong / port-bound not latency-bound), OR if objdump
+      shows the 2-way kernel spilling > 4 zmm per round (register budget exceeded).
+    status: killed_at_phase0
+    iter: 4
+    iter_outcome: >
+      Iter 4 Phase-0 kill: Phase-0 ceiling bench (report/iter4_phase0_ceiling_benches.md): polygon full-Merkle 527 MiB/s vs leanVM ~790 MiB/s — reference is ~1.5x SLOWER; kill bar required it 1.2x faster. Audit's static latency model refuted by measurement.
+
+  - id: h6
+    name: transcript-free-round-eval-reuse
+    subsystem: air-sumcheck (prover-only: round-poly evaluation algebra; NO protocol change)
+    paper_anchor: >
+      Gruen 2024/108 §4 (quotient-table reuse: cache C(r,X,x)/X(X-1) during round i, derive
+      round i+1's v(0) by interpolation instead of fresh constraint evals — (d+1)->(d-1)
+      eval points; prover-only, "no changes to what is sent"); BDDT 2025/1117 §6.2
+      (evaluation at infinity: leading-coefficient-only constraint eval — prover sends
+      coefficient-form messages in leanVM so the internal eval-point set is free to change);
+      Rothblum 2024/1103 (Gray-code eq streaming for the eq-table update passes).
+      T0 iter-1 data (report/iter1_T0_measurements.md): AIR EF rounds 2-5 poly-compute =
+      128+225+113+57 = 523ms; ~11% saved by quotient reuse + ~5% by infinity-point +
+      eq-table traffic cuts.
+    mechanism: >
+      Inside compute_bare_round_poly/compute_raw_poly only: (1) while evaluating C at
+      z = 2..d in round i, cache Q_i = C/(z(z-1)) per x-pair; round i+1's z=0 value comes
+      from interpolating cached Q (degree d-2) instead of a fresh C eval; (2) replace the
+      z=d evaluation with the point-at-infinity (top-degree homogeneous part of C only —
+      cheaper by the additive-term share); (3) generate eq weights Gray-code style to drop
+      table update passes. Transcripts bit-identical (coefficient-form messages unchanged).
+    predicted_pct: -2.8   # ENRICHED iter 3 (h6'): original h6 mechanisms (-1.5..-2.0) +
+                          # re-land of the VERIFIED T4 kernel from h3 (5ddf2fcc: -0.85% e2e
+                          # measured at the iter-2 gate, proofs byte-identical) as one
+                          # same-subsystem hypothesis: 'transcript-free sumcheck round-eval
+                          # acceleration'. Components: (1) T4 kernel re-land (verified,
+                          # zero-risk); (2) Gruen 2024/108 §4 quotient-table reuse;
+                          # (3) BDDT 2025/1117 §6.2 infinity-point eval; (4) optional p21
+                          # Gray-code eq streaming. Combined -2.4..-2.9.
+    net_predicted: -2.8   # proof delta 0 -> net = wall
+    iter3_selection_note: >
+      Phase-4 rule compliance — references BOTH prior diagnostics: (a) h1 died of
+      transcript mass (proof +1.6% x3 penalty): every h6' component leaves transcripts
+      bit-identical (T4 byte-diff PROVEN at iter-2 gate; quotient reuse and infinity-point
+      change only the prover's internal evaluation strategy for coefficient-form messages;
+      Gruen explicitly: 'no changes to the protocol'). (b) h3 died real-but-under-sized
+      (-0.85% < 1.0% bar): h6' fixes the sizing by composing the verified T4 win with two
+      independent mechanisms targeting the LARGER AIR-sumcheck EF-round cost pool (523ms
+      measured rounds 2-5 poly-compute, T0 data) — components are additive across disjoint
+      code paths (product round-1 kernel vs AIR round evals).
+    plumbing:
+      - "crates/sub_protocols/src/air_sumcheck.rs:223-431 (compute_bare_round_poly, compute_raw_poly_impl)"
+      - "crates/backend/sumcheck/src/prove.rs:144-176 (eval point set)"
+      - "crates/backend/air (eval_packed_* entry points for the infinity variant)"
+    kill_condition: >
+      KILL (1) if the Q-cache working set (deg-(d-2) values per x-pair, ~8 EF x 2^17 =
+      25 MB/table) measurably thrashes L3 — detected by the in-pipeline stub showing round
+      i+1 v(0)-from-cache SLOWER than fresh eval; KILL (2) if the infinity-point homogeneous
+      eval of the Poseidon AIR (top-degree monomials of 106 constraints) costs > 70% of a
+      full eval (insufficient additive share — count monomials by degree first, statically);
+      KILL (3) if eq-table update passes are < 30ms total (Gray-code part pointless).
+    status: KEPT_iter3
+    iter: 2
+    iter3_plan_verdict: >
+      Plan (report/hypothesis_6/transcript-free-round-eval.md = plan_spec.md): GO C1
+      (verified re-land), GO C2 (Gruen §4 adapted to non-zerocheck via per-pair C-tables +
+      bus-only round-0 seeding; exec leg behind per-class kill switch), GO C3a (LOAD-BEARING
+      DISCOVERY: poseidon declared degree 8 but true constraint degree 7 — the z=8 eval
+      pass is provably redundant, 0/106 constraints at top degree; ~70ms pure removal),
+      STRETCH-GO C3b (exec infinity-point, top-eval ~45% of full), KILL-PREDICTED C4
+      (eq construction is sqrt-N per round, ~us, vs 30ms bar). Combined refined
+      predicted_pct -3.0 [floor -1.8 clears the gate on C1+C3a alone, ceiling -4.5].
+      All components transcript-invariant (coefficient-form messages, exact Lagrange);
+      per-commit proof byte-diff gates. Eval baseline: 334352e9.
+
+    iter_outcome: >
+      Iter 3 KEEP at -5.21% e2e (predicted -3.0 [-1.8,-4.5]; beat ceiling). Chain
+      9fc80ee5..76ec3d8a (T0' spans, C1 re-land x5, T2' C3a -72ms, T3' C2-core -41ms
+      with exec-class kill-switch fired at +6.9ms regression, T4' bus-seeding -32ms,
+      review-followup test). Recursion -3.14% (faster), proof +0.00%, frozen verifier
+      accepts (byte-identical chain), steady-state -5.38% (t=-143). AIR 766->624ms.
+      T5' (C3b exec infinity-point, ~10ms) DEFERRED to the pool as a residual.
+      Components killed cheaply en route: C4 (eq streaming, 0.15ms vs 30ms bar),
+      exec-class C2 (per-class span gate).
+  - id: h3
+    name: deferred-reduction-cubic-karatsuba
+    subsystem: field-backend (prover implementation: extension arithmetic kernels)
+    paper_anchor: >
+      Synthesis (p12+p13) anchored on: Pornin 2022/274 §3.2 (add/mul cost balance: mul-count
+      optimality of the current 6-mul Karatsuba — the open lever is per-mul reduction cost,
+      not mul count); BDT 2024/1046 §2.1.2 (ext-mul = 6 base muls for deg-3 Karatsuba,
+      reduction cost per product); GL structure 2^64 = 2^32-1, 2^96 = -1 (mod p) allows
+      summing 128-bit products before a single reduce128 per output (same trick the
+      poseidon1.rs scalar MDS uses with u128 accumulators, poseidon1.rs:85-113 — applied
+      here to the cubic Karatsuba combination instead of the MDS row sum).
+      Profile: cubic_mul_generic = 15.8-17% of total cycles (perf, prove_loop warm).
+    mechanism: >
+      Rewrite packed + scalar cubic ext mul to: (1) compute m0..m5 as unreduced (hi,lo)
+      128-bit pairs (mul64_64 already produces these pre-reduce128, x86_64_avx512/
+      packing.rs:234-258); (2) combine c0 = m0+m5-m1-m2, c1 = m3+m5-m0-2m1, c2 = m4+m1-m0
+      in 130-bit accumulator domain with borrow-free offsets (+2p^2-style constants);
+      (3) single generalized reduction per output coefficient (3 reduce ops vs 6) using
+      2^96 = -1 folding for the accumulated high words; (4) drop per-add canonicalization
+      inside the combination. Apply the same lazy-accumulator pattern to eval_eq folds and
+      dot-product kernels (p13). No protocol or proof change; poseidon1.rs untouched.
+    predicted_pct: -3.0   # refined by plan agent; was -4.5. Bare ext-mul deferred rewrite NO-GO'd
+                          # (op-count regression +5..13%: AVX-512 lacks add-with-carry, lazy 128-bit
+                          # add = 6 insns vs 5 canonical). Surviving scope: Target A = vectorize
+                          # compute_product_sumcheck_polynomial_base_ext_packed (currently scalar
+                          # per-lane, ~720 insns/packed elem -> 152, ~4.7x kernel) ~ -2.5% e2e;
+                          # Target B (gated) deferred Karatsuba accumulation in ext-by-ext loops ~ -0.5%.
+                          # Plan: report/hypothesis_3/deferred-reduction-cubic-karatsuba.md
+    plumbing:
+      - "crates/backend/field/src/field.rs (new lazy-accumulator default-body trait methods)"
+      - "crates/backend/sumcheck/src/product_computation.rs:172-238 (Target A kernel)"
+      - "crates/backend/goldilocks/src/cubic_extension.rs:479-549 (reference semantics only — unchanged per plan NO-GO)"
+      - "crates/backend/goldilocks/src/packed_cubic_extension.rs:31-160 (SoA packed mul path)"
+      - "crates/backend/goldilocks/src/x86_64_avx512/packing.rs:234-298 (mul64_64, reduce128 split)"
+      - "crates/backend/goldilocks/src/goldilocks.rs:488-520 (scalar mul/reduce128)"
+      - "crates/backend/sumcheck/src/product_computation.rs:47-101 (DIMENSION==3 hot path consumers)"
+    kill_condition: >
+      KILL if the in-pipeline kernel stub (run_product_sumcheck round-1 inner loop swapped
+      to deferred-reduction mul, compute-and-discard against live data) shows < 8% kernel
+      speedup, OR if objdump of the new packed path shows zmm spill count (vmovdqu64 to
+      rsp-relative) increasing vs baseline disasm of cubic_mul_generic call sites, OR if
+      the borrow-free offset analysis cannot bound accumulators < 2^160 for c1's 4-term sum
+      (correctness bound, checked by exhaustive u128 overflow proof in a unit test).
+    status: discarded_at_gate
+    net_predicted: -3.0   # proof delta 0 (bit-identical transcripts) -> net = wall
+    iter: 1
+    iter2_progress: >
+      T1-T3 (9d01759b/6789552e/caf1109c): lazy-accumulator vocabulary landed, all oracle
+      tests green, zero in-loop spills, bit-exact. T4 (5ddf2fcc): Target A two-pass kernel
+      — span gate PASSED at -8.6% (276.5 -> 252.7ms) but HONEST ACCOUNTING: that is -24ms
+      ~ -0.63% e2e, NOT the plan's -2.5% (kernel share of the span was overestimated;
+      single-pass variant spilled, two-pass split cost 0.7pp). Proofs byte-identical.
+      h3 now hinges on T5 (Target B, hard-gated): combined expectation ~ -1.1 +/- 0.5%
+      against the 1.0% keep threshold. Gate decides; discard would be honest and cheap
+      (latent: the trait vocabulary + kernel pattern stay in git history).
+    iter2_selection_note: >
+      Selected for iter 2 per Phase-4 rule: h1 was discarded by the proof-size net penalty
+      (transcript +1.6% x3 ate a -5.29% wall win). h3 does NOT share that failure mode BY
+      CONSTRUCTION: it is a pure prover-implementation change with bit-identical field
+      results and transcripts (proof delta exactly 0, recursion delta 0) -> net = wall.
+      Plan exists and is GO (report/hypothesis_3/deferred-reduction-cubic-karatsuba.md,
+      reviewed iter 1): Target A = vectorize the scalar-per-lane base-x-ext product-sumcheck
+      kernel (~720 insns/packed elem -> 152); Target B hard-gated. Iter-2 reading reinforced
+      the selection: BDT 2024/1046 Alg 1-4 deep-read shows algorithm-level sumcheck
+      restructuring cannot win at GL-cubic's ee/bb=6 ratio — the headroom is in KERNEL
+      vectorization, exactly h3's scope. p21 (Gray-code eq streaming) added to its
+      secondary-target list as an optional composition.
+
+    iter_outcome: >
+      Iter 2 FULL CYCLE: T1-T3 vocabulary (9d01759b/6789552e/caf1109c) -> T4 Target-A kernel
+      (5ddf2fcc, span -8.6%, two-pass after spill fallback) -> T5 KILLED (ext-ext arms
+      production-dead; call-graph diagnostic) -> plan §7 amendment -> T5' KILLED at live
+      sites (GKR -2.4% but WHIR-side +5.5% regression; combined +1.7% — deferred ext-ext
+      accumulation economics INVERT under accumulator-state traffic) -> T6: correctness all
+      substantive layers PASS incl. frozen-verifier acceptance (proofs bit-identical);
+      eval_paired: wall -0.85% (p~0, t=-8.5, noise 0.012%), recursion -0.26%, proof +0.00%
+      -> DISCARD below the 1.0% bar; chain reverted (334352e9).
+      VERDICT CLASS: real-but-under-sized (not disproven — T4 is a verified strict
+      improvement). Mechanism family 'deferred ext-ext Karatsuba accumulation' is
+      measurement-closed; 'vectorized base-x-ext kernel' (T4) is PROVEN and re-landable
+      inside a bigger same-subsystem hypothesis.
+  - id: h1
+    name: univariate-skip-batched-air
+    subsystem: air-sumcheck (verifier-depth: changes round structure + verifier + recursion circuit)
+    paper_anchor: >
+      Gruen 2024/108 §5-6 (univariate skip: first k rounds -> one univariate round over
+      coset D, |D|=2^k, all constraint evals in base field; verifier interpolates degree
+      d(2^k-1) poly; soundness A.4). Composed with §3.2 eq-extraction (p1) and §4
+      quotient-reuse (p2) for the remaining multivariate rounds. Cross-component analysis:
+      AIR phase = 767ms (20.3% wall); Poseidon8::eval = 14.5% of total cycles; max_full_degree
+      = 9 (Poseidon deg-8 +1) drives eval-point count for ALL tables; phase-1 packed-base
+      rounds already exist (air_sumcheck.rs:24-32) but post-round-0 folds are EF-valued,
+      so rounds 1..k pay C_G ~ 4-6x C_F — the skip eliminates exactly that term:
+      cost 2^{n-k}(d-1)(2^k-1)C_F vs current ~sum_{i=1..k} 2^{n-i} d C_G.
+    mechanism: >
+      Reindex the batched AIR zerocheck domain as D x H_{n-k} (D = size-2^k multiplicative
+      coset of Goldilocks*, 2-adicity 32 gives room). Prover round 0 sends one univariate
+      poly of degree d(2^k-1) evaluated via base-field-packed constraint evals at
+      (d-1)(2^k-1) off-coset points (LDE of each column by factor d along the coset axis);
+      verifier interpolates (precomputed barycentric weights), checks consistency, then the
+      protocol continues with n-k standard rounds whose tables are already EF-folded once.
+      Multi-height tables join via the existing back-loaded suffix alignment: skip variables
+      are the n_max-table's top-k bits; smaller tables' claims enter after the skip round
+      exactly as they do today after round k. zkdsl verifier: add coset-LDE interpolation
+      of the round-0 message + adjust transcript schema; WHIR statements unchanged.
+    predicted_pct: -3.5   # refined by plan agent from -10.0 (range -2..-7): eq-extraction already
+                          # implemented (no §3 headroom); sum is not a zerocheck (no free on-D evals,
+                          # coset-sum identity instead); LDE overhead ~1.0G base muls vs cheap exec AIR.
+                          # Synthetic-challenge equivalence c̃_r = r0^(2^(k-1-r)) makes verifier+recursion
+                          # changes call-site-level. Soundness delta 2^-183.7; proof +2.4KiB (k=4).
+                          # CONDITIONAL GO: T0 measurement gates; T3 abort checkpoint pre-protocol-change.
+                          # Plan: report/hypothesis_1/univariate-skip-batched-air.md (= plan_spec.md)
+                          # ITER1 T0 RESULT: GO k=4 (rounds 0-3 = 498.5ms; saved(k=4)~130ms, k=5~228ms in-model;
+                          #   k<=3 dead — poseidon's 225ms ExtensionPacked round sits at global round 3).
+                          # ITER1 T1 RESULT: plan v1 protocol gap PROVEN (expand-curve vs coset-sum incompatible
+                          #   over multilinear PCS = BDT 2024/1046's objection). AMENDED via p20
+                          #   (values-on-D + terminal Lagrange->tensor conversion sumcheck); plan_spec_v2
+                          #   in progress; revised predicted -2.5..-5.5 (k in {4,5} decided at T3' checkpoint).
+    plumbing:
+      - "crates/sub_protocols/src/air_sumcheck.rs:24-440 (phase structure, compute_raw_poly, round loop)"
+      - "crates/backend/sumcheck/src/prove.rs:144-176 (round message points)"
+      - "crates/lean_prover/src/prove_execution.rs:213-260 (batched AIR call site)"
+      - "crates/lean_prover/src/verify_execution.rs:136-173 (sumcheck_verify call + final check)"
+      - "crates/rec_aggregation/zkdsl_implem/ (verifier circuit: sumcheck verify + new interpolation)"
+      - "crates/backend/sumcheck/src/lib.rs (sumcheck_verify)"
+    kill_condition: >
+      KILL if any of: (1) perf phase-isolation shows rounds 1..4 of prove_batched_air_sumcheck
+      (the EF C_G evals the skip removes) account for < 250ms — measured by inserting span
+      timing per round index; (2) recursion recompilation shows bytecode size growth > 5% or
+      recursion --n 2 wall grows > 3% (gate hard-fail) — measured before merging via
+      compilation.rs iterative recompile; (3) the degree-d(2^k-1) round-0 prover LDE
+      (column extension along coset axis) costs more than 60% of the savings at k=3
+      (measured via in-pipeline stub that computes the LDE and discards).
+    status: discarded_at_gate
+    iter: 1
+
+    iter_outcome: >
+      Iter 1 FULL CYCLE: T0 measurements (GO k>=4) -> T1 kernels PROVED plan-v1 gap
+      (expand-curve vs coset-sum incompatible; BDT 2024/1046 objection made precise) ->
+      plan_spec_v2 (values-on-D + p20 conversion) -> T2'-T5' implemented (commits
+      8cb20120..3954f049 + fmt 212b5510) -> correctness REVIEW-as-anticipated ->
+      eval_paired: wall -5.29% (p~0, noise 0.21%), recursion -2.22%, proof 500->508 KiB
+      (+1.6%) -> net 0.49 < 1.0 after 3x penalty -> DISCARD; chain reverted (f8a4880d).
+      ROOT CAUSE: scoring economics, not implementation (wall beat the -3.8% estimate).
+      Transcript floor of the mechanism (~389 EF) is structural: skip message scales
+      9*(2^k-1)+1 and ghat duplication doubles per-column data for converted tables.
+      LESSON (applied to selection process): predicted_pct must be NET-scored
+      (wall - 3*proof_pct) BEFORE selection; h1 at predicted +1.8-2.4% proof was
+      net-negative across its entire predicted envelope and should not have been selected
+      without a transcript-reduction plan.
+
+  - id: h2
+    name: fused-commit-pipeline
+    subsystem: commit (prover pipeline: DFT -> Merkle data path)
+    paper_anchor: >
+      Synthesis (p17+p18+p16): no single paper — composition of leanVM dft.rs 3-layer
+      cache-blocking (dft.rs:217-319), merkle.rs first_digest_layer streaming
+      (merkle.rs:180-222), and Phase-0 evidence: 41% parallel IPC collapse (1.62->0.95),
+      L1d miss > 6%, commit phase = 1.67s of which Merkle 1.30s; codeword = 1 GiB
+      materialized then re-streamed; leaf absorb does strided 512B vertical gathers
+      (vertically_packed_row_rtl). Cf. BDDT 2025/1117 streaming-prover motivation.
+    mechanism: >
+      (a) Fuse DFT output with leaf hashing: after the last parallel DFT layer-group,
+      absorb each L2-resident tile of 8 leaf-rows directly into the 8-wide packed sponge,
+      avoiding materialization of the full codeword (retain leaf matrix only if opening
+      requires it — else recompute ~200 queried rows at open time from the retained
+      pre-DFT polynomial). Eliminates ~2 GiB of DRAM traffic per commit and the associated
+      parallel-IPC collapse. (b) Transpose-tile the absorb path: replace per-absorb strided
+      gathers with one in-L1 8x64 tile transpose (vpermt2q/vpunpck) feeding contiguous
+      absorbs. (c) Thread the tree climb and first layer with one task per physical core
+      pinned chunk (currently rayon-equivalent over 16 logical).
+    predicted_pct: -5.5
+    plumbing:
+      - "crates/whir/src/dft.rs:217-319 (dft_layer_par_triple, last layer-group hook)"
+      - "crates/whir/src/commit.rs:64-100 (commit: reorder_and_dft -> MerkleData::build seam)"
+      - "crates/whir/src/merkle.rs:59-222 (build_merkle_tree_goldilocks, first_digest_layer_with_initial_state)"
+      - "crates/backend/symetric/ (hash_rtl_iter_with_initial_state, MerkleTree::from_first_layer)"
+      - "crates/whir/src/matrix.rs (vertically_packed_row_rtl)"
+    kill_condition: >
+      KILL (a) if perf stat with DRAM-BW/stall counters on the isolated commit phase shows
+      memory-stall cycles < 12% of commit cycles (then fusion's 2 GiB saving cannot buy
+      > 1% wall); KILL (b) if perf annotate of the leaf-hash closure shows matrix-load +
+      shuffle instructions < 12% of its cycles (arithmetic-bound sponge -> tiling is noise);
+      KILL (c) if the climb+first-layer phase already saturates 8 cores (per-core util > 85%
+      during Merkle span via perf sched/top sampling).
+    status: killed_at_plan
+    iter: 1
+    iter_outcome: >
+      Iter 1, killed at plan rung (no implementation). Measured kill conditions:
+      KC-2 leaf-hash instruction classification: 91.9% Poseidon arithmetic, <=3.5%
+      gather/loads, 2.5% zmm spills (threshold 12%). KC-3 utilization: ~99% busy on
+      8 physical cores, FL IPC 1.66 (threshold 85%). KC-1: commit memory stalls
+      decompose to reorder ~7% + DFT ~7% + first-layer ~3-5%; fusion saves only
+      ~40-50ms. Refined predicted_pct: -0.9 +/- 0.5 — below gate. Leaf hashing is
+      Poseidon-throughput-bound; only fewer-committed-cells or a faster permutation
+      (protected) can cut it. Plan: report/hypothesis_2/fused-commit-pipeline.md
+

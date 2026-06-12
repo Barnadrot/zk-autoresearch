@@ -68,7 +68,7 @@ See chapters for substeps, order of operations
   5. Use a subagent for each candidate with the tool call `subagent_type: "Plan"`  mode to develop the implementation plan (save these to `report/hypothesis_N/{name_of_hypothesis}`)
         Resources to hand off to the agent: Papers, Codebase understanding and tools to test. 
   6. Review the implementation plans once they finish and calculate the impact for the predicted_pct field
-  7. Select by ambition: largest PROTOCOL DEPTH (changes verifier > changes prover round structure > changes prover implementation). Tiebreak: largest |predicted_pct|.
+  7. Select by ambition: largest |predicted_pct| Tiebreak: smallest COMPLEXITY (changes verifier > changes prover round structure > changes prover implementation).
 
   Output artifacts: `zk-autoresearch/experiment_logs/leanVM/autoresearcher/pw13-hetzner/hypothesis_pool.yaml`
 
