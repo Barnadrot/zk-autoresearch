@@ -182,7 +182,12 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
    ssh <host> "tmux send-keys -t <tmux_name> 'PATH=/path/to/claude:\\$PATH claude --dangerously-skip-permissions --model ${MODEL} --remote-control <tmux_name>' Enter"
    ```
 5. **Wait ~5s** (`sleep 5`) for claude to print its session banner.
-6. **Set the /goal verifier FIRST.** Extract `goal_condition` from the queue entry and dispatch it as a slash command. The verifier is the sole stop mechanism per v3 spec (memory: `feedback_goal_replaces_stop_criteria`); without it, the agent runs until context exhaustion.
+6. **Arm the deadman switch FIRST.** Before any work instructions, teach the agent to self-rearm:
+   ```
+   ssh <host> "tmux send-keys -t <tmux_name> 'Arm a deadman switch: use ScheduleWakeup with delaySeconds=1500 and a prompt that resumes your current experiment from artifacts. Re-arm this wakeup before ending every turn. If no subagent or task notification re-invokes you within 25 minutes, the wakeup fires and you resume autonomously.' Enter"
+   ```
+   Wait ~3s for acknowledgment. This MUST land before the dispatch prompt — once the agent starts work it may immediately launch a long subagent and never see a late-arriving deadman instruction.
+7. **Set the /goal verifier.** Extract `goal_condition` from the queue entry and dispatch it as a slash command. The verifier is the sole stop mechanism per v3 spec (memory: `feedback_goal_replaces_stop_criteria`); without it, the agent runs until context exhaustion.
    ```
    GOAL=$(jq -r .goal_condition brain/queue/claimed/<id>.json)
    if [ -z "$GOAL" ] || [ "$GOAL" = "null" ]; then
@@ -194,7 +199,7 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
    sleep 0.5
    ```
    Verify `/goal` was registered by capturing the pane and checking for a `Goal set:` (or equivalent) acknowledgment line. If missing after 3s, retry once before escalating.
-7. **Send the dispatch prompt with ultrathink:**
+8. **Send the dispatch prompt with ultrathink:**
    ```
    ssh <host> "tmux send-keys -t <tmux_name> 'read <program_path> and start the experiment ultrathink' Enter"
    ```
@@ -202,18 +207,13 @@ The mechanics of launching an executor agent. Read once carefully; the audit's "
    - `read <program_path>` — triggers the agent's Read tool on the program file rather than embedding program.md content as the user message. The failure mode hit on pw5 2026-05-15: coordinator pasted full program.md content as the dispatch prompt instead of this directive form, costing context budget and losing the wrapper that frames the work.
    - `start the experiment` (NOT `execute it`) — frames the dispatch as initiating a long-running autonomous loop, matching the autoresearcher / optimization / bug-hunter shape rather than one-shot execution.
    - `ultrathink` — triggers extended thinking budget. Because the entire autonomous loop flows from this single user message (no further user input until stop), one keyword covers the whole session — no periodic re-injection needed.
-8. **Arm the deadman switch.** Wait ~30s for the agent to start processing, then send the liveness self-check instruction via RC:
-   ```
-   ssh <host> "tmux send-keys -t <tmux_name> 'Arm a deadman switch: use ScheduleWakeup with delaySeconds=1500 and a prompt that resumes your current experiment from artifacts. Re-arm this wakeup before ending every turn. If no subagent or task notification re-invokes you within 25 minutes, the wakeup fires and you resume autonomously.' Enter"
-   ```
-   This prevents the stalling failure mode where agents declare autonomy but idle waiting for input. The agent self-rearms on every turn; if it gets stuck, the deadman fires and it picks up from iters.tsv + hypothesis_pool state.
 
 9. **Capture the session UUID** by reading `~/.claude/projects/*/*.jsonl` on the executor (newest one): `ssh <host> "ls -1t ~/.claude/projects/*/*.jsonl | head -1"`. Extract UUID from the filename.
 10. **Write the UUID into sessions.json** under a new entry.
 11. **Update the queue entry** in claimed/ with `session_uuid`, `started_at`, then `mv claimed → active`.
 12. **PushNotification to brain** (NOT the user): `{kind: "experiment_dispatched", id: "<id>", session: "<uuid>", rc_url: "<from --remote-control banner>"}`. Brain surfaces this to the user when next active.
 
-If steps 4, 6, or 7 fail (e.g., tmux send-keys returns error, ssh connection drops, /goal not acknowledged): retry once after 30s, then escalate to needs-decision/ if still failing. Do NOT proceed to step 7 if step 6 failed — an agent without /goal has no stop condition and is worse than no dispatch. Step 8 (deadman) is best-effort — if it fails, the agent still runs but may stall on long subagent waits.
+If steps 4, 7, or 8 fail (e.g., tmux send-keys returns error, ssh connection drops, /goal not acknowledged): retry once after 30s, then escalate to needs-decision/ if still failing. Do NOT proceed to step 8 if step 7 failed — an agent without /goal has no stop condition and is worse than no dispatch. Step 6 (deadman) is best-effort — if it fails, the agent still runs but may stall on long subagent waits.
 
 ### Active monitoring
 
