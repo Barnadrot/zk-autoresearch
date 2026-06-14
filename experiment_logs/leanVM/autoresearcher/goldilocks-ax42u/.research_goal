@@ -1,0 +1,1 @@
+Close the Goldilocks-vs-KoalaBear proving gap. Current: ~2.5x slower. Target: -30% wall-clock. Attack ALL subsystems — commit, sumcheck, GKR, witness gen — not just one. Your 3 hypotheses must target 3 different subsystems.

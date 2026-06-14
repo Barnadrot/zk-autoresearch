@@ -1,0 +1,7 @@
+2026-06-12T15:41:38Z commit='pw13-1 T0: h-wf kill-ladder benches (T0a spec 0.76 PASS but e2e 1.26 => lazy-ONCE design mandated; T0b EFxEF/basexEF 2.29 => MAX_SLICES 2)' task='Task T0: kill-ladder rung benches (T0a lazy-vs-stream weight, T0b EF×EF vs base×EF ratio)'
+2026-06-12T16:06:01Z commit='pw13-1 T1: lazy-once fused combine+round-0 for WHIR initial sumcheck (bit-identical transcript)' task='Task T1: WeightProvider abstraction + lazy fused round-0 + proof-equality test'
+2026-06-12T16:19:56Z commit='pw13-1 T1.1: review-gate fixes — engage the dual full fast-path arm in the equality test; extend to n_vars {18,22,26}' task='Task T1: WeightProvider abstraction + lazy fused round-0 + proof-equality test'
+2026-06-12T16:30:34Z commit='pw13-1 T2: segment-hoisted fused combine+round-0 kernel' task='Task T2: segment-hoisted fused kernel (RESCOPED from "DelayedEf" after T1 production measurement)'
+2026-06-12T16:41:30Z commit='pw13-1 T3: delayed-EF (BDT 2024/1046 Alg-3) for rounds 2-3 of the WHIR initial sumcheck' task='Task T3: DelayedEf r1 slices — CONDITIONAL on post-T2 number (was T2; thin 13% margin per T0b)'
+2026-06-12T16:59:51Z commit='pw13-1 T3.1: cargo fmt (correctness gate Layer 0.9)' task='(no pending task found in plan_spec.md)'
+2026-06-12T20:24:01Z commit='pw13-2 U0: h-ep kill-ladder (U0c identities PASS; U0a -7.0% PASS; U0a2 -12.3% PASS exec-enabled; U0b +1.8% KILL fusion)' task='Task U1: Air::eval_row_restriction hook + 3 table impls (dormant)'

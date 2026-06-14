@@ -1,3 +1,168 @@
+# Hypothesis pool — pw13-mac iter 1 (new loop; Phase 0 artifacts: report/iter-1-*)
+# Selection rule: largest protocol depth (verifier > prover round structure > prover impl);
+# tiebreak |predicted_pct|. Refill to exactly 3 before next iter.
+#
+# Iter-1 selection: h-gf (verifier depth) was selected first but KILLED at rung-1 paper
+# math (see history + report/hypothesis_3/gkr-bottom-fusion-rung1-kill.md). Among the
+# remaining PLANNED candidates (h-wf, h-ep — both prover-impl), tiebreak by |predicted_pct|
+# selects h-wf (-5.0). Replacement does not share h-gf's failure mode (h-gf paid extra
+# prover arithmetic for transcript compression; h-wf removes memory traffic with zero
+# arithmetic/transcript change). h-mw is the refill entry (verifier depth, needs its
+# Plan-subagent plan + rung-1 census before it is selectable).
+
 current_pool:
+  - id: h-ep
+    name: air-efround-pack
+    composition: c1   # p12 gruen-q-quotient-table x p18 fold-fusion x p14 dt24-eq
+    protocol_depth: prover-impl   # transcript-identical
+    paper_anchor: >
+      Gruen 2024/108 §4 (Qbar_i multilinear quotient table: C(r,X,x) = Qbar_{i-1} +
+      X(X-1) Q_i; z=0 eval of C becomes 1 mul/pair from the table; Eq.(2) degree ledger
+      guarantees Qbar multilinearity); Dao-Thaler 'More Optimizations' (further ~2^{n-1}
+      eq-mul elimination on top of Gruen — leanVM uses Gruen §3 already); Chiesa et al.
+      2024 (fold-fusion legality). Cross-component: transcript-identical (same bare polys,
+      same z-point set sent — z=0 is still an EVALUATION the prover reports, just computed
+      from Qbar instead of a full C eval); applies to all 3 table sessions.
+    mechanism: >
+      In AirSumcheckSession: (a) maintain the Gruen Qbar table alongside the multilinears
+      (one EF value per active pair, halving per round); per round, the z=0 entry of the
+      accumulator comes from Qbar with 1 mul/pair, eliminating 1 of the 10 (poseidon) /
+      6 (execution) / 7 (extension) full constraint evaluations per pair in EVERY round
+      including the EF rounds (the 78% region); Q_i extracted during the z-loop at
+      negligible cost. (b) Fuse fold_at_bit into the next round's compute_raw_poly
+      (read pair once -> emit folded values + accumulator contributions), eliminating one
+      full write+read pass over ~110 EF-packed columns per round (~1.1 GB cumulative).
+      (c) Apply the DT24 eq restructuring to SplitEq usage where it composes.
+    predicted_pct: -1.4   # REVISED by U0 rungs (iter-2): Qbar kernels PASS (poseidon -7.0%,
+                          # execution -12.3% => exec ENABLED) but fold-fusion KILLED (+1.8%,
+                          # U0b: fold pass is mul-bound on M4; fusing hurts eval locality).
+                          # h-ep = Qbar-only: ~ -26ms poseidon + -3.5ms exec + -1ms ext.
+                          # U0c: all three identities GREEN vs production session.
+                          # Plan: report/hypothesis_5/; selected for iter 2.
+    plumbing:
+      - "crates/sub_protocols/src/air_sumcheck.rs:223-264 (compute_bare_round_poly: Qbar consumption), 266-285 (process_challenge: fused fold), 400-547 (compute_raw_poly_degree_split: z-loop emits Q_i, skips z=0 full eval)"
+      - "crates/backend/sumcheck/src/split_eq.rs + eq_mle (DT24 variant)"
+      - "crates/backend/poly (MleGroup fold_at_bit fusion entry)"
+    kill_condition: >
+      Rung-1 microbench (#[ignore] test on the poseidon packed eval kernel): if
+      (9 full evals + Qbar bookkeeping) >= 0.97 x (10 full evals) per pair — i.e. the
+      bookkeeping (~2(d-1) muls/pair + table maintenance) eats the saved eval — KILL the
+      Qbar half. If fused fold+eval shows no wall-clock gain >= 1.5% on the AIR sumcheck
+      span in a tracing run (566ms -> must reach <= 557ms), KILL the fusion half.
+      Both halves dead => discard entry.
+
+  - id: h-lf
+    name: logup-leaf-fuse
+    composition: c6   # p15 logup-gkr x p17 lazy-once-fusion x p18 fold-fusion (REFILL iter 1, post-keep)
+    protocol_depth: prover-impl   # transcript-identical
+    paper_anchor: >
+      Papini-Haboeck 2023/1284 §3.3 (ladder consumes materialized leaf fractions);
+      h-wf keep evidence (iter 1): the lazy-once fusion family reliably reclaims the
+      materialize+reread overhead of a region (~1% e2e per region on M4). Here the region
+      is the LogUp leaf build: prove_generic_logup 207ms = leaf materialization (~40ms:
+      19.66M tuple fingerprints written then re-read by the GKR bottom pass) + prove GKR
+      168ms. Cross-component: zero transcript change; bottom-pass numerators stay base.
+    mechanism: >
+      Fuse the leaf fingerprint computation (eq-poly dot over bus data columns + domainsep)
+      INTO the GKR bottom-layer pass: compute each tuple's (num, den) in-register from the
+      trace columns at first use, write only the FOLDED next layer — never materializing
+      the 19.66M-tuple leaf vector. Mirrors h-wf's lazy-once design (evaluate exactly once,
+      stream the downstream artifact).
+    predicted_pct: -1.2   # leaf-build span ~40ms x mul-bound share + avoided 0.4-0.8GB traffic; rung-1 must split the 207ms span precisely
+    plumbing:
+      - "crates/sub_protocols/src/logup.rs:~90-230 (leaf build -> lazy tuple provider)"
+      - "crates/sub_protocols/src/quotient_gkr/mod.rs:29-76 + sumcheck_utils (bottom pass reads provider)"
+    kill_condition: >
+      Rung-1: tracing-span split of prove_generic_logup — if leaf materialization < 25ms
+      (i.e. < ~1.1% e2e ceiling) KILL. Rung-2: #[ignore] bench of fused vs materialized
+      bottom pass at 2^24 — fused > 0.97x materialized => KILL (mul-bound wash like T0a
+      would indicate the fingerprint dots dominate, not the traffic).
+    status: pool-unplanned
+
+  - id: h-dt
+    name: dt24-eq-cost-pack
+    composition: c7   # p14 dao-thaler eq x p9 two-table split (REFILL iter 1)
+    protocol_depth: prover-impl
+    paper_anchor: >
+      Dao-Thaler 'More Optimizations to Sum-Check Proving' (eliminates ~2^{n-1} muls on
+      top of Gruen in eq(w,x)*p(x) settings); BDT speedup_sumcheck §1.1 (two-table split —
+      partially deployed as leanVM SplitEq). Applies across ALL eq users: AIR sessions,
+      LogUp-GKR layers, WHIR weight statements. eq-MLE kernels measured ~5% busy (iter-1
+      sample: eval_eq_with_packed_output_dual 617 + base_eval_eq_packed 501 + generic 500
+      samples).
+    mechanism: >
+      Restructure per-round eq handling: hoist the outer eq factor out of inner sums
+      (iterated-sum rewrite) and adopt the DT24 round-message computation, removing the
+      per-pair eq_lo x eq_hi product and most per-round eq-table rebuild cost.
+    predicted_pct: -0.6   # ~5% busy x 30-50% reduction => -10-15ms. SUB-THRESHOLD STANDALONE:
+                          # not selectable alone; viable composed with h-ep (its T4) or h-lf.
+    plumbing:
+      - "crates/backend/sumcheck/src/split_eq.rs + crates/backend/poly/src/eq_mle.rs"
+      - "crates/sub_protocols/src/air_sumcheck.rs:223-264 (SplitEq rebuild per round)"
+    kill_condition: >
+      Rung-1: if SplitEq::new per-round totals < 4ms across sessions (tracing) AND the
+      per-pair eq mul < 8% of kernel time (T0a-style bench), KILL standalone; keep as
+      h-ep T4 component only.
+    status: pool-unplanned
 
 history:
+  - id: h-wf
+    name: whir-lazy-fusion
+    composition: c2
+    protocol_depth: prover-impl
+    iter: 1
+    result: keep
+    predicted_pct: -2.4
+    measured_pct: -1.21   # gate (3 rounds); cumulative 5-round -1.14, t=-8.28, p~0
+    proof_size_delta_pct: 0.0
+    recursion_delta_pct: -1.5
+    commits: [45cfb1ab, eb1568f1, 8cdca03a, d692efbc, 134c624d, c8ea299c]
+    diagnostic: >
+      Kept at -1.21% vs predicted -2.4 (itself revised from -5.0 after T0a). Mechanism
+      ceiling on M4: memory passes are nearly free (1.34GB read ~13ms), so the lazy-once
+      fusion only reclaims the round-0 read + RMW deltas (~-14ms) and delayed-EF rounds
+      2-3 add ~-11ms; both combine paths are mul-bound at ~15 packed muls/word
+      (irreducible in this representation). pow_grinding is a racy parallel nonce search:
+      proof-byte equality is only testable at zero-grinding configs (methodology now in
+      the equality test). Latent: the lazy-once kernel pattern + 3-way equality harness
+      reusable for any future WHIR-side restructuring; ship-gate Criterion bench xmss_leaf
+      has PRE-EXISTING compile errors (stale imports mt_koala_bear /
+      aggregate_single_msg_signatures) - harness maintenance for Brain.
+  - id: h-mw
+    name: wide-memory-bus-tuples
+    composition: c5
+    protocol_depth: verifier
+    iter: 1
+    result: killed-rung1-census
+    predicted_pct: -2.0
+    measured_pct: null
+    diagnostic: >
+      Tuple census (verified ledger 19.66M): unaligned tiers +6.7% worse or -10.7% (< 25%
+      gate, n_vars stays 25); aligned tiers -28% (n_vars 24) pass arithmetic but XMSS
+      structurally misaligns pointers (stride-5/copy_5 families, +1 offsets) and the
+      alignment migration (+0.3-0.7M cells) collides with 283,031 cells of memory headroom
+      -> log_memory 23 cliff erases the gain and breaches 2^26 stacked capacity. Best case
+      -41ms (-1.9%) at high design risk. Latent parts preserved in inventory p22 (one-eval
+      aligned-block fold, two-tier soundness, GKR ∝ active length).
+      Full census: report/hypothesis_4/wide-memory-bus-tuples-rung1-kill.md.
+  - id: h-gf
+    name: gkr-bottom-fusion
+    composition: c3
+    protocol_depth: verifier
+    iter: 1
+    result: killed-rung1-paper-math
+    predicted_pct: -2.0
+    measured_pct: null   # never implemented; killed at cheapest rung
+    diagnostic: >
+      Wide 4-ary fused bottom step costs ~335M EF-muls vs ~184-218M for the two replaced
+      degree-2 steps (gate degree 4 x 4 eval points vs degree 2 x 2 points; pair-visit
+      count only halves once); layer-build delta is a wash (direct 4-ary L23 build 9
+      muls/output = 75M vs 50M+25M). Net prover +120-150M EF-muls ~ +0.4-0.6% e2e: FAILS
+      the -1.0% gate by sign. Bare gate degree pinned analytically: g=4 (full 5). Rust
+      transcript -2 EF (flat); recursion -50 EF + one fewer ladder loop (recursion would
+      get FASTER — irrelevant, gate rewards leaf-prover wall-clock). Root cause
+      ARCHITECTURAL: fusing k eq-weighted product-ladder layers multiplies per-visit gate
+      cost ~2^k while visits halve once — layer fusion can never reduce prover arithmetic,
+      only transcript. Family closed for prover-wall-clock purposes (inventory p16 updated);
+      reopens only under a recursion-time-rewarding gate.
+      Full analysis: report/hypothesis_3/gkr-bottom-fusion-rung1-kill.md.

@@ -8,6 +8,162 @@
 # (bit-identical proofs) have net = wall and are immune to the penalty.
 
 current_pool:
+  - id: h14
+    name: whir-lazy-fold-plus-fft-prepare-composite
+    subsystem: "WHIR opening sumcheck (run_product_sumcheck 250ms) + commit FFT-prepare transpose (65ms) — prover-only PoC-slack composite (h12 precedent)"
+    paper_anchor: >
+      Dao-DeStefano-Bagad-Domb-Thaler 2026/587 §5 (small-value sum-check prover,
+      challenge-symbolic accumulators; their cost curve confirms 1-deferred-round
+      optimum) + audit agent a692e0e5 (fold-0 BasePacked->ExtensionPacked premature
+      promotion, open.rs:422 / product_computation.rs:75-101) + Phase-0 span
+      prepare_evals_for_fft_unpacked strided-write transpose.
+    mechanism: >
+      CORE (plan agent a6f8dff3, full plan_spec): keep WHIR initial sumcheck round-1 in
+      base-dominated arithmetic via lazy fold — evals stay as 2 implicit base streams
+      (a_i, b_i), quadratic computed as 4 lazy-acc streams binding r0 once per
+      accumulator; fused R2-entry materializes E'' at 2^24 directly from P via 4-term
+      basis comb. Bandwidth ledger: 9.9 -> 8.9 GiB traffic, 302M muls move
+      reduced-Karatsuba -> deferred class. C-F (gated): tile the FFT-prepare transpose
+      so writes are contiguous (currently 512B-strided stores at 23 GiB/s vs 39 ceiling).
+    predicted_pct: -1.5 [-0.9, -2.2]
+    net_predicted: 1.5 (proof delta 0 — transcript byte-identical, prover-only)
+    plumbing:
+      - "crates/backend/sumcheck/src/product_computation.rs (all core kernels + dispatch + equality tests)"
+      - "crates/whir/src/utils.rs (C-F transpose tiling only)"
+    kill_condition: >
+      T0 attribution < 60ms in R1+R2-entry region -> core dead. T2 midpoint: span delta
+      < 18ms -> revert core. C-F microbench < 1.3x -> SKIP component. T3 (round-2
+      deferral) default SKIP unless T2 >= 25ms AND R2-entry pass >= 35ms. Composite to
+      T-last only if surviving sum predicts >= 1.0%.
+    status: selected_iter7
+    iter: 7
+history:
+  - id: h16
+    name: air-round-poly-evaluation-algebra
+    subsystem: "AIR sumcheck (631ms; poseidon session air_poly r2/r3 = 97/168ms)"
+    paper_anchor: "Dao et al 2026/587 §4 MultiProductEval; zkSpeed 2025/620 §4.1.1 degree-grid lift (p37)"
+    mechanism: >
+      (A) grid-shared power ladders for x^7 S-box evaluation; (B) per-degree-family
+      grid evaluation with barycentric lift to the global grid once per round.
+    predicted_pct: "-0.6..-0.8 (under 1.0 keep bar)"
+    net_predicted: "0.6-0.8 < 1.0"
+    status: killed_at_plan
+    iter: 7
+    kill_diagnostic: >
+      AUDIT-VERIFIED (plan agent aed4832c; cost model corroborated by measured r2:r3
+      per-pair ratio 3.47x vs predicted 3.46x): (B) ALREADY DONE at session granularity
+      by iter-3 degree_z work — s0 evals 5 pts, s1 6, s2 7 (z=1 recovered from running
+      sum; z=0 from C2 table), cross-session combination once per round at coefficient
+      level (air_sumcheck.rs:883-897) = exactly the zkSpeed lift. (A) x^7 already
+      repeated-squaring at 4 ee/point (poseidon/mod.rs:720-789); best FD-ladder variant
+      recovers 11-15ms < 30ms bar; (B) residual (within-session low/high split, 20
+      degree-<=3 constraints) ~10-13ms with C2-fold-overhead risk (execution-class
+      precedent). Combined ceiling 21-28ms = 0.6-0.8% < 1.0% keep bar at high
+      implementation risk. LAW: evaluation-algebra savings in AIR are quantized by
+      points-evaluated x muls-per-point; both factors already near floor (degree_z +
+      cached squarings). Family closed for evaluation-algebra variants; reopens only if
+      constraint set changes (new table or constraint-count cut).
+
+  - id: h15
+    name: two-sumcheck-multiset-bus-replacement
+    subsystem: "GKR/bus (prove_generic_logup 314ms; prove GKR 224ms)"
+    paper_anchor: "MulPerm Bunz et al 2025/1850; CTHK 2025/1967"
+    mechanism: >
+      Replace LogUp-GKR fractional/grand-product machinery with a 2-sumcheck multiset
+      check (n*sqrt(log n) prover ops, 2 log n rounds, no auxiliary commitments,
+      soundness log^1.5(n)/|F|).
+    predicted_pct: "killed at plan"
+    net_predicted: "< 0"
+    status: killed_at_plan
+    iter: 7
+    kill_diagnostic: >
+      STRUCTURAL (plan agent a0cab3f2, full cost model in its report): (k1) MulPerm's
+      no-aux-commit property requires PREPROCESSED sigma; leanVM bus matching is
+      execution-dependent -> prover-provided variant must runtime-commit sigma index
+      oracles ~2n*mu cells = ~60x the entire current stacked polynomial (commit
+      +45-90s). (k2) 1967 needs sparsity-aware PCS (Dory-class); WHIR is not; PCS swap
+      out of scope + protected security config. (k3) counted multiplicities
+      (memory_acc/bytecode_acc/Column precompile buses) inexpressible as unit multisets
+      without committing expanded sorted access lists + count-consistency = LogUp again
+      (circular). (k4) even fantasy preprocessed-sigma version: core cost ~250ms central
+      vs 224ms removed -> wall ~0; hybrid keeps both verifiers in recursion.py ->
+      bytecode +1% gate unattainable. BANKED LAW: GKR transcript = 18-22 KiB (3.7-4.5%
+      of proof), 224ms of prover -- any bus-protocol replacement must beat a small
+      already-cheap target while paying HIGH-depth porting costs; deprioritize this
+      subsystem as a hypothesis source. h9-A deferred claims are re-anchorable
+      (retarget gkr_point name) but moot.
+
+  - id: h12
+    name: verified-residuals-composite
+    subsystem: witness-gen + sumcheck residuals (composite of individually-verified parts)
+    paper_anchor: >
+      Three banked components, each already measured or statically sized: (1) h11-T2a witness
+      MDS u128 kernel — VERIFIED -21.3ms, byte-identical, all gates passed (commit cfc10a7d
+      in history; killed only by h11's composite midpoint bar); (2) h11-T2b packed deferred
+      aux pass (modeled -15..20ms, never attempted, microbench-gated); (3) h10-c1
+      combine_statement region-pass fusion (statically sized -25..-60ms in-span, T0''-gated).
+      Precedent: C1 re-land inside h6' = the first keep.
+    mechanism: >
+      One composite hypothesis re-landing T2a (cherry-pick cfc10a7d), implementing T2b
+      behind its >= 2.5x microbench gate, and h10-c1 behind its >= 60ms-measured gate;
+      all transcript-free (byte-diff gates).
+    predicted_pct: -1.4
+    net_predicted: -1.4
+    plumbing:
+      - "cherry-pick cfc10a7d (tables/poseidon/mod.rs)"
+      - "tables/poseidon/{mod.rs,trace_gen.rs} (T2b)"
+      - "crates/whir/src/open.rs (c1 fusion)"
+    kill_condition: >
+      Component gates as originally specified (T2b microbench < 2.5x; c1 measured fusable
+      pool < 60ms; per-component byte-diff). Composite killed if surviving sum < 1.0%
+      modeled before the protocol-free implementation starts.
+    status: KEPT_iter6_C1_C2
+    iter: 5
+    outcome: >
+      KEEP -2.05% (p~0, t=-21.6; rounds -1.62/-2.15/-1.89/-2.56), recursion -1.24% faster,
+      proof +0.00% (byte-identical chain). Commits 6074a3f4 (C-1) + 22fd8b5e (C-2).
+      C-1: witness 175.3->152.3ms (-23ms). C-2: 153->124.3ms (-29ms); microbench pre-gate
+      passed; deferred_aux_fill_equals_scalar equivalence green. C-3 (h10-c1 fusion):
+      pre-gate >=60ms PASSED, implementation byte-identical and suite-green, but post-gate
+      FAILED (combine 155->139 = -16ms < 25ms) -> reverted uncommitted. h10-c1 family
+      CLOSED: ceiling is workload-shape (small fusable span), a variant implementation may
+      not be reattempted. Beat -1.4 model: aux-pass savings compound outside the witness
+      span. Gate record: report/iter6_h12_gates.md.
+
+  - id: h13
+    name: cairo-style-flag-packing
+    subsystem: commit (h9-B+ extension; contingent on h9 landing)
+    paper_anchor: >
+      Cairo 2021/1063 (instruction flags as one suffix-sum column: booleanity = deg-2
+      constraints on differences; bus carries the packed word) = p35; sound under p34
+      pattern (ii). leanVM exec retains 7-9 instruction columns post-h9-B; suffix-sum
+      packing could remove ~4-5 more committed columns + shrink the bytecode-bus width.
+    mechanism: >
+      Replace the post-h9 flag/mode columns with one suffix-sum column + virtual bit
+      decodes; re-encode bytecode tuple to carry the packed word; constraint-degree audit
+      (each flag reference gains +1 degree) against the max_full_degree=9 budget.
+    predicted_pct: -1.5
+    net_predicted: -1.5
+    plumbing:
+      - "crates/lean_vm/src/tables/execution/air.rs + isa/encoder.rs (post-h9 shapes)"
+      - "recursion placeholders (compilation.rs)"
+    kill_condition: >
+      KILL if the degree audit shows any consuming constraint exceeding degree 8 (would
+      raise global max_full_degree -> all-table eval-point inflation), OR if h9-B/C land
+      such that remaining flag columns < 3 (insufficient cells), OR recursion bytecode
+      growth > 5%.
+    status: killed_at_plan
+    iter: 5
+    iter_outcome: >
+      Iter 6 plan-stage kill (analysis): Cairo 2021/1063 §9.4's suffix-sum is a
+      CONSTRAINT-COUNT optimization costing +N cells, enabled by Cairo's 16-rows-per-step
+      layout; in leanVM's one-row layout, degree-1 bit extraction requires every suffix
+      cell committed -> savings exactly 0. k<7 variants reproduce the gate-killed T4/B
+      degree regime against padding-absorbed savings; the sound residue (packed bus word
+      + 7 booleanity constraints, MAX_BUS_WIDTH 14->8) sizes at -0.2% — 5x under the bar.
+      Flag-decoding ceiling now closed from both ends (merge: measured kill; suffix-sum:
+      analysis kill). Full plan: report/hypothesis_13/cairo-suffix-sum-packing.md.
+
   - id: h9
     name: small-value-column-packing
     subsystem: commit (hashed-byte volume — the kernel-parity-proven structural gap)
@@ -36,7 +192,7 @@ current_pool:
       granularity 2^20: < 4 col-blocks = < 1 perm/leaf), OR if logup data growth from range
       tuples pushes the GKR domain past the next power-of-2 boundary, OR if proof delta x3
       exceeds half the predicted wall win.
-    status: selected_iter5   # plan arrived (late, complete): literal packing PROVEN UNSOUND
+    status: KEPT_iter5_A_only   # plan arrived (late, complete): literal packing PROVEN UNSOUND
                           # (grounding/rank argument: k committed cols ground only k evals/point;
                           # range checks cannot fix it — recorded as inventory law). SOUND PIVOT:
                           # A address virtualization (-3 cols, free bounds from memory argument),
@@ -47,7 +203,15 @@ current_pool:
                           # Plan text: agent a9ca65bc result (to be saved to report/hypothesis_9/).
     iter: 4
 
-history:
+    iter_outcome: >
+      Iter 5 KEEP at -4.01% e2e (A-only; model -3.3 beaten), recursion -4.14% (faster),
+      proof -1.40% (smaller). Chain ff318173 (T1 virtualization) + b3956c93 (T2 deferred
+      claims; adversarial 95/95; proof 286 KiB @10sig) + 8616b024 (T3 recursion port,
+      +0.91%/-0.03% checkpoint) at HEAD 1775108b (T4 revert). B killed at gate
+      (padding-absorbed cols + unexplained Merkle +10% regression — unexplored, candidate
+      for iteration-6 Phase 0 attention); C mooted. Grounding/rank law (p34) and the
+      padding-absorption quantization lesson recorded. 3rd keep of the experiment.
+
   - id: h11
     name: vm-interpreter-acceleration
     subsystem: witness-gen (untouched 4.4% pool; trivially transcript-free)
@@ -248,7 +412,7 @@ history:
 
   - id: h6
     name: transcript-free-round-eval-reuse
-    subsystem: air-sumcheck (prover-only: round-poly evaluation algebra; NO protocol change)
+    subsystem: "air-sumcheck (prover-only: round-poly evaluation algebra; NO protocol change)"
     paper_anchor: >
       Gruen 2024/108 §4 (quotient-table reuse: cache C(r,X,x)/X(X-1) during round i, derive
       round i+1's v(0) by interpolation instead of fresh constraint evals — (d+1)->(d-1)
@@ -321,7 +485,7 @@ history:
       exec-class C2 (per-class span gate).
   - id: h3
     name: deferred-reduction-cubic-karatsuba
-    subsystem: field-backend (prover implementation: extension arithmetic kernels)
+    subsystem: "field-backend (prover implementation: extension arithmetic kernels)"
     paper_anchor: >
       Synthesis (p12+p13) anchored on: Pornin 2022/274 §3.2 (add/mul cost balance: mul-count
       optimality of the current 6-mul Karatsuba — the open lever is per-mul reduction cost,
@@ -402,7 +566,7 @@ history:
       inside a bigger same-subsystem hypothesis.
   - id: h1
     name: univariate-skip-batched-air
-    subsystem: air-sumcheck (verifier-depth: changes round structure + verifier + recursion circuit)
+    subsystem: "air-sumcheck (verifier-depth: changes round structure + verifier + recursion circuit)"
     paper_anchor: >
       Gruen 2024/108 §5-6 (univariate skip: first k rounds -> one univariate round over
       coset D, |D|=2^k, all constraint evals in base field; verifier interpolates degree
@@ -472,7 +636,7 @@ history:
 
   - id: h2
     name: fused-commit-pipeline
-    subsystem: commit (prover pipeline: DFT -> Merkle data path)
+    subsystem: "commit (prover pipeline: DFT -> Merkle data path)"
     paper_anchor: >
       Synthesis (p17+p18+p16): no single paper — composition of leanVM dft.rs 3-layer
       cache-blocking (dft.rs:217-319), merkle.rs first_digest_layer streaming

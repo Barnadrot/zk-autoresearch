@@ -1,0 +1,1 @@
+Reduce e2e prove time via protocol-level changes to the Poseidon AIR or sumcheck structure. Verifier changes > prover restructuring > prover implementation. Target: -15% wall-clock.

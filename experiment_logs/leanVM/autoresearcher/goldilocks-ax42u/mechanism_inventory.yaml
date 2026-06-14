@@ -1,88 +1,891 @@
-# Mechanism Inventory — append-only across iterations
+# Mechanism Inventory — goldilocks-ax42u — append-only across iterations
 #
-# Each paper decomposes into 2-4 typed primitives. The inventory is your
-# combination space: more primitives = more composition opportunities.
-#
-# The phase gate requires >= 15 primitives before implementation.
-# Papers in report/papers/iter_N/ satisfy the breadth gate.
-# This inventory satisfies the depth gate.
-#
-# Kill ladder (each rung ~10× cheaper than the next):
-#   paper math → primitive-op bench → in-pipeline compute-and-discard stub → implementation
-# Kill at the cheapest rung that produces a decisive answer.
+# Kill ladder: paper math → primitive-op bench → in-pipeline compute-and-discard stub → implementation
+# Phase gate: >= 15 primitives before implementation.
+# Papers read iter 1: report/papers/iter_1/*.pdf (10 of 12)
+# Papers read iter 2: report/papers/iter_2/*.pdf (10 fresh: Rothblum 1103 + LN 2016/504 deep;
+#   Spartan/HyperPlonk/Jolt/Scribe/BCF-1473/CircleSTARK/Twist-Shout/Binius section-skims)
+#   + deep re-read of 2024/1046 Alg 1-4 (killed naive BDT-Alg3/4 for GL cubic: ee/bb=6, be/bb=3
+#   -> Alg2 never wins past round 1; their own BabyBear-4 experiments lost at better ratios)
+# Papers read iter 3 (dir report/papers/iter_4/ per hook numbering): 12 fresh downloaded,
+#   Read-tool deep: ethSTARK 2021/582, tower-sumcheck 2025/594, LogUp 2022/1530, STIR
+#   2024/390, Ligerito 2025/1187, DeepFold 2024/1595, Blaze 2024/1609; title/skim: DEEP-FRI,
+#   ProximityGaps 2020/654, FS-of-FRI 2023/1071, Monolith 2023/1025, Spice 2018/907;
+#   + h6'-grounding re-reads: Gruen 2024/108 §4, BDDT 2025/1117 §6.2, Rothblum 2024/1103
+# Papers read iter 5 (report/papers/iter_5/): Lasso 2023/1216 (deep: small-value economics
+#   MSM-bound), Cairo 2021/1063 (instruction-word/flag suffix-sum packing -> p35),
+#   ring-switching 2024/504 (the packing escape needs subfield towers -> p34 boundary),
+#   Plookup 2020/315, BabySpartan 2023/1799 (avoid committing randomness), cq 2022/1763
+#   (pairing-bound; landscape); + FS-functional-commitments 2025/902, PLONK 2019/953,
+#   Garuda/Pari 2024/1245 title-skims
 
 primitives:
+  # ---- From Gruen 2024/108 (Some Improvements for the PIOP for ZeroCheck) ----
   - id: p1
-    name: short-descriptive-name
-    category: sumcheck       # sumcheck | pcs | lookup | memory | pipeline | other
-    source: "Author YYYY/NNNN §section"
+    name: eq-factor-extraction
+    category: sumcheck
+    source: "Gruen 2024/108 §3.2"
     mechanism: >
-      What it does in 1-3 sentences.
+      Send round polys v'(X) without the eq(alpha,·) factor; verifier reconstructs via
+      (1-a_i)v'(0)+a_i v'(1)=v_i. One fewer eval point per round, smaller delta table.
     cost_model: >
-      What it saves, what it costs. Be quantitative.
-    assumptions:
-      pcs: any               # any | FRI | WHIR | KZG | MSM-class
-      field: any             # any | 31-bit | 64-bit | prime | binary
-      arch: any              # any | avx512 | neon | specific requirement
-      requires: ""           # other prerequisites (optional)
-    soundness_cost: "added error term or 'none'"
-    composable_with: [p2]    # list of primitive ids that compose with this
-    status: available        # available | used | closed
+      Saves ~1 constraint-eval point per round (deg d+1 -> d) plus N eq-table update muls.
+      For leanVM AIR sumcheck (d=9): ~10% of round-eval work if absent.
+    assumptions: { pcs: any, field: any, arch: any, requires: "verify leanVM does not already do this (air_sumcheck.rs permuted_alphas suggests partial)" }
+    soundness_cost: none
+    composable_with: [p2, p3, p8]
+    status: available
     iter_added: 1
 
   - id: p2
-    name: another-primitive
-    category: pcs
-    source: "Author YYYY/NNNN §section"
+    name: quotient-table-round-reuse
+    category: sumcheck
+    source: "Gruen 2024/108 §4"
     mechanism: >
-      Description.
+      Cache Q_i(r,X,x)=C(r,X,x)/X(X-1) tables during round i evals; round i+1's v(0)
+      comes from interpolating cached Q instead of fresh constraint evals.
     cost_model: >
-      Quantitative cost/benefit.
-    assumptions:
-      pcs: any
-      field: any
-      arch: any
+      Reduces constraint evals from (d+1)2^{n-1}(C_F+C_G) to (d-1)2^{n-1}(C_F+C_G);
+      ~20% fewer C evals at d=9. Extra memory for Q tables (deg d-2 per point).
+    assumptions: { pcs: any, field: any, arch: any }
     soundness_cost: none
-    composable_with: [p1]
+    composable_with: [p1, p3]
+    status: available
+    iter_added: 1
+
+  - id: p3
+    name: univariate-skip
+    category: sumcheck
+    source: "Gruen 2024/108 §5-6"
+    mechanism: >
+      Replace first k sumcheck rounds with ONE univariate round over multiplicative coset D,
+      |D|=2^k. All round-0 constraint evals stay in BASE field: cost 2^{n-k}(d-1)(2^k-1)C_F
+      + 2^{n-k}(d-1)C_G tail, vs 2^{n-1}d C_F + ~2^{n-1}(d)C_G standard.
+    cost_model: >
+      For leanVM batched AIR (n=20, d=9, C_G≈4-6 C_F packed): kills nearly all
+      EF constraint evals in rounds 1..k. Predicted -50..60% of AIR sumcheck phase (767ms→~350ms).
+      Cost: proof +((d-1)(2^k-1)-kd) EF coeffs (~+1-3 KiB), verifier interpolates degree d(2^k-1)
+      poly (barycentric, precomputable weights), recursion bytecode grows.
+    assumptions: { pcs: any, field: "FFT-friendly (Goldilocks 2-adicity 32 OK)", arch: any, requires: "zkdsl verifier interpolation; multi-height table batching compat" }
+    soundness_cost: "RS-style degree bound on first variable; round-by-round soundness preserved (Gruen A.4)"
+    composable_with: [p1, p2, p5, p6, p20]
     status: closed
-    closed_reason: "what killed it and the evidence"
-    reopens_on: "conditions under which this primitive becomes viable again (different field, arch, workload scale)"
-    latent_parts:            # subcomponents that survived the kill — composition seeds
-      - "part A: still valid because..."
-      - "part B: unexplored synthesis with..."
+    closed_reason: >
+      Iter 1 gate discard (eval_paired 671e6e73 vs 212b5510): wall -5.29% (p~0) and
+      recursion -2.22% PASSED, but transcript floor (+1.6% proof: 9(2^k-1)+1 coefficient
+      message + ghat per-column duplication from the p20 conversion) costs 4.8 net points
+      under the 3x proof-size penalty -> net 0.49 < 1.0. Structural: the k=5 replaced
+      window (624.5ms) caps wall savings ~5.3-6%, while minimum transcript ~+1.5% needs
+      >=5.65% to clear. k=4 (53ms saved) and k=6 (transcript doubles) strictly worse.
+      Closed by gate economics, NOT implementation (implementation exceeded predictions).
+    reopens_on: >
+      PROOF_SIZE_PENALTY_MULTIPLIER < 2, or gate workload with proofs >= 2 MB (delta
+      becomes <0.5%), or a skip variant with o(2^k) transcript (e.g. committed skip
+      message opened via the existing WHIR instance), or net-threshold below 0.5%.
+    latent_parts:
+      - "T1 kernels (lagrange_evals_on_subgroup, block_ifft/coset_evals, coset_sum, horner) — reusable for any coset-structured protocol; reverted but in git history b5ab0b63"
+      - "T0 per-round AIR timing data (report/iter1_T0_measurements.md): rounds 0-4 = 624.5ms, poseidon EF-round = 225ms at global round 3 — targets for transcript-free attacks"
+      - "T3' engine cost model validated within 5%: on-D pass + off-coset LDE throughput numbers (report/iter1_T3_checkpoint.md)"
+      - "Adversarial-prover test harness pattern (skip_adversarial.rs in history d82a436d)" 
+    caveat_iter1: >
+      PROVEN BY CODE (T1 property tests, commit b5ab0b63): over a multilinear PCS the skip's
+      two desiderata are incompatible — the expand_from_univariate curve (which preserves
+      tensor claims downstream) does NOT interpolate raw block values on D, so the coset-sum
+      check rejects honest provers; the values-on-D interpolant satisfies the coset-sum but
+      yields Lagrange-basis (non-tensor) claims the PCS cannot consume. This is the
+      "commitment scheme modification" objection in BDT 2024/1046 §1, made precise.
+      Resolution: compose with p20 (terminal basis-conversion sumcheck).
     iter_added: 1
 
-# Compositions: novel constructs from combining primitives.
-# At least one pool entry per iteration must be a composition.
-
-compositions:
-  - id: c1
-    name: descriptive-composition-name
-    composed_of: [p1, p2]
-    novel_claim: >
-      What this construct does that NEITHER source paper describes
-      individually. One sentence.
+  # ---- From Bagad-Domb-Thaler 2024/1046 (Sum-Check over Small Characteristic) ----
+  - id: p4
+    name: delayed-extension-switchover
+    category: sumcheck
+    source: "BDT 2024/1046 Alg 3-4"
+    mechanism: >
+      First i rounds avoid ALL ll (ext-by-ext) muls by expanding round messages as inner products
+      of small-value (base) coefficient vectors against challenge tensors; "switch over" to
+      linear-time prover after round i via one O(n) base-by-ext binding pass.
+    cost_model: >
+      Alg4: O((d+1)^i n) base muls replaces O(n) ext muls in rounds 1..i. For GL cubic
+      (ll=6 base muls) optimal i ~ 2-3; saves ~40-60% of early-round mul cost where
+      multilinears are base-valued (WHIR product sumcheck, GKR layer inputs).
+    assumptions: { pcs: any, field: "ext of small base", arch: any }
+    soundness_cost: none
+    composable_with: [p5, p6, p3]
+    status: available
     iter_added: 1
 
-# Pricing rules — apply to every composition before pool admission.
-# Measure these on YOUR hardware during Phase 0. Values below are
-# placeholders; replace with measured numbers.
+  - id: p5
+    name: eq-split-iterated-sum
+    category: sumcheck
+    source: "Bagad-Dao-Domb-Thaler 2025/1117 §5; Dao-Thaler 2024/1210"
+    mechanism: >
+      Decompose eq(w,x)=eq(w_L,x_L)·eq(w_R,x_R); precompute two 2^{l/2} tables instead of one
+      2^l table; aggregate terms sharing eq(w_L,x_L) before multiplying (x1-prefix aggregation).
+    cost_model: >
+      Saves ~2N ext muls standalone (~25% of Spartan round-1) or ~N/2 on top of Gruen (~10%).
+      Memory 2sqrt(N) vs N. leanVM SplitEq exists — verify whether DT24 aggregation is present.
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p3, p4, p6]
+    status: available
+    iter_added: 1
 
-pricing_rules:
-  conversion_factors:
-    air_sumcheck: 1.0        # raw compute savings → wall-clock (measure)
-    whir_gkr: 0.4            # memory-bound region, lower conversion (measure)
-  arch_facts:
-    ef_square_vs_mul: 1.75   # packed EF square cost relative to mul (measure)
-    ef_vs_base_mul: "5-15x"  # depends on packing width (measure)
-  boundaries:
-    stacked_cells: null       # total cells vs next power-of-2 (fill from Phase 0)
-    nu: null                  # current ν value (fill from Phase 0)
-    nu_boundary: null         # 2^(ν-1) — crossing halves commit cost
-    logup_data: null          # total logup tuples (fill from Phase 0)
-    recursion_bytecode: null  # instructions vs log_size headroom (fill from Phase 0)
-  gate:
-    keep_threshold_pct: -1.0
-    proof_size_penalty: "3× size-increase-%"
-    recursion_ceiling_pct: 3.0
-    transcript_rule: "deltas multiply per WHIR instance in bundle"
+  - id: p6
+    name: eval-at-infinity
+    category: sumcheck
+    source: "BDDT 2025/1117 §6.2"
+    mechanism: >
+      Use the point-at-infinity (leading coefficient) as one round-poly evaluation: products
+      of (p_hi - p_lo) terms only; lower-degree terms vanish, halving work for that point.
+    cost_model: >
+      One eval point per round becomes ~d-fold cheaper (drop additive terms). ~5-10% of
+      product-sumcheck round cost.
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p4, p5]
+    status: available
+    iter_added: 1
+
+  # ---- From Belling-Soleimanian-Bégassat 2022/1072 + Libra 2019/317 + Thaler 2013/351 ----
+  - id: p7
+    name: gkr-hash-delegation
+    category: pcs
+    source: "BSB 2022/1072 §3-5; Libra 2019/317 §3"
+    mechanism: >
+      Prove all N Poseidon permutations via data-parallel GKR with degree-7 custom gates
+      (one layer per round); commit only I/O. Removes 86 round-data columns (22.6M cells)
+      from the stacked PCS; FS challenges derived from existing commitment (no statement-hash
+      problem since I/O is already committed/bus-bound).
+    cost_model: >
+      Commit: -22.6M cells -> effective_n_cols 58->37 -> Merkle -406ms, DFT -116ms; AIR max
+      degree 9->7 and Poseidon8::eval (~500ms) removed. GKR prover adds ~+400-900ms.
+      TRANSCRIPT: 30 sequential sbox layers x ~18 rounds x 7-9 EF coeffs ~ 90-120 KiB
+      added proof — exceeds +20% proof ceiling (~75 KiB) with 3x penalty.
+    assumptions: { pcs: WHIR, field: any, arch: any }
+    soundness_cost: "GKR round-by-round soundness fine; none structural"
+    composable_with: [p3, p4]
+    status: closed
+    closed_reason: >
+      Proof-size gate: minimum transcript for 30 sequential nonlinear layers (depth cannot be
+      compressed below number of sequential sboxes; degree-49 two-round gates make transcript worse)
+      is ~90-120 KiB > 75 KiB ceiling; net = throughput(+~15%) - 3x proof(+24%) << 0.
+      Architectural, not implementation — hypothesis family closed.
+    reopens_on: >
+      Proof-size ceiling relaxed, OR a GKR variant with o(depth) transcript (e.g. folded
+      layer batching with committed mid-states — partially defeats purpose), OR recursion
+      absorbs the aggregate so only recursive proof size matters.
+    latent_parts:
+      - "effective_n_cols commit scaling: committed-cell reduction pays linearly even without nu-boundary crossing (commit.rs:73-75)"
+      - "eq-weighted layer sumcheck = same machinery as existing air_sumcheck (reuse)"
+      - "AIR degree-9->7 drop benefits ALL tables' round-eval points"
+    iter_added: 1
+
+  - id: p8
+    name: data-parallel-wiring-amortization
+    category: sumcheck
+    source: "Thaler 2013/351; Libra 2019/317 Thm 1"
+    mechanism: >
+      For C identical sub-circuits, GKR layer sumchecks treat (copy-index, wire-index) as
+      separate variable blocks; wiring predicates uniform in copy-index -> prover linear,
+      verifier predicate eval O(polylog).
+    cost_model: >
+      Underlies any per-layer delegation; prover O(gates/layer) with constant ~10-20 base muls.
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p7]
+    status: available
+    iter_added: 1
+
+  # ---- From WHIR 2024/1586 ----
+  - id: p9
+    name: constrained-RS-weight-batching
+    category: pcs
+    source: "WHIR 2024/1586 §4.1, §5.2"
+    mechanism: >
+      CRS codes carry sumcheck-like weight constraints sum_b w(f(b),b)=sigma; multiple
+      evaluation claims batch into one weight polynomial before folding rounds.
+    cost_model: >
+      Already implemented (combine_statement). Relevant: each extra committed statement adds
+      one eq-accumulation pass (add_new_base_equality 65ms r1) — statement-count reduction
+      is a cost lever.
+    assumptions: { pcs: WHIR, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p3, p5]
+    status: available
+    iter_added: 1
+
+  # ---- From EcGFp5 2022/274 ----
+  - id: p10
+    name: frobenius-norm-projection
+    category: other
+    source: "Pornin 2022/274 §3.2"
+    mechanism: >
+      Extension inversion/Legendre via Itoh-Tsujii norm projection: x^{r-1} by cheap Frobenius
+      (coefficient-wise mul by precomputed constants), reducing ext-inversion to base-inversion
+      + few ext muls.
+    cost_model: >
+      Ext inversion ~ 2.6x ext mul. leanVM cubic uses adjugate (comparable); relevant if
+      batch-inversions appear in any hot path (they don't currently — WHIR uses no divisions).
+    assumptions: { pcs: any, field: "p = 1 mod k helps", arch: any }
+    soundness_cost: none
+    composable_with: []
+    status: available
+    iter_added: 1
+
+  - id: p11
+    name: schoolbook-vs-karatsuba-add-cost-tradeoff
+    category: other
+    source: "Pornin 2022/274 §3.2; BDT 2024/1046 fn7"
+    mechanism: >
+      When adds are not free relative to muls, schoolbook k^2 muls can beat Karatsuba/Toom
+      (fewer adds, no small-constant divisions). Toom-3 for cubic = 5 muls + interpolation
+      divisions by {2,3,6} — constant divisions are full muls in GL, netting >=7 mul-equivalents.
+    cost_model: >
+      Confirms leanVM's 6-mul Karatsuba cubic is near-optimal for mul COUNT; the open lever is
+      not fewer muls but cheaper reduction per mul (see p12).
+    assumptions: { pcs: any, field: 64-bit, arch: any }
+    soundness_cost: none
+    composable_with: [p12]
+    status: available
+    iter_added: 1
+
+  # ---- Synthesized from Goldilocks reduction structure + Karatsuba (composition, not retrieval) ----
+  - id: p12
+    name: deferred-reduction-karatsuba-cubic
+    category: other
+    source: "synthesis: GL epsilon-reduction (2^64=2^32-1, 2^96=-1 mod p) x Karatsuba combination; cf. polygon-goldilocks avx512 MDS accumulation"
+    mechanism: >
+      In cubic mul c = a*b: compute the 6 Karatsuba products as unreduced 128-bit (hi,lo)
+      pairs; combine c0=m0+m5-m1-m2, c1=m3+m5-m0-2m1, c2=m4+m1-m0 in 128+eps-bit accumulator
+      domain (borrow-free via +2p offsets); apply reduce128 ONCE per output coefficient
+      (3 reductions instead of 6) and drop intermediate add-canonicalization entirely.
+    cost_model: >
+      Scalar: reduce128 ~ 5-6 ops of ~18-op mul -> saves ~3x6 ops ~ 20-25% of ext-mul.
+      AVX-512: mul64_64 gives (hi,lo) zmm pairs natively; 128-bit lane adds = vpaddq + carry
+      via vpcmpltuq (2 ops); net ~20-30% of packed ext-mul. cubic_mul = 17% of cycles ->
+      predicted -3.5..-5% wall. Risk: extra live zmm pairs raise register pressure.
+    assumptions: { pcs: any, field: 64-bit, arch: "avx512 preferred, scalar too" }
+    soundness_cost: none
+    composable_with: [p4, p5, p11, p13]
+    status: closed
+    closed_reason: >
+      Iter 2 measured: (a) standalone packed ext-mul rewrite = +5..13% MORE instructions
+      (AVX-512 lacks ADC; plan §1.6 op-count, pre-implementation); (b) ext-ext quadratic
+      accumulation KILLED at every production-live site (T5': GKR -2.4% / WHIR +5.5% ->
+      combined +1.7% regression — accumulator-state traffic (4 zmm x 3 coeffs) exceeds the
+      9.6% op saving at real sizes). Only the base-x-ext dot-product shape survived (see
+      p13 latent_parts).
+    reopens_on: >
+      An ISA with 64-bit add-with-carry in SIMD (AVX-512 ADX-equivalent, or AMX-class
+      accumulators), or kernels with >= 3x more terms per accumulator per byte streamed.
+    latent_parts:
+      - "T1-T3 lazy-accumulator trait vocabulary (commits 9d01759b/6789552e/caf1109c in history): correct, tested, zero-spill — recoverable for any future amortized-reduction kernel"
+      - "T4 vectorized base-x-ext round-1 kernel (5ddf2fcc): VERIFIED -8.6% span / -0.85% e2e, proofs byte-identical — re-land candidate inside a properly-sized hypothesis"
+    iter_added: 1
+
+  - id: p13
+    name: lazy-canonicalization-accumulators
+    category: other
+    source: "synthesis: redundant-form GL (goldilocks.rs non-canonical u64) x sumcheck accumulation patterns"
+    mechanism: >
+      Sumcheck inner loops accumulate sums of products; keep accumulators in redundant
+      (hi,lo) or u128 form across the loop body, reduce once per output instead of per
+      operation; valid since term counts <= 2^k keep accumulators < 2^{128-eps}.
+    cost_model: >
+      Removes per-add overflow-check (vpcmpltuq+mask-sub ~ 3 ops per add) in dot-product
+      shaped kernels (eval_eq, fold, MDS-like sums). Est -1..-3% wall depending on coverage.
+    assumptions: { pcs: any, field: 64-bit, arch: any }
+    soundness_cost: none
+    composable_with: [p12]
+    status: available
+    iter_added: 1
+
+  # ---- From Poseidon2 2023/323 (hash migration banned; facts inventoried) ----
+  - id: p14
+    name: cheap-internal-linear-layers
+    category: other
+    source: "Grassi-Khovratovich-Schofnegger 2023/323 §5"
+    mechanism: >
+      Partial-round linear layers can be diag(+1)-structured (t muls vs t^2) without losing
+      security, cutting linear-layer cost up to 90%.
+    cost_model: >
+      Would cut GL Poseidon1-8 MDS cost in 22 partial rounds substantially.
+    assumptions: { pcs: any, field: any, arch: any, requires: "hash function change" }
+    soundness_cost: "new instance requires fresh cryptanalysis"
+    composable_with: []
+    status: closed
+    closed_reason: "Hard constraint 3: no migration from Poseidon1; poseidon1.rs protected."
+    reopens_on: "upstream leanVM adopts Poseidon2-Goldilocks"
+    latent_parts:
+      - "circulant-MDS strength-reduction to shift/adds already exploited in poseidon1.rs scalar path"
+    iter_added: 1
+
+  # ---- From Wei et al 2025/719 (Packed Sumcheck) ----
+  - id: p15
+    name: packed-sumcheck-challenge-repetition
+    category: sumcheck
+    source: "Wei et al 2025/719 §1.1"
+    mechanism: >
+      Keep ALL sumcheck computation in base field via forward-difference folding + k-fold
+      challenge repetition that preserves round-by-round soundness (unlike naive repetition).
+    cost_model: >
+      O((kd^2+k^2d)N) base muls vs O(kd^2 N) ext ops. For GL (ext mul only 6x base, k=2-3 needed
+      for 128-bit from 64-bit base) the arithmetic win is modest (<=1.5-2x on sumcheck portions)
+      while verifier/recursion changes are radical (k-fold transcript).
+    assumptions: { pcs: any, field: "small base", arch: any, requires: "complete verifier + recursion-circuit rewrite; new soundness analysis vs SECURITY_BITS=128 (protected)" }
+    soundness_cost: "repetition-based round-by-round soundness; must re-derive against Johnson-bound regime"
+    composable_with: [p4]
+    status: available
+    iter_added: 1
+
+  # ---- Synthesized from commit-path geometry (Phase 0 profiling + code) ----
+  - id: p16
+    name: effective-column-commit-scaling
+    category: pcs
+    source: "synthesis: leanVM commit.rs:71-86 + stacked_pcs.rs layout (Phase 0 finding)"
+    mechanism: >
+      Stacked vector is column-blocked (64 blocks of 2^{nu-6}); padding lands in trailing
+      blocks; DFT runs on dft_n_cols (packing-aligned) and leaf sponge skips zero-suffix
+      rate-chunks via precomputed states. Commit cost scales with ACTUAL cells in 2^{nu-6}
+      granularity — cell savings pay linearly WITHOUT crossing the nu power-of-2 boundary.
+    cost_model: >
+      Current: 58/64 effective cols -> 15 perms/leaf. Each 4 column-blocks removed = -1
+      perm/leaf (-87ms Merkle) + DFT share. Quantifies ANY future cell-reduction primitive.
+    assumptions: { pcs: WHIR, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p7, p17]
+    status: available
+    iter_added: 1
+
+  - id: p17
+    name: dft-leaf-hash-fusion
+    category: pipeline
+    source: "synthesis: dft.rs 3-layer cache blocking x merkle.rs first_digest_layer streaming; motivated by 41% parallel IPC collapse (Phase 0)"
+    mechanism: >
+      Fuse the last DFT layer-group with Merkle leaf absorption: produce codeword tiles
+      L2-resident and absorb them into the 8-wide sponge immediately, never materializing
+      the full 1 GiB codeword matrix (keep only leaf rows needed for later openings — or
+      recompute opened rows from the retained pre-fold polynomial at query time).
+    cost_model: >
+      Saves ~1 GiB write + 1 GiB stream-read per commit (~2 GiB of ~60-70 GB/s DDR5 budget
+      ~ 30-60ms direct) plus parallel-IPC improvement on the fused phase; RSS -1 GiB.
+      Risk: opening path needs leaf rows — must retain leaf matrix OR recompute on open
+      (queries are few: ~100-200 rows -> recompute cost trivial).
+    assumptions: { pcs: WHIR, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p16, p18]
+    status: available
+    iter_added: 1
+
+  - id: p18
+    name: transposed-absorb-tiling
+    category: pipeline
+    source: "synthesis: merkle.rs vertically_packed_row_rtl strided gathers x cache-blocked transpose"
+    mechanism: >
+      Leaf hashing reads 8 rows x rate-4 chunks strided by 512B (vertical packing) — a
+      transpose-gather per absorb. Pre-transpose tiles (8x64) in L1 via vpunpck/vpermt2q
+      once per tile, then absorb from contiguous buffers.
+    cost_model: >
+      If gather/transpose is >=15% of leaf-hash time (verify via perf: vmovdqu64-from-matrix
+      vs arithmetic ratio), tiling recovers most of it: est -100..-200ms of the 1300ms
+      Merkle phase. Must measure before implementing.
+    assumptions: { pcs: any, field: 64-bit, arch: avx512 }
+    soundness_cost: none
+    composable_with: [p17]
+    status: available
+    iter_added: 1
+
+  - id: p20
+    name: lagrange-to-tensor-conversion-sumcheck
+    category: sumcheck
+    source: "synthesis (iter1 T1 discovery): values-on-D skip x weighted-sumcheck basis change; resolves BDT 2024/1046's PCS objection to Gruen's skip"
+    mechanism: >
+      After a values-on-D univariate skip (block folded with Lagrange weights L_i(r0)), the
+      final per-table claims are Lagrange-weighted block combinations — non-tensor. Convert:
+      prover recomputes g_c(i) = col_c-MLE(i, x_point) for i in {0,1}^b (one eq-weighted
+      pass over original columns), batches columns by RLC gamma, then a b-round weighted
+      sumcheck sum_i w(i) g(i) (w = MLE of the Lagrange-weight vector, verifier evaluates w
+      from r0 directly) lands a TENSOR point s; per-column evals at (s, x_point) feed the
+      PCS unchanged in format.
+    cost_model: >
+      Prover: ~2^{n_t} muls per column extra (one fold-pass per table, est 30-80ms total at
+      benchmark sizes) + negligible 2^b-size sumcheck. Verifier: +b rounds (deg 2) + 2^b-op
+      w-MLE eval. Proof: +b x 3 EF coeffs + per-column eval vector (already sent today).
+      Soundness: +b·3/|EF| + RLC term — negligible at |EF| = 2^192.
+    assumptions: { pcs: "multilinear (WHIR/BaseFold class)", field: any, arch: any, requires: "values-on-D skip round (p3)" }
+    soundness_cost: "b·(deg+1)/|EF| + 1/|EF| RLC batching term"
+    composable_with: [p3]
+    status: closed
+    closed_reason: >
+      Works as designed (implemented + gate-tested iter 1, commits d82a436d/3954f049,
+      reverted f8a4880d) but its ghat per-column duplication (+133 EF here) is half the
+      transcript mass that killed p3's family. Closed jointly with p3.
+    reopens_on: "any p3 reopening condition; or a PCS accepting Lagrange-basis claims natively"
+    latent_parts:
+      - "the weighted-block-sumcheck prover/verifier pattern (prove_weighted_block_sumcheck) — generic, transcript-cheap for small b"
+      - "PROVEN: Lagrange-fold + terminal conversion preserves PCS statement format (T4' e2e + adversarial tests)" 
+    iter_added: 1
+
+
+  # ---- ITER 2 additions (papers in report/papers/iter_2/) ----
+  - id: p21
+    name: gray-code-eq-streaming
+    category: sumcheck
+    source: "Rothblum 2024/1103 Prop 1"
+    mechanism: >
+      Generate the eq(z,b) sequence in Gray-code order: eq(z, b xor e_i) = ratio_i * eq(z,b)
+      with 2m precomputed ratios -> 2^m muls, O(m) space, NO eq table. Any eq-weighted
+      streaming pass (MLE eval, g-pass-like folds, on-D accumulations) drops the 2^m-element
+      table and its memory traffic entirely. Parallelizable by k-way index partition (Rem 3).
+    cost_model: >
+      Same mul count as VSBW memoization but zero table writes/reads: saves 2^m EF writes +
+      2^m reads per pass — in leanVM's bandwidth-bound parallel regime (41% IPC collapse)
+      table traffic is the dominant eq cost for m=20-26 passes. Sequential dependency chain
+      per partition limits SIMD within a lane; partition 8-wide for packing.
+    assumptions: { pcs: any, field: any, arch: any, requires: "z coords not in {0,1} (guarded); inversions precomputed" }
+    soundness_cost: none
+    composable_with: [p5, p17]
+    status: available
+    iter_added: 2
+
+  - id: p22
+    name: lazy-butterfly-reduction
+    category: pipeline
+    source: "Longa-Naehrig 2016/504 §3 (K-RED); Harvey-style redundant butterflies"
+    mechanism: >
+      Let butterfly coefficients live in a redundant range (no canonicalization after adds);
+      reduce only after twiddle multiplications. For Goldilocks: U+V / U-V in the DFT layers
+      skip the overflow-check-and-correct (vpcmpltuq+masked-sub) entirely with a width budget
+      tracked across the 3-layer cache-blocked groups (reduce once per group exit).
+    cost_model: >
+      Removes ~3 ops per butterfly add of ~12-op butterflies in dft_layer_par_triple;
+      composes with radix-4 (p12-style amortized reduce after twiddle muls). Target h4.
+    assumptions: { pcs: any, field: 64-bit, arch: any }
+    soundness_cost: none
+    composable_with: [p12, p23, p24]
+    status: available
+    iter_added: 2
+
+  - id: p23
+    name: ct-gs-bitrev-elimination
+    category: pipeline
+    source: "Longa-Naehrig 2016/504 §2 (Poppelmann et al composition)"
+    mechanism: >
+      Pair decimation-in-time CT forward (standard->bitrev) with Gentleman-Sande inverse
+      (bitrev->standard) and absorb psi/twiddle powers into the tables -> no explicit
+      bit-reversal or separate twiddle-scaling passes.
+    cost_model: >
+      leanVM dft.rs already avoids evals->coeffs conversion; check whether its
+      reorder_and_dft does an explicit reorder pass over 1 GiB (prepare_evals_for_fft
+      74.5ms!) that CT/GS pairing could absorb. If yes: -50-70ms of commit.
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p22, p24]
+    status: available
+    iter_added: 2
+
+  - id: p24
+    name: shoup-precomputed-quotient-modmul
+    category: pipeline
+    source: "Longa-Naehrig 2016/504 §2 (Shoup butterfly); Harvey"
+    mechanism: >
+      Per fixed twiddle w, precompute w2 = floor(2^64 w / p); then w*x mod p = lo(w*x) -
+      lo(hi(w2 * x) * p) + conditional correction: 2 muls + 1 sub, no 128-bit epsilon-reduce
+      chain. Twiddles are fixed -> table of (w, w2) pairs.
+    cost_model: >
+      Goldilocks mul64_64+reduce128 ~ 4 vpmuludq + ~8 ops; Shoup ~ 8 vpmuludq total on
+      AVX-512 — roughly break-even on port pressure; WIN is the shorter dependency chain.
+      Needs a kernel bench to decide. Doubles twiddle table (cache cost).
+    assumptions: { pcs: any, field: 64-bit, arch: avx512 }
+    soundness_cost: none
+    composable_with: [p22, p23]
+    status: available
+    iter_added: 2
+
+  - id: p25
+    name: sumcheck-batch-opening
+    category: pcs
+    source: "HyperPlonk 2022/1355 §3.8"
+    mechanism: >
+      Batch many multilinear opening claims at different points into ONE sumcheck +
+      single-point opening via an eq-weighted RLC sumcheck.
+    cost_model: >
+      Deep-read (Alg 4 + §3.8.1): k claims -> ONE deg-2 sumcheck over mu+log k vars,
+      prover O(k 2^mu) (optimal); single-poly multi-point special case O(2^mu) via sparse
+      eq-star with <= k nonzero b rows. leanVM relevance: would replace k
+      add_new_base_equality passes (~65ms ea at round 1) with one pass + a (mu+log k)-round
+      sumcheck — but that ADDS ~2KB transcript (h1-lesson: x3 penalty = needs > 0.7% wall
+      to break even; passes save ~0.3-0.5%). Net-negative at current statement count. LATENT.
+    assumptions: { pcs: multilinear, field: any, arch: any }
+    soundness_cost: "RLC term"
+    composable_with: [p9]
+    status: available
+    iter_added: 2
+
+  - id: p26
+    name: read-write-streaming-prover
+    category: pipeline
+    source: "Scribe 2024/1970 §2.5; BCF 2025/1473 §4; cf. BDDT 2025/1117 streaming"
+    mechanism: >
+      Sumcheck/PIOP provers restructured as read-write streams over disk/cold storage with
+      O(sqrt N) or polylog working set; Lagrange-basis streaming generation (BCF §3.1).
+    cost_model: >
+      leanVM peak RSS 13.4 GiB on 64 GiB box — not memory-starved, so full streaming buys
+      nothing now; LATENT: the per-pass restructuring ideas (compute in eviction-ordered
+      chunks) overlap p17/p21. Keep for if workloads grow past RAM.
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p17, p21]
+    status: available
+    iter_added: 2
+
+
+  - id: p27
+    name: logstar-round-tower-subgroup-sumcheck
+    category: sumcheck
+    source: "Baweja-Chiesa-Fedele 2025/1473 §2.6, Thm 3/4"
+    mechanism: >
+      Product-sumcheck PIOP with log*(n) rounds: variables grouped over multiplicative
+      subgroups of tower-doubling sizes (2, 4, 16, 256, ...); round j sends a degree
+      2|G_j|-2 univariate ORACLE; verifier check is itself a univariate sumcheck over G_j
+      (Aurora-style). Prover O(N) per round via FFTs, O(sqrt N) space (folded variant
+      linear-time with Lagrange-folded mixed polynomials).
+    cost_model: >
+      Verifier/transcript economics: round oracles up to degree 2*sqrt(N) must be COMMITTED
+      and queried -> proof mass scales like extra WHIR instances. Same gate-economics class
+      that killed h1/p3 (3x proof penalty): closed-by-analogy for this experiment's gate.
+      LATENT: the tower-subgroup variable grouping and Lagrange-folded mixed polynomials
+      are protocol patterns reusable if the penalty regime changes.
+    assumptions: { pcs: "univariate-oracle-capable", field: FFT-friendly, arch: any }
+    soundness_cost: "per-round univariate sumcheck soundness; standard"
+    composable_with: [p3, p20]
+    status: closed
+    closed_reason: "transcript-mass economics under the 3x proof penalty (h1 precedent, computed not measured)"
+    reopens_on: "same as p3 (penalty multiplier < 2 or proofs >= 2MB)"
+    iter_added: 2
+
+
+  # ---- ITER 3 additions (papers in report/papers/iter_4/ — hook-numbered dir) ----
+  - id: p28
+    name: rate-improving-proximity-recursion
+    category: pcs
+    source: "STIR 2024/390 Thm 1; (WHIR 2024/1586 supersedes for verifier time)"
+    mechanism: >
+      Recursive RS proximity testing that SHRINKS the rate each round -> query complexity
+      decreases per iteration; argument 1.25-2.46x smaller than FRI at comparable prover.
+    cost_model: >
+      Prover comparable-or-slower than FRI (their Table 1: 14s vs 11s @ 2^22). Our gate
+      rewards wall-clock only (proof-size decreases score 0) -> not a candidate; landscape
+      fact for parameter reasoning. leanVM already runs WHIR (STIR's successor).
+    assumptions: { pcs: RS-FRI-class, field: FFT-friendly, arch: any }
+    soundness_cost: "round-by-round, analyzed"
+    composable_with: []
+    status: available
+    iter_added: 3
+
+  - id: p29
+    name: addition-only-code-commit
+    category: pcs
+    source: "Blaze 2024/1609 (RAA codes + code-switching); Brakedown 2021/1043; Ligerito 2025/1187 (code-flexible)"
+    mechanism: >
+      Replace RS/DFT encoding with linear-time codes: RAA commit = 8n field ADDITIONS +
+      one Merkle tree (no DFT); code-switching composes any linear code with an existing
+      MLPCS IOPP for verification. Ligerito: any code with efficiently-evaluable generator
+      rows, proofs ~log^2 N.
+    cost_model: >
+      Would eliminate the entire DFT phase (310ms) and change commit economics radically —
+      BUT: replaces WHIR wholesale (protected params, full verifier + recursion rewrite,
+      proof-size regime change, binary-field orientation for Blaze). Out of scope under
+      current hard constraints; THE reference point if a PCS-replacement experiment is
+      ever sanctioned.
+    assumptions: { pcs: "replacement", field: "binary (Blaze) / flexible (Ligerito)", arch: any }
+    soundness_cost: "RAA distance analysis (Blaze §9); list-decoding conjectures vary"
+    composable_with: [p16]
+    status: closed
+    closed_reason: "hard constraints: WHIR params/verifier protected; full-stack replacement out of experiment scope"
+    reopens_on: "operator sanctions a PCS-replacement experiment"
+    iter_added: 3
+
+  - id: p30
+    name: list-decoding-query-reduction
+    category: pcs
+    source: "DeepFold 2024/1595 (DEEP-FRI 2019/336 lineage); BaseFold comparison"
+    mechanism: >
+      DEEP method (out-of-domain sampling) lets FRI-based multilinear PCS run at the
+      list-decoding radius: ~34 queries vs >100 at unique-decoding for rate 1/8 -> ~3x
+      smaller proofs at same prover time.
+    cost_model: >
+      leanVM/WHIR already operates in the Johnson-bound regime (SECURITY_BITS=128 proven);
+      query counts are protected parameters. Landscape fact; the batching-for-arbitrary-
+      length-inputs technique (§1.1) is a latent idea for non-pow2 table heights.
+    assumptions: { pcs: FRI-class, field: any, arch: any }
+    soundness_cost: "list-decoding conjecture dependence"
+    composable_with: [p19]
+    status: available
+    iter_added: 3
+
+  - id: p31
+    name: tower-sumcheck-message-embedding
+    category: sumcheck
+    source: "Liu-Zhang 2025/594"
+    mechanism: >
+      Sumcheck over tower fields embedding prover messages in intermediate tower levels:
+      O(2^{1.5 l} N) vs O(2^{2l} N) for GF(2)-base towers; basis-switching transforms
+      base-field evals to tower-field polynomial evals for PCS batching (witness 1/2^l size).
+    cost_model: >
+      GL-cubic is NOT a 2-power tower (deg 3, prime); the hierarchical embedding does not
+      apply. Latent: the basis-switching idea parallels leanVM's base-vs-extension packing
+      decisions. No action.
+    assumptions: { pcs: any, field: "2-power towers", arch: any }
+    soundness_cost: standard
+    composable_with: [p4]
+    status: available
+    iter_added: 3
+
+  - id: p32
+    name: logup-fractional-sumcheck-foundation
+    category: lookup
+    source: "Haböck 2022/1530 (deep-read §3.3 cost model); ethSTARK 2021/582 (engineering doc)"
+    mechanism: >
+      Log-derivative lookups: single multiplicity column instead of sorted unions;
+      batch-column case M columns share one table -> oracle costs drop ~4x vs Plookup.
+      ethSTARK: blowup-factor tradeoffs measured (2x blowup -> +50% prover, -25% proof).
+    cost_model: >
+      leanVM's bus already IS LogUp-GKR; the §3.3 optimal-sum-size analysis is the cost
+      model for any future bus-width/domain-sep changes. Reference primitives.
+    assumptions: { pcs: any, field: "char > N", arch: any }
+    soundness_cost: "fractional identity (Lemma 5) field-size condition"
+    composable_with: [p9]
+    status: available
+    iter_added: 3
+
+
+  - id: p33
+    name: table-reuse-viability-ratio
+    category: sumcheck
+    source: "synthesis (iter 3 keep + iter 4 h10 static kill): Gruen-§4-class reuse economics"
+    mechanism: >
+      Round-table reuse (h6' C2 class) profits by C_eval - C_maintain per pair. Viability
+      requires the constraint-evaluation/maintenance cost ratio to clear a memory-traffic
+      floor: measured >= 160:1 (poseidon AIR) wins big; 12:1 (exec AIR) already inverts
+      under cache traffic (h6' per-class kill); 1:1 (pure products — factors folded anyway)
+      is structurally zero-profit. Production product loops already sit at the {z=0, z=inf}
+      eval floor.
+    cost_model: "decision rule, not a mechanism: compute the ratio statically before planning any reuse"
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none
+    composable_with: [p2]
+    status: available
+    iter_added: 4
+
+
+  - id: p34
+    name: commitment-grounding-rank-law
+    category: pcs
+    source: "h9 plan analysis (iter 5): grounding argument over the stacked-PCS + batched-AIR stack"
+    mechanism: >
+      Every protocol fact about a column is grounded either by a WHIR sparse statement on
+      the stacked commitment or by verifier-side recomputation as a polynomial of committed
+      columns. k committed columns yield exactly k grounded evaluations per point; n logical
+      columns need n. Hence arithmetic packing (c = a + 2^32 b) with n > k is UNSOUND in this
+      stack regardless of range-check budget (the cheat (a,b)->(a+2^32 t, b-t) passes every
+      opening of c; fact-transfer between points regresses infinitely). SOUND alternatives:
+      (i) virtualization — replace a committed column by a low-degree polynomial of other
+      committed columns (the nu_a precedent); (ii) small-domain MERGING — one committed
+      column decoded by Lagrange polynomials, domain enforced free by a lookup against
+      public data (the aux_1 precedent). Binius ring-switching is the only known packing
+      escape and needs subfield structure Goldilocks lacks.
+    cost_model: "decision law; enabled h9-revised (-6 exec columns with zero range apparatus)"
+    assumptions: { pcs: "hash-based multilinear", field: any, arch: any }
+    soundness_cost: "n/a (this IS the soundness analysis)"
+    composable_with: [p16]
+    status: available
+    iter_added: 5
+
+
+  - id: p35
+    name: cairo-suffix-sum-flag-packing
+    category: pcs   # status corrected iter 6
+    source: "Cairo whitepaper 2021/1063 §4.x (instruction flags as prefix/suffix-sum column); read iter 5"
+    mechanism: >
+      Commit ONE column f-tilde of suffix sums of the flag bits (f-tilde_i = sum_j 2^j f_{i+j});
+      each bit is the degree-1 virtual difference f-tilde_i - 2 f-tilde_{i+1}; booleanity =
+      degree-2 constraints on differences of one committed column. Grounded under p34
+      pattern (ii) (polynomial of committed columns). The bytecode-bus tuple carries the
+      single packed word instead of per-flag coordinates -> bus width shrinks too.
+    cost_model: >
+      CORRECTED (iter-6 h13 analysis kill): LAYOUT-BOUND. Degree-1 bits require every
+      suffix cell COMMITTED; in one-row-per-step layouts this is a bus-width optimization
+      only (zero committed-cell savings; packed bus word + booleanity ~ -0.2% e2e). In
+      Cairo's own 16-rows/step layout it COSTS +N cells and buys constraint count, not
+      bytes (2021/1063 §9.4 verbatim). Corollary of p34.
+    assumptions: { pcs: any, field: any, arch: any, requires: "bytecode re-encoding; recursion placeholder updates" }
+    soundness_cost: none (p34-sound)
+    composable_with: [p34, p16]
+    status: available
+    iter_added: 5
+
+  # ---- Synthesized: univariate skip x stacked-table heights ----
+  - id: p19
+    name: skip-padding-relaxation
+    category: sumcheck
+    source: "Gruen 2024/108 §5.1 (hidden advantage) x leanVM table fill rates (exec 2^19*1.99)"
+    mechanism: >
+      With first variable over coset D, tables need height c*2^j (c|2^k) instead of 2^n —
+      AIR sumcheck domain can hug actual row counts (e.g. 3*2^18 instead of 2^20).
+    cost_model: >
+      Exec table at 1.99x2^19 -> no gain now; poseidon at 1.96x2^17 -> none. Valuable only
+      when fill rates drift below ~1.5; keep latent.
+    assumptions: { pcs: any, field: FFT-friendly, arch: any }
+    soundness_cost: none
+    composable_with: [p3]
+    status: available
+    iter_added: 1
+
+  - id: p36
+    name: linear-layer-matrix-composition
+    category: hash
+    source: "Vision Mark-32 2024/633 §3.2 (affine layer -> GL_n(2) matrix)"
+    mechanism: >
+      Repeated linear maps inside a permutation round (linearized affine polys, MDS chains)
+      compose into one precomputed matrix; Vision evaluates B(x) as 32 constant-muls + adds
+      instead of n squarings. CPU analog: Poseidon partial-round sparse-matrix folding.
+    cost_model: >
+      poseidon1.rs is PROTECTED and hash migration is a closed family. Applies only at
+      non-protected call sites doing redundant linear work per permutation call. None
+      identified in current profile (witness MDS already u128-kernelized via cfc10a7d).
+      Latent.
+    assumptions: { pcs: any, field: any, arch: any, requires: "non-protected call site" }
+    soundness_cost: none (witness-side only)
+    composable_with: []
+    status: available
+    iter_added: 6
+
+  - id: p37
+    name: shared-mle-hoist-barycentric-lift
+    category: sumcheck
+    source: "zkSpeed 2025/620 §4.1.1 (SumCheck PE microarchitecture)"
+    mechanism: >
+      In product-of-MLE sumchecks with degree-imbalanced terms: hoist each shared MLE's
+      eval-extension once per round (not per term), and evaluate each term family only on
+      its own degree+1 grid, lifting to the global grid via barycentric interpolation at
+      round end (fixed per-round cost, ~23 modmuls in zkSpeed).
+    cost_model: >
+      leanVM batched AIR sumcheck already has degree_z stratification (h6'); the residual
+      question is whether low-degree constraint families still get evaluated on the global
+      degree-8 grid. AIR span 634ms; if ~30% of constraint evals are below top degree the
+      lift trick bounds savings at ~50-80ms. Audit item for Phase 0.
+    assumptions: { pcs: any, field: any, arch: any }
+    soundness_cost: none (prover-side scheduling)
+    composable_with: [p19]
+    status: available
+    iter_added: 6
+
+  - id: p38
+    name: base-field-first-round-specialization
+    category: sumcheck
+    source: "zkSpeed 2025/620 §4.1.2 (round 1->2 data blowup 100x); standard CPU practice"
+    mechanism: >
+      Sumcheck round 1 operates on committed base-field data (8B Goldilocks); after the
+      first challenge bind, everything is extension (24B cubic). Specializing round-1 (and
+      the round-1 fold) to base-field arithmetic avoids 3x data + ~6x mul cost on the
+      largest round.
+    cost_model: >
+      KoalaBear main has first-round specializations; the PoC-quality Goldilocks fork may
+      miss them in some folds (logup, WHIR inner sumchecks, air seeding). AUDIT ITEM:
+      grep each fold site for base-field round-1 paths. If one large fold is unspecialized,
+      worth 2-5% e2e. Operator's 30-40% PoC-shortfall directive makes this priority.
+    assumptions: { pcs: any, field: "extension over base", arch: any }
+    soundness_cost: none
+    composable_with: [p37]
+    status: available
+    iter_added: 6
+
+  - id: p39
+    name: bezout-uniqueness-disjointness-aip
+    category: memory
+    source: "Ozdemir-Laufer-Boneh 2024/979 §4.2-4.4, §6.2"
+    mechanism: >
+      Address-set uniqueness via Bezout identity: z(X)=prod(X-a_i), prover sends s,t with
+      zs+z't=1 (gcd(z,z')=1 iff no repeated roots); disjointness variant fs+gt=X^c.
+      Replaces ordering/permutation arguments; V-cost Theta(A), N-independent. Also:
+      a-grouping (not full (a,t)-ordering) suffices for RAM consistency.
+    cost_model: >
+      leanVM memory is write-once + LogUp bus (318ms GKR total) -- no ordering proof
+      exists to replace; prover-side Bezout cofactors cost O(A log^2 A) product trees.
+      Not profitable here. Reference for any future RAM-model change.
+    assumptions: { pcs: any, field: any, arch: "RAM-checking VMs" }
+    soundness_cost: "Schwartz-Zippel on degree 2A-2"
+    composable_with: []
+    status: available
+    iter_added: 6
+
+  - id: p40
+    name: fri-fold-materialization-crossover
+    category: pcs
+    source: "Haboeck FRI summary 2022/1216 eq (4)-(5); also DEEP degree-correction removal §4.1.2"
+    mechanism: >
+      Two ways to materialize the folded codeword: per-fiber FFTs of size a_i (coset-local)
+      vs full-domain FFT of the combined polynomial. Fiber route wins when
+      1 + (a_i/2)*log2(a_i) < log2|D_i| -- nearly always for a_i in {2,4,8} at our domain
+      sizes; full-FFT route only wins for huge folding factors. Secondary: DEEP method
+      needs no degree-correction factors (refined scheme).
+    cost_model: >
+      WHIR fold path in the Goldilocks fork: check which route whir/src uses for the
+      committed fold codewords (FFT spans inside WHIR prove are 22/10/3ms -- small, so
+      ceiling ~30ms; low priority). Security params PROTECTED -- no m/s/rate retuning.
+    assumptions: { pcs: "FRI/WHIR family", field: FFT-friendly, arch: any }
+    soundness_cost: none (equivalent computation)
+    composable_with: []
+    status: available
+    iter_added: 6
+
+  - id: p41
+    name: jagged-pcs-adapter
+    category: pcs
+    source: "Hemo-Jue-Rabinovich-Roh-Rothblum 2025/917 (Succinct SP1 Hypercube)"
+    mechanism: >
+      Commit only the dense concatenation of jagged columns; one m-round product sumcheck
+      (q-hat times f-hat_t) converts column-claims to dense-claims. Prover <= 5*2^m muls;
+      verifier evaluates f-hat_t in O(m*2^k) via width-4 read-once branching program (pure
+      arithmetic, recursion-friendly; fancy variant width-6, per-table cost). Composes
+      with base-field packing (their Remark 1.2).
+    cost_model: >
+      leanVM stacked PCS already commits dense+padded (fill 96-99%, padding skipped via
+      p16) — the height-rounding win is latent (reopens with p19 if fill drops). LIVE
+      angle: statement-reduction stage. Ours: combine_statement 153ms +
+      run_product_sumcheck 250ms = 403ms over 57M cells (~7 ops/cell); jagged adapter is
+      ~5 muls/cell with simpler verifier. Transcript delta: +m(~26) degree-2 sumcheck
+      rounds vs current statement batching — needs exact accounting vs total_whir_statements
+      path. Protocol-depth change: recursion circuit rewrite + placeholders.
+    assumptions: { pcs: "hash-based multilinear", field: any, arch: "multi-table stacked" }
+    soundness_cost: "2m/|F| sumcheck error (fine for q=p^3, 2^192)"
+    composable_with: [p38, p16, p19]
+    status: available
+    iter_added: 7
+
+  - id: p42
+    name: packed-merkle-leaf-width
+    category: commit
+    source: "UltraFold 2026/266 §4 (packed Merkle trees); leaf-width economics general"
+    mechanism: >
+      Total Merkle perms = data absorbs (N/RATE, data-bound) + internal compressions
+      (~N/leaf_width). Widening leaves cuts internal-node hashing; packing L related
+      oracles into shared leaves additionally shares ONE auth path across L openings
+      (requires shared query indices across instances).
+    cost_model: >
+      AUDIT FIRST: current leaf width in crates/whir/src/merkle.rs. If leaf ~ 8 elements:
+      internal overhead = (1/RATE? no): perms = N/4 + N/8 -> widening to 32 saves ~25% of
+      Merkle span (~300ms on 1220ms!). If leaf already spans row-group (~64): overhead
+      ~6%, lever dead. Costs per query: +leaf bytes in proof, +leaf absorbs in recursion
+      circuit, -log(w ratio) path hashes. Net rule: proof delta x3 penalty — compute with
+      actual query count + digest size before any plan.
+    assumptions: { pcs: "Merkle/FRI-family", field: any, arch: any }
+    soundness_cost: none (layout change; componentwise fold checks)
+    composable_with: [p16]
+    status: latent
+    latent_parts: "AUDITED iter-7 (agent ad40a567c): leaf already 64-wide; internal = 6% of 17.8M perms; widening ceiling ~7ms for proof-size cost. DEAD on this layout."
+    reopens_on: "leaf width shrinks, or fold-tree coset packing becomes relevant"
+    iter_added: 7
