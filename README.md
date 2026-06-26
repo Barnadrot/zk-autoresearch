@@ -32,7 +32,10 @@ Target: [leanVM](https://github.com/leanEthereum/leanVM) — XMSS signature aggr
 | [Degree-split AIR sumcheck (PR #202)](https://github.com/leanEthereum/leanVM/pull/202) | Skip partial-round constraints at high z-points | **-7.64%** on `fancy-aggregation` (Hetzner AX42-U) | **Merged** |
 | [Alloc contention + STIR tiling (PR #203)](https://github.com/leanEthereum/leanVM/pull/203) | Eliminate alloc contention, L2-tiled STIR equality | **-10.3%** on `fancy-aggregation` (3/4 changes merged as independent commits) | **Merged** |
 | [zk-alloc arena allocator (PR #205)](https://github.com/leanEthereum/leanVM/pull/205) | Bump+reset arena allocator | **-27% warm proof** (3.3s → 2.3s) | **Merged** |
-| [Sumcheck, GKR & WHIR proving optimizations (PR #235)](https://github.com/leanEthereum/leanVM/pull/235) | Bump+reset arena allocator | **-6% warm proof (AVX-512)** (2.3s → 2.2s) | **Merged** |
+| [Sumcheck, GKR & WHIR proving optimizations (PR #235)](https://github.com/leanEthereum/leanVM/pull/235) | Sumcheck/GKR/WHIR | **-6% warm proof (AVX-512)** (2.3s → 2.2s) | **Merged** |
+| [Goldilocks (PR #254](https://github.com/leanEthereum/leanVM/pull/254) | Goldilocks | **-11.64% (M4-M)** | **Merged** |
+| [Lazy WHIR (PR #255](https://github.com/leanEthereum/leanVM/pull/255) | Sumcheck/GKR/WHIR | **-4.72% (AVX-512)** | **Merged** |
+
 
 ### Vortex / gnark-crypto
 
