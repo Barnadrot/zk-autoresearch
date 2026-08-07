@@ -140,3 +140,5 @@ Always set `RUSTFLAGS="-C target-cpu=native"` *(or your equivalent `-C target-cp
 - **Gap this fills:** source-level autoresearch on a production ZK prover (first known application)
 
 *Inspired by Karpathy's autoresearch pattern. First known application to a production ZK prover.*
+
+MIT License
