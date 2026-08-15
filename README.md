@@ -1,3 +1,5 @@
+
+
 # zk-autoresearch — Autonomous ZK prover research
 
 Profile-guided experiments across multiple proving systems, using Claude as the optimization agent.
@@ -63,6 +65,7 @@ zk-autoresearch/
 │   │   ├── bench/                 prove_loop + Criterion benchmarks
 │   │   ├── correctness/           correctness.sh, test_integrity.sha256
 │   │   └── scripts/               eval_paired.sh, eval_gate.sh, config.env, ...
+│   ├── leanvm-goldilocks/          Goldilocks branch benchmark harness
 │   ├── vortex/
 │   │   ├── correctness/           correctness.sh
 │   │   └── scripts/               eval_bench.sh, noise_floor.sh, config.env
