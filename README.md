@@ -151,4 +151,6 @@ Always set `RUSTFLAGS="-C target-cpu=native"` *(or your equivalent `-C target-cp
 
 This project received a grant from the [Ethereum Foundation](https://ethereum.foundation/).
 
+# License
+
 MIT License
