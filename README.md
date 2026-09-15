@@ -141,4 +141,14 @@ Always set `RUSTFLAGS="-C target-cpu=native"` *(or your equivalent `-C target-cp
 
 *Inspired by Karpathy's autoresearch pattern. First known application to a production ZK prover.*
 
+---
+
+### Acknowledgments
+
+<a href="https://ethereum.org/foundation">
+  <img src="misc/images/horizontal_version_color_on_black.svg" alt="Ethereum Foundation" height="60">
+</a>
+
+This project received a grant from the [Ethereum Foundation](https://ethereum.org/foundation).
+
 MIT License
