@@ -145,10 +145,10 @@ Always set `RUSTFLAGS="-C target-cpu=native"` *(or your equivalent `-C target-cp
 
 ### Acknowledgments
 
-<a href="https://ethereum.org/foundation">
+<a href="https://ethereum.foundation/">
   <img src="misc/images/horizontal_version_color_on_black.svg" alt="Ethereum Foundation" height="120">
 </a>
 
-This project received a grant from the [Ethereum Foundation](https://ethereum.org/foundation).
+This project received a grant from the [Ethereum Foundation](https://ethereum.foundation/).
 
 MIT License
